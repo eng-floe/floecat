@@ -306,6 +306,47 @@ class IcebergConnectorIssuesTest {
   }
 
   @Test
+  void defaultStatisticsSelectionUsesNonRepeatedPrimitiveLeaves() {
+    Schema schema =
+        new Schema(
+            Types.NestedField.required(1, "row_id", Types.LongType.get()),
+            Types.NestedField.optional(
+                2,
+                "user",
+                Types.StructType.of(
+                    Types.NestedField.required(3, "id", Types.LongType.get()),
+                    Types.NestedField.optional(
+                        4,
+                        "address",
+                        Types.StructType.of(
+                            Types.NestedField.optional(5, "code", Types.StringType.get()))))),
+            Types.NestedField.optional(
+                6, "tags", Types.ListType.ofOptional(7, Types.StringType.get())));
+
+    assertEquals(
+        List.of("row_id", "user.id", "user.address.code"),
+        IcebergConnector.defaultStatisticsColumns(schema));
+    assertEquals(
+        Set.of(1, 3, 5),
+        IcebergConnector.resolveIncludedFieldIds(
+            schema,
+            Set.of(),
+            new FloecatConnector.ColumnSelectorPolicy(
+                FloecatConnector.DefaultColumnScope.ALL, 32)));
+    assertEquals(
+        Set.of(1, 3),
+        IcebergConnector.resolveIncludedFieldIds(
+            schema,
+            Set.of(),
+            new FloecatConnector.ColumnSelectorPolicy(
+                FloecatConnector.DefaultColumnScope.FIRST_N, 2)));
+    assertEquals(
+        Set.of(5),
+        IcebergConnector.resolveIncludedFieldIds(
+            schema, Set.of("user.address.code"), FloecatConnector.ColumnSelectorPolicy.defaults()));
+  }
+
+  @Test
   void enumerateSnapshotsAcceptsSchemaIdZeroAndUsesManifestSpecIdsWithoutScanning() {
     Schema schema =
         new Schema(

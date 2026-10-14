@@ -25,7 +25,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 import org.apache.datasketches.theta.CompactSketch;
 import org.apache.datasketches.theta.UpdateSketch;
 import org.apache.parquet.column.page.PageReadStore;
@@ -97,9 +96,8 @@ public final class ParquetNdvProvider implements NdvProvider {
     try (ParquetFileReader reader = open(filePath)) {
       final MessageType fileSchema = reader.getFooter().getFileMetaData().getSchema();
 
-      final List<String> present =
-          sinks.keySet().stream().filter(fileSchema::containsField).collect(Collectors.toList());
-      final List<String> limited = present.size() > 32 ? present.subList(0, 32) : present;
+      final List<ResolvedColumn> present = resolveColumns(fileSchema, sinks.keySet());
+      final List<ResolvedColumn> limited = present.size() > 32 ? present.subList(0, 32) : present;
       if (present.size() > 32) {
         LOG.warnf(
             "ParquetNdvProvider: NDV scan capped at 32 columns per file; %d columns silently"
@@ -111,13 +109,11 @@ public final class ParquetNdvProvider implements NdvProvider {
       }
 
       final Map<String, UpdateSketch> thetaByCol = new LinkedHashMap<>(limited.size());
-      for (String columnName : limited) {
-        thetaByCol.put(columnName, UpdateSketch.builder().setNominalEntries(thetaK).build());
+      for (ResolvedColumn column : limited) {
+        thetaByCol.put(column.name(), UpdateSketch.builder().setNominalEntries(thetaK).build());
       }
 
-      final List<Type> types = new ArrayList<>(limited.size());
-      for (String columnName : limited) types.add(fileSchema.getType(columnName));
-      final MessageType projection = new MessageType(fileSchema.getName(), types);
+      final MessageType projection = projectionFor(fileSchema, limited);
 
       final ColumnIOFactory cioFactory = new ColumnIOFactory();
       PageReadStore pages;
@@ -131,55 +127,21 @@ public final class ParquetNdvProvider implements NdvProvider {
 
         for (long r = 0; r < rowCount; r++) {
           final Group g = rr.read();
-          for (int c = 0; c < projection.getFieldCount(); c++) {
-            final String col = projection.getFieldName(c);
-            if (g.getFieldRepetitionCount(c) == 0) {
-              continue;
-            }
-
-            final Type t = projection.getType(c);
-            try {
-              if (!t.isPrimitive()) {
-                updateSketch(thetaByCol, col, g.getValueToString(c, 0));
-              } else {
-                final PrimitiveType.PrimitiveTypeName p =
-                    t.asPrimitiveType().getPrimitiveTypeName();
-                final LogicalTypeAnnotation l = t.getLogicalTypeAnnotation();
-                switch (p) {
-                  case INT32 -> {
-                    if (l instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation)
-                      updateSketch(thetaByCol, col, g.getValueToString(c, 0));
-                    else updateSketch(thetaByCol, col, g.getInteger(c, 0));
-                  }
-                  case INT64 -> {
-                    if (l instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation)
-                      updateSketch(thetaByCol, col, g.getValueToString(c, 0));
-                    else updateSketch(thetaByCol, col, g.getLong(c, 0));
-                  }
-                  case FLOAT -> updateSketch(thetaByCol, col, g.getFloat(c, 0));
-                  case DOUBLE -> updateSketch(thetaByCol, col, g.getDouble(c, 0));
-                  case BOOLEAN -> updateSketch(thetaByCol, col, g.getBoolean(c, 0));
-                  case BINARY, FIXED_LEN_BYTE_ARRAY, INT96 ->
-                      updateSketch(thetaByCol, col, g.getValueToString(c, 0));
-                  default -> updateSketch(thetaByCol, col, g.getValueToString(c, 0));
-                }
-              }
-            } catch (ClassCastException ignore) {
-              updateSketch(thetaByCol, col, g.getValueToString(c, 0));
-            }
+          for (ResolvedColumn column : limited) {
+            contributeValue(thetaByCol, column, g);
           }
         }
       }
 
-      for (String column : limited) {
-        ColumnNdv out = sinks.get(column);
+      for (ResolvedColumn column : limited) {
+        ColumnNdv out = sinks.get(column.name());
         if (out == null) {
           continue;
         }
 
         if (out.approx == null) out.approx = new NdvApprox();
 
-        UpdateSketch us = thetaByCol.get(column);
+        UpdateSketch us = thetaByCol.get(column.name());
         if (us == null) {
           continue;
         }
@@ -199,6 +161,101 @@ public final class ParquetNdvProvider implements NdvProvider {
 
   private ParquetFileReader open(String path) throws IOException {
     return ParquetFileReader.open(parquetLookup.apply(path));
+  }
+
+  private record ResolvedColumn(String name, String[] path, PrimitiveType type) {}
+
+  private static List<ResolvedColumn> resolveColumns(
+      MessageType schema, java.util.Set<String> requested) {
+    List<ResolvedColumn> columns = new ArrayList<>();
+    for (String name : requested) {
+      String[] path = name.split("\\.", -1);
+      if (!schema.containsPath(path)
+          || !schema.getType(path).isPrimitive()
+          || schema.getMaxRepetitionLevel(path) != 0) {
+        continue;
+      }
+      columns.add(new ResolvedColumn(name, path, schema.getType(path).asPrimitiveType()));
+    }
+    return columns;
+  }
+
+  private static MessageType projectionFor(MessageType fileSchema, List<ResolvedColumn> columns) {
+    List<Type> fields = new ArrayList<>();
+    for (Type field : fileSchema.getFields()) {
+      List<String[]> paths =
+          columns.stream()
+              .map(ResolvedColumn::path)
+              .filter(path -> path[0].equals(field.getName()))
+              .toList();
+      if (!paths.isEmpty()) {
+        fields.add(projectField(field, paths, 1));
+      }
+    }
+    return new MessageType(fileSchema.getName(), fields);
+  }
+
+  private static Type projectField(Type field, List<String[]> paths, int depth) {
+    if (field.isPrimitive()) {
+      return field;
+    }
+    List<Type> children = new ArrayList<>();
+    for (Type child : field.asGroupType().getFields()) {
+      List<String[]> childPaths =
+          paths.stream()
+              .filter(path -> path.length > depth && path[depth].equals(child.getName()))
+              .toList();
+      if (!childPaths.isEmpty()) {
+        children.add(projectField(child, childPaths, depth + 1));
+      }
+    }
+    return field.asGroupType().withNewFields(children);
+  }
+
+  private static void contributeValue(
+      Map<String, UpdateSketch> sketches, ResolvedColumn column, Group root) {
+    Group group = root;
+    for (int depth = 0; depth + 1 < column.path().length; depth++) {
+      int fieldIndex = group.getType().getFieldIndex(column.path()[depth]);
+      if (group.getFieldRepetitionCount(fieldIndex) == 0) {
+        return;
+      }
+      group = group.getGroup(fieldIndex, 0);
+    }
+    int fieldIndex = group.getType().getFieldIndex(column.path()[column.path().length - 1]);
+    if (group.getFieldRepetitionCount(fieldIndex) == 0) {
+      return;
+    }
+
+    String name = column.name();
+    PrimitiveType type = column.type();
+    try {
+      LogicalTypeAnnotation logicalType = type.getLogicalTypeAnnotation();
+      switch (type.getPrimitiveTypeName()) {
+        case INT32 -> {
+          if (logicalType instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) {
+            updateSketch(sketches, name, group.getValueToString(fieldIndex, 0));
+          } else {
+            updateSketch(sketches, name, group.getInteger(fieldIndex, 0));
+          }
+        }
+        case INT64 -> {
+          if (logicalType instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) {
+            updateSketch(sketches, name, group.getValueToString(fieldIndex, 0));
+          } else {
+            updateSketch(sketches, name, group.getLong(fieldIndex, 0));
+          }
+        }
+        case FLOAT -> updateSketch(sketches, name, group.getFloat(fieldIndex, 0));
+        case DOUBLE -> updateSketch(sketches, name, group.getDouble(fieldIndex, 0));
+        case BOOLEAN -> updateSketch(sketches, name, group.getBoolean(fieldIndex, 0));
+        case BINARY, FIXED_LEN_BYTE_ARRAY, INT96 ->
+            updateSketch(sketches, name, group.getValueToString(fieldIndex, 0));
+        default -> updateSketch(sketches, name, group.getValueToString(fieldIndex, 0));
+      }
+    } catch (ClassCastException ignore) {
+      updateSketch(sketches, name, group.getValueToString(fieldIndex, 0));
+    }
   }
 
   private static void updateSketch(Map<String, UpdateSketch> m, String col, int v) {

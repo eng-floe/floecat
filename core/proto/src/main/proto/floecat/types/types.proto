@@ -99,6 +99,8 @@ message LogicalField {
   string name = 1;
   LogicalType type = 2;
   bool required = 3;
+  // Stable source-format identity for this field; zero means unavailable.
+  int64 column_id = 4;
 }
 
 message ScalarValue {
