@@ -252,8 +252,7 @@ class LogicalTypeTreeTest {
                     new LogicalField(
                         "nested",
                         false,
-                        LogicalType.struct(
-                            List.of(new LogicalField("leaf", true, STRING, 105L))),
+                        LogicalType.struct(List.of(new LogicalField("leaf", true, STRING, 105L))),
                         104L))),
             // explicitly known empty struct
             LogicalType.struct(List.of()),
