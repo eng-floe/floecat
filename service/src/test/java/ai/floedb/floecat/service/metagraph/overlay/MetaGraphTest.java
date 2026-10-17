@@ -221,6 +221,41 @@ class MetaGraphTest {
   }
 
   @Test
+  void canonicalTableWithoutSnapshotUsesTableIdentityMap() {
+    String schemaJson =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":true,\"metadata\":{}}]}";
+    var history =
+        new ai.floedb.floecat.delta.identity.CurrentSchemaDeltaHistorySource(
+            "table",
+            "",
+            0L,
+            false,
+            schemaJson,
+            Map.of(),
+            List.of(),
+            ai.floedb.floecat.schema.identity.HistoryTier.NONE);
+    var identityMap =
+        new ai.floedb.floecat.delta.identity.DeltaIdentityService()
+            .reconcileCurrent(
+                history,
+                ai.floedb.floecat.delta.identity.PersistedIdentityLookup.forTableMap(
+                    Optional.empty()))
+            .maps()
+            .get(history.headVersion());
+    UserTableNode canonical =
+        canonicalTable(
+            ai.floedb.floecat.catalog.rpc.TableFormat.TF_DELTA, schemaJson, identityMap);
+    when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
+    when(user.resolve(usrTable)).thenReturn(Optional.of(canonical));
+    when(user.schemaFor(eq("table-schema"), eq(usrTable), any(), eq(""), eq("")))
+        .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException());
+
+    assertThat(meta.tableSchema(usrTable, context))
+        .singleElement()
+        .satisfies(column -> assertThat(column.getId()).isEqualTo(1L));
+  }
+
+  @Test
   void canonicalCurrentSnapshotWithoutIdentityMapHasNoQueryableSchema() {
     UserTableNode canonical = canonicalTable();
     when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
@@ -871,16 +906,26 @@ class MetaGraphTest {
 
   /** The plain test table, switched to canonical column identity. */
   private UserTableNode canonicalTable() {
-    UserTableNode base = TestNodes.tableNode(usrTable, "{}");
+    return canonicalTable(
+        ai.floedb.floecat.catalog.rpc.TableFormat.TF_ICEBERG,
+        "{}",
+        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
+  }
+
+  private UserTableNode canonicalTable(
+      ai.floedb.floecat.catalog.rpc.TableFormat format,
+      String schemaJson,
+      ai.floedb.floecat.catalog.rpc.ColumnIdentityMap identityMap) {
+    UserTableNode base = TestNodes.tableNode(usrTable, schemaJson);
     return new UserTableNode(
         base.id(),
         base.blobUri(),
         base.catalogId(),
         base.namespaceId(),
         base.displayName(),
-        base.format(),
+        format,
         ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
-        base.schemaJson(),
+        schemaJson,
         base.properties(),
         base.partitionKeys(),
         base.currentSnapshot(),
@@ -888,6 +933,7 @@ class MetaGraphTest {
         base.resolvedSnapshots(),
         base.dependentViews(),
         base.engineHints(),
-        base.columnHints());
+        base.columnHints(),
+        identityMap);
   }
 }

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.metagraph.model;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
@@ -49,7 +50,8 @@ public record UserTableNode(
     Optional<ResolvedSnapshotInfo> resolvedSnapshots,
     List<ResourceId> dependentViews,
     Map<EngineHintKey, EngineHint> engineHints,
-    Map<Long, Map<EngineHintKey, EngineHint>> columnHints)
+    Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
+    ColumnIdentityMap columnIdentityMap)
     implements TableNode {
 
   public UserTableNode {
@@ -61,6 +63,8 @@ public record UserTableNode(
     dependentViews = List.copyOf(dependentViews);
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
     columnHints = RelationNode.normalizeColumnHints(columnHints);
+    columnIdentityMap =
+        columnIdentityMap == null ? ColumnIdentityMap.getDefaultInstance() : columnIdentityMap;
   }
 
   /** User nodes are content-keyed by {@link #blobUri()}; the pointer version is not retained. */
@@ -94,7 +98,8 @@ public record UserTableNode(
         resolvedSnapshots,
         dependentViews,
         relationHints,
-        columnHints);
+        columnHints,
+        columnIdentityMap);
   }
 
   @Override

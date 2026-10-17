@@ -1,0 +1,104 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package ai.floedb.floecat.catalog.sharing;
+
+import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableDescription;
+import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableHistory;
+import ai.floedb.floecat.delta.identity.DeltaHistorySource;
+import ai.floedb.floecat.delta.identity.KernelAdapter;
+import ai.floedb.floecat.schema.identity.HistoryTier;
+import io.delta.kernel.Snapshot;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
+/** Current schema plus unversioned query history, sufficient to recognize a data-only range. */
+final class DeltaSharingQueryHistorySource implements DeltaHistorySource {
+  private final String tableName;
+  private final long headVersion;
+  private final Snapshot head;
+  private final boolean metadataChanged;
+  private final UnorderedHistory unorderedHistory;
+
+  DeltaSharingQueryHistorySource(
+      String tableName, long headVersion, TableDescription current, TableHistory history) {
+    this.tableName = tableName;
+    this.headVersion = headVersion;
+    this.metadataChanged = !history.metadata().isEmpty() || !history.protocols().isEmpty();
+    this.unorderedHistory =
+        new UnorderedHistory(
+            history.metadata().stream()
+                .map(
+                    metadata ->
+                        new HistoricalMetadata(metadata.schemaJson(), metadata.configuration()))
+                .toList(),
+            history.protocols().stream()
+                .map(historical -> historical.protocol())
+                .map(
+                    protocol ->
+                        new HistoricalProtocol(
+                            protocol.minReaderVersion(),
+                            protocol.minWriterVersion(),
+                            Set.copyOf(protocol.readerFeatures()),
+                            Set.copyOf(protocol.writerFeatures())))
+                .toList());
+    this.head =
+        KernelAdapter.currentSchemaSnapshot(
+            "",
+            headVersion,
+            current.metadata().schemaJson(),
+            current.metadata().configuration(),
+            current.metadata().partitionColumns(),
+            current.protocol().minReaderVersion(),
+            current.protocol().minWriterVersion(),
+            Set.copyOf(current.protocol().readerFeatures()),
+            Set.copyOf(current.protocol().writerFeatures()));
+  }
+
+  @Override
+  public String tableName() {
+    return tableName;
+  }
+
+  @Override
+  public long headVersion() {
+    return headVersion;
+  }
+
+  @Override
+  public HistoryTier historyTier() {
+    return HistoryTier.UNORDERED_QUERY_HISTORY;
+  }
+
+  @Override
+  public Optional<Snapshot> snapshot(long version) {
+    return version == headVersion ? Optional.of(head) : Optional.empty();
+  }
+
+  @Override
+  public MetadataHistory metadataVersions(long firstVersion, long lastVersion) {
+    if (!metadataChanged) {
+      return MetadataHistory.complete(List.of());
+    }
+    return MetadataHistory.gap(
+        "Delta Sharing query history contains metadata without reliable version ordering");
+  }
+
+  @Override
+  public UnorderedHistory unorderedHistory() {
+    return unorderedHistory;
+  }
+}

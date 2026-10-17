@@ -88,6 +88,8 @@ import org.junit.jupiter.api.Test;
 class CatalogOverlayReconcilerTest {
   private static final String SCHEMA_JSON =
       "{\"type\":\"struct\",\"schema-id\":0,\"fields\":[{\"id\":1,\"name\":\"id\",\"required\":false,\"type\":\"long\"}]}";
+  private static final String DELTA_SCHEMA_JSON =
+      "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":true,\"metadata\":{}}]}";
 
   private CatalogOverlayReconciler reconciler;
   private CatalogIntegrationRepository integrations;
@@ -533,7 +535,7 @@ class CatalogOverlayReconcilerTest {
             new CatalogObjectName(sales, "orders"),
             ExternalObjectIdentity.stable("delta-table-uuid"),
             "DELTA",
-            SCHEMA_JSON,
+            DELTA_SCHEMA_JSON,
             List.of(),
             Optional.of("s3://warehouse/orders/_delta_log"),
             Optional.of("s3://warehouse/orders"),
@@ -553,6 +555,8 @@ class CatalogOverlayReconcilerTest {
     assertEquals(
         ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
         table.getUpstream().getColumnIdAlgorithm());
+    assertTrue(table.hasColumnIdentityMap());
+    assertEquals(1, table.getColumnIdentityMap().getEntriesCount());
 
     MutationMeta tableMeta = tables.metaFor(table.getResourceId());
     Table legacy =
@@ -586,6 +590,151 @@ class CatalogOverlayReconcilerTest {
     assertEquals(
         ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
         tables.getById(table.getResourceId()).orElseThrow().getUpstream().getColumnIdAlgorithm());
+  }
+
+  @Test
+  void urlOnlyDeltaTablePersistsNoHistoryIdentityAtTheSharedVersion() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(
+        orders,
+        new CatalogTable(
+            orders,
+            ExternalObjectIdentity.stable("shared-delta-table"),
+            "DELTA",
+            DELTA_SCHEMA_JSON,
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of("delta.sharing.version", "42")));
+
+    assertEquals(1, reconcile().tablesCreated());
+
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table table =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertTrue(table.hasColumnIdentityMap());
+    assertEquals(42L, table.getColumnIdentityMap().getSourceVersion());
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdentityHistoryTier.COLUMN_IDENTITY_HISTORY_TIER_NONE,
+        table.getColumnIdentityMap().getHistoryTier());
+    assertTrue(table.getColumnIdentityMap().getSourceVersionAnchored());
+  }
+
+  @Test
+  void deltaTableWithoutARealVersionPersistsAnUnanchoredIdentityMap() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(
+        orders,
+        new CatalogTable(
+            orders,
+            ExternalObjectIdentity.stable("unversioned-delta-table"),
+            "DELTA",
+            DELTA_SCHEMA_JSON,
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of()));
+
+    assertEquals(1, reconcile().tablesCreated());
+
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table table =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertFalse(table.getColumnIdentityMap().getSourceVersionAnchored());
+  }
+
+  @Test
+  void dataOnlyDeltaHeadAdvancePersistsTheNewIdentityCursor() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(
+        orders,
+        new CatalogTable(
+            orders,
+            ExternalObjectIdentity.stable("shared-delta-table"),
+            "DELTA",
+            DELTA_SCHEMA_JSON,
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of("delta.sharing.version", "42")));
+    assertEquals(1, reconcile().tablesCreated());
+
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table before =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    MutationMeta beforeMeta = tables.metaFor(before.getResourceId());
+    client.tables.put(
+        orders,
+        new CatalogTable(
+            orders,
+            ExternalObjectIdentity.stable("shared-delta-table"),
+            "DELTA",
+            DELTA_SCHEMA_JSON,
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of("delta.sharing.version", "43")));
+
+    CatalogOverlayReconciler.Result result = reconcile();
+    Table after = tables.getById(before.getResourceId()).orElseThrow();
+
+    assertEquals(1, result.tablesUpdated());
+    assertTrue(
+        tables.metaFor(after.getResourceId()).getPointerVersion() > beforeMeta.getPointerVersion());
+    assertEquals(43L, after.getColumnIdentityMap().getSourceVersion());
+  }
+
+  @Test
+  void corruptPersistedOverlayIdentitySkipsOnlyThatTable() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(
+        orders,
+        new CatalogTable(
+            orders,
+            ExternalObjectIdentity.stable("delta-table-uuid"),
+            "DELTA",
+            DELTA_SCHEMA_JSON,
+            List.of(),
+            Optional.empty(),
+            Optional.of("s3://warehouse/orders"),
+            Map.of()));
+
+    reconcile();
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table table =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    MutationMeta meta = tables.metaFor(table.getResourceId());
+    Table corrupt =
+        table.toBuilder()
+            .setColumnIdentityMap(
+                table.getColumnIdentityMap().toBuilder().setStateChecksum("corrupt"))
+            .build();
+    assertTrue(tables.update(corrupt, meta.getPointerVersion()));
+
+    var result = reconcile();
+
+    assertEquals(1, result.objectsSkipped());
+    assertEquals(corrupt, tables.getById(table.getResourceId()).orElseThrow());
   }
 
   @Test

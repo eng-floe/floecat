@@ -19,18 +19,22 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository.CurrentSnapshotPointerUpdateResult;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import io.grpc.Status;
@@ -54,6 +58,7 @@ class CurrentSnapshotPointerServiceTest {
             .build();
     service = new CurrentSnapshotPointerService();
     service.snapshotRepo = mock(SnapshotRepository.class);
+    service.tableRepo = mock(TableRepository.class);
     service.rootResyncQueue = mock(RootResyncQueue.class);
   }
 
@@ -110,6 +115,72 @@ class CurrentSnapshotPointerServiceTest {
 
     verify(service.rootWriter).commitSnapshotEntry(tableId, 7L);
     verify(service.rootWriter).commitStatsGeneration(tableId, 7L);
+  }
+
+  @Test
+  void currentSnapshotPublishesItsCanonicalIdentityOnTheTable() {
+    ColumnIdentityMap identity =
+        ColumnIdentityMap.newBuilder().setFormatVersion(1).setHighWaterMark(9L).build();
+    var candidate =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(7L)
+            .setColumnIdentityMap(identity)
+            .build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
+        .thenReturn(CurrentSnapshotPointerUpdateResult.UPDATED);
+    when(service.snapshotRepo.getCommittedCurrentSnapshotPointer(tableId))
+        .thenReturn(Optional.of(CurrentSnapshotPointer.newBuilder().setSnapshotId(7L).build()));
+    when(service.tableRepo.getById(tableId)).thenReturn(Optional.of(table));
+    when(service.tableRepo.metaFor(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(3L).build());
+    when(service.tableRepo.update(any(), anyLong())).thenReturn(true);
+
+    service.maybeAdvance(tableId, candidate, "corr");
+
+    verify(service.tableRepo)
+        .update(
+            argThat(updated -> updated.getColumnIdentityMap().equals(identity)),
+            org.mockito.ArgumentMatchers.eq(3L));
+  }
+
+  @Test
+  void currentSnapshotAdvancesTheTableIdentitySourceCursor() {
+    ColumnIdentityMap tableIdentity =
+        ColumnIdentityMap.newBuilder()
+            .setFormatVersion(1)
+            .setSourceVersion(6L)
+            .setHighWaterMark(9L)
+            .setFingerprint("same")
+            .setStateChecksum("old")
+            .build();
+    ColumnIdentityMap snapshotIdentity =
+        tableIdentity.toBuilder().setSourceVersion(7L).setStateChecksum("new").build();
+    var candidate =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(7L)
+            .setColumnIdentityMap(snapshotIdentity)
+            .build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
+        .thenReturn(CurrentSnapshotPointerUpdateResult.UPDATED);
+    when(service.snapshotRepo.getCommittedCurrentSnapshotPointer(tableId))
+        .thenReturn(Optional.of(CurrentSnapshotPointer.newBuilder().setSnapshotId(7L).build()));
+    when(service.tableRepo.getById(tableId))
+        .thenReturn(Optional.of(Table.newBuilder().setColumnIdentityMap(tableIdentity).build()));
+    when(service.tableRepo.metaFor(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(3L).build());
+    when(service.tableRepo.update(any(), anyLong())).thenReturn(true);
+
+    service.maybeAdvance(tableId, candidate, "corr");
+
+    verify(service.tableRepo)
+        .update(
+            argThat(updated -> updated.getColumnIdentityMap().equals(snapshotIdentity)),
+            org.mockito.ArgumentMatchers.eq(3L));
   }
 
   @Test

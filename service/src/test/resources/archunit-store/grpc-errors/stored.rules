@@ -1,0 +1,7 @@
+#
+#Sat Oct 17 17:42:53 EDT 2026
+no\ classes\ that\ reside\ outside\ of\ package\ '..service.error.impl..'\ should\ call\ constructor\ StatusRuntimeException.<init>()=443073b8-f1a5-4dfd-8c1e-fbee54d3411b
+no\ classes\ that\ reside\ outside\ of\ package\ '..service.error.impl..'\ should\ call\ method\ Status.asRuntimeException()=6a53768a-056d-45cc-a06c-e3652bb6f9f5
+no\ classes\ that\ reside\ outside\ of\ package\ '..service.error.impl..'\ should\ call\ method\ Status.asRuntimeException(Metadata)=e9297dc1-c0c6-4a79-adc5-9b6642763887
+no\ classes\ that\ reside\ outside\ of\ package\ '..service.error.impl..'\ should\ call\ method\ StatusProto.toStatusRuntimeException(Status)=1ae3e74c-fa90-4994-8c24-d9db9c0d475c
+no\ classes\ that\ reside\ outside\ of\ package\ '..service.error.impl..'\ should\ call\ method\ where\ call\ GrpcErrors\ helper\ with\ non-MessageKey\ parameter=56c88b33-2d1c-4938-994b-7f3d3928c87d

@@ -16,11 +16,15 @@
 
 package ai.floedb.floecat.service.error.impl;
 
+import static com.tngtech.archunit.library.freeze.FreezingArchRule.freeze;
+
 import com.google.rpc.Status;
+import com.tngtech.archunit.ArchConfiguration;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
+import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.syntax.ArchRuleDefinition;
 import io.grpc.Metadata;
@@ -30,8 +34,18 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class GrpcErrorsContractArchTest {
-  private static final JavaClasses CLASSES =
-      new ClassFileImporter().importPackages("ai.floedb.floecat");
+  private static final JavaClasses CLASSES = importServiceClasses();
+
+  private static JavaClasses importServiceClasses() {
+    return ArchConfiguration.withThreadLocalScope(
+        configuration -> {
+          configuration.setResolveMissingDependenciesFromClassPath(false);
+          return new ClassFileImporter()
+              .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_JARS)
+              .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
+              .importPackages("ai.floedb.floecat.service");
+        });
+  }
 
   @Test
   void onlyGrpcErrorsMayConstructStatusRuntimeException() {
@@ -41,8 +55,7 @@ class GrpcErrorsContractArchTest {
             .resideOutsideOfPackage("..service.error.impl..")
             .should()
             .callConstructor(StatusRuntimeException.class);
-    rule = rule.allowEmptyShould(true);
-    rule.check(CLASSES);
+    freeze(rule).check(CLASSES);
   }
 
   @Test
@@ -53,8 +66,7 @@ class GrpcErrorsContractArchTest {
             .resideOutsideOfPackage("..service.error.impl..")
             .should()
             .callMethod(StatusProto.class, "toStatusRuntimeException", Status.class);
-    rule = rule.allowEmptyShould(true);
-    rule.check(CLASSES);
+    freeze(rule).check(CLASSES);
   }
 
   @Test
@@ -65,8 +77,7 @@ class GrpcErrorsContractArchTest {
             .resideOutsideOfPackage("..service.error.impl..")
             .should()
             .callMethod(io.grpc.Status.class, "asRuntimeException");
-    rule = rule.allowEmptyShould(true);
-    rule.check(CLASSES);
+    freeze(rule).check(CLASSES);
   }
 
   @Test
@@ -77,8 +88,7 @@ class GrpcErrorsContractArchTest {
             .resideOutsideOfPackage("..service.error.impl..")
             .should()
             .callMethod(io.grpc.Status.class, "asRuntimeException", Metadata.class);
-    rule = rule.allowEmptyShould(true);
-    rule.check(CLASSES);
+    freeze(rule).check(CLASSES);
   }
 
   @Test
@@ -121,7 +131,6 @@ class GrpcErrorsContractArchTest {
             .resideOutsideOfPackage("..service.error.impl..")
             .should()
             .callMethodWhere(rawMessageKeyCall);
-    rule = rule.allowEmptyShould(true);
-    rule.check(CLASSES);
+    freeze(rule).check(CLASSES);
   }
 }

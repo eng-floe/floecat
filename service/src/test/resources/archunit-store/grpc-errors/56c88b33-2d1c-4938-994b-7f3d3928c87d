@@ -1,0 +1,1 @@
+Method <ai.floedb.floecat.service.common.BaseServiceImpl.toStatus(java.lang.Throwable, java.lang.String)> calls method <ai.floedb.floecat.service.error.impl.GrpcErrors.aborted(java.lang.String, java.util.Map, java.lang.Throwable)> in (BaseServiceImpl.java:320)

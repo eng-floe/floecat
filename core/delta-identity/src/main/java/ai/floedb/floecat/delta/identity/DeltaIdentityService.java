@@ -78,9 +78,28 @@ public final class DeltaIdentityService {
       Optional<ColumnIdentityMap> exact =
           exactSnapshot.isPresent() ? exactSnapshot : exactTableMap(persisted, version);
       if (exact.isPresent()) {
-        validatePersisted(history.tableName(), version, snapshot, exact.orElseThrow());
-        maps.put(version, exact.orElseThrow());
-        return;
+        try {
+          validatePersisted(history.tableName(), version, snapshot, exact.orElseThrow());
+          maps.put(version, exact.orElseThrow());
+          return;
+        } catch (InvalidPersistedIdentityException mismatch) {
+          if (exactSnapshot.isPresent() || history.historyTier().provesContinuity()) {
+            throw mismatch;
+          }
+          // The map itself was restored successfully, but a current-schema-only catalog now
+          // describes a different schema or mode. That is an unprovable history boundary, not
+          // corrupt persisted state, so allocate a new generation above the old high-water mark.
+          maps.put(
+              version,
+              startGeneration(
+                  snapshot,
+                  version,
+                  exact.orElseThrow(),
+                  persisted.highWaterMark(),
+                  PreferredCanonicalIds.NONE,
+                  history.historyTier()));
+          return;
+        }
       }
 
       Optional<Map.Entry<Long, ColumnIdentityMap>> successor = persisted.ceiling(version + 1L);

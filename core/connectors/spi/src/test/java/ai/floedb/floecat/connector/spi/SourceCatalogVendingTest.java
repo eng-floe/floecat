@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.spi;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.util.LogSafeText;
 import java.time.Instant;
 import java.util.Map;
 import org.junit.jupiter.api.Test;

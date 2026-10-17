@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.aws.RefreshingAwsClient;
+import ai.floedb.floecat.catalog.delta.S3RangeReader;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
