@@ -439,6 +439,7 @@
             <inputExclude>**/*.md</inputExclude>
             <inputExclude>**/site-src/**</inputExclude>
             <inputExclude>**/org.mockito.plugins.MockMaker</inputExclude>
+            <inputExclude>**/archunit-store/**</inputExclude>
           </inputExcludes>
         </configuration>
       </plugin>
