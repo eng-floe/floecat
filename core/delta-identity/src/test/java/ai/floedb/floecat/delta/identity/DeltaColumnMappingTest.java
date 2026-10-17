@@ -14,13 +14,10 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.connector.delta.uc.impl;
+package ai.floedb.floecat.delta.identity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import ai.floedb.floecat.connector.delta.identity.ColumnMappingMode;
-import ai.floedb.floecat.connector.delta.identity.DeltaResolvedSchema;
-import ai.floedb.floecat.connector.delta.identity.DeltaSchemaResolver;
 import io.delta.kernel.expressions.Column;
 import io.delta.kernel.internal.actions.Protocol;
 import io.delta.kernel.internal.skipping.StatsSchemaHelper;
@@ -147,7 +144,9 @@ class DeltaColumnMappingTest {
 
   private static ColumnMappingMode effectiveMode(
       ColumnMappingMode configuredMode, Protocol protocol) {
-    return configuredMode.effective(DeltaColumnMapping.supportsColumnMapping(protocol));
+    return configuredMode.effective(
+        protocol.supportsFeature(
+            io.delta.kernel.internal.tablefeatures.TableFeatures.COLUMN_MAPPING_RW_FEATURE));
   }
 
   private static DeltaResolvedSchema mappedNestedSchema(ColumnMappingMode mode) {

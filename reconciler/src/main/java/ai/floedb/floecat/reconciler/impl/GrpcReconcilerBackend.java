@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
@@ -515,6 +516,62 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
+  public Map<Long, ColumnIdentityMap> persistedColumnIdentityMaps(
+      ReconcileContext ctx, ResourceId tableId, Set<Long> snapshotIds) {
+    if (snapshotIds == null || snapshotIds.isEmpty()) {
+      return Map.of();
+    }
+    Map<Long, ColumnIdentityMap> maps = new LinkedHashMap<>();
+    String token = "";
+    do {
+      var response =
+          snapshot(ctx)
+              .listSnapshots(
+                  ListSnapshotsRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setPage(PageRequest.newBuilder().setPageSize(500).setPageToken(token))
+                      .build());
+      for (Snapshot snapshot : response.getSnapshotsList()) {
+        if (snapshotIds.contains(snapshot.getSnapshotId()) && snapshot.hasColumnIdentityMap()) {
+          maps.put(snapshot.getSnapshotId(), snapshot.getColumnIdentityMap());
+        }
+      }
+      token = response.hasPage() ? response.getPage().getNextPageToken() : "";
+    } while (!token.isBlank());
+    return Map.copyOf(maps);
+  }
+
+  @Override
+  public SnapshotIdentityHistory snapshotIdentityHistory(ReconcileContext ctx, ResourceId tableId) {
+    Set<Long> snapshotIds = new LinkedHashSet<>();
+    Map<Long, ColumnIdentityMap> maps = new LinkedHashMap<>();
+    long highWaterMark = 0L;
+    String token = "";
+    do {
+      var response =
+          snapshot(ctx)
+              .listSnapshots(
+                  ListSnapshotsRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setPage(PageRequest.newBuilder().setPageSize(500).setPageToken(token))
+                      .build());
+      for (Snapshot snapshot : response.getSnapshotsList()) {
+        if (snapshot.getSnapshotId() < 0) {
+          continue;
+        }
+        snapshotIds.add(snapshot.getSnapshotId());
+        if (snapshot.hasColumnIdentityMap()) {
+          ColumnIdentityMap identityMap = snapshot.getColumnIdentityMap();
+          highWaterMark = Math.max(highWaterMark, identityMap.getHighWaterMark());
+          maps.put(snapshot.getSnapshotId(), identityMap);
+        }
+      }
+      token = response.hasPage() ? response.getPage().getNextPageToken() : "";
+    } while (!token.isBlank());
+    return new SnapshotIdentityHistory(snapshotIds, maps, highWaterMark);
+  }
+
+  @Override
   public void ingestSnapshot(ReconcileContext ctx, ResourceId tableId, Snapshot snapshot) {
     if (snapshot == null || snapshot.getSnapshotId() < 0) {
       return;
@@ -635,7 +692,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       ctx.authorizationToken(),
                       ctx.executionJobId(),
                       ctx.executionLeaseEpoch(),
-                      () -> false),
+                      () -> false,
+                      ColumnIdentityMap.getDefaultInstance()),
                   (completedFileStats, completedPageIndexEntries) -> {
                     fileStats.addAll(completedFileStats);
                     pageIndexEntries.addAll(completedPageIndexEntries);
@@ -685,7 +743,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                 includeTargetKinds == null ? Set.of() : Set.copyOf(includeTargetKinds),
                 columnSelectorPolicy == null
                     ? FloecatConnector.ColumnSelectorPolicy.defaults()
-                    : columnSelectorPolicy));
+                    : columnSelectorPolicy,
+                fetchSnapshot(ctx, tableId, snapshotId)
+                    .map(Snapshot::getColumnIdentityMap)
+                    .orElse(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance())));
   }
 
   private boolean hasAnyCapturedStats(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
@@ -1505,6 +1566,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (snapshot.hasMetadataLocation() && !snapshot.getMetadataLocation().isBlank()) {
       builder.setMetadataLocation(snapshot.getMetadataLocation());
     }
+    if (snapshot.hasColumnIdentityMap()) {
+      builder.setColumnIdentityMap(snapshot.getColumnIdentityMap());
+    }
     return builder.build();
   }
 
@@ -1533,6 +1597,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     }
     if (spec.hasMetadataLocation()) {
       mask.addPaths("metadata_location");
+    }
+    if (spec.hasColumnIdentityMap()) {
+      mask.addPaths("column_identity_map");
     }
     return mask.build();
   }
