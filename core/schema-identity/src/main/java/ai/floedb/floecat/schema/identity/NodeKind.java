@@ -18,8 +18,19 @@ package ai.floedb.floecat.schema.identity;
 
 /** A named schema field or one of the implicit nodes inside a collection. */
 public enum NodeKind {
-  FIELD,
-  ARRAY_ELEMENT,
-  MAP_KEY,
-  MAP_VALUE
+  FIELD(1),
+  ARRAY_ELEMENT(2),
+  MAP_KEY(3),
+  MAP_VALUE(4);
+
+  private final int stableCode;
+
+  NodeKind(int stableCode) {
+    this.stableCode = stableCode;
+  }
+
+  /** Stable persisted code that is independent of enum declaration order. */
+  public int stableCode() {
+    return stableCode;
+  }
 }

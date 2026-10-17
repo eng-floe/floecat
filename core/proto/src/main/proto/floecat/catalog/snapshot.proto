@@ -19,6 +19,7 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.catalog.rpc";
 
 import "floecat/common/common.proto";
+import "floecat/catalog/column_identity.proto";
 import "floecat/query/schema.proto";
 import "google/protobuf/timestamp.proto";
 import "floecat/catalog/partition.proto";
@@ -40,6 +41,10 @@ message Snapshot {
   int32 schema_id = 11;
   optional string metadata_location = 12;
   SnapshotReuseManifestRef reuse_manifest_ref = 13;
+  // Authoritative column identities for this source schema version. The fingerprint binds schema,
+  // capture, and reuse consumers to the exact same mapping.
+  ColumnIdentityMap column_identity_map = 14;
+  reserved 15;
 }
 
 // System-owned reference to the compact artifact-reuse manifest produced when this snapshot's
@@ -143,6 +148,11 @@ message SnapshotSpec {
   map<string,string> summary = 10;
   optional int32 schema_id = 11;
   optional string metadata_location = 12;
+  // 13 is intentionally unused: Snapshot.reuse_manifest_ref occupies it, and holding the two
+  // messages on the same numbering keeps the spec/snapshot field mapping readable.
+  reserved 13;
+  ColumnIdentityMap column_identity_map = 14;
+  reserved 15;
 }
 
 message CreateSnapshotRequest {
