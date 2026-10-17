@@ -69,6 +69,15 @@ final class SnapshotSelectionResolver implements SnapshotSelectionLookup {
   }
 
   @Override
+  public Optional<String> resolvedColumnIdentityFingerprint(ResourceId tableId) {
+    QueryContext ctx = liveContext();
+    return ctx == null
+        ? Optional.empty()
+        : ctx.findResolvedSnapshot(tableId, correlationId)
+            .map(TablePin::getColumnIdentityFingerprint);
+  }
+
+  @Override
   public Optional<ResolvedConstraintsRef> resolvedConstraintsRef(ResourceId tableId) {
     QueryContext ctx = liveContext();
     if (ctx == null) {

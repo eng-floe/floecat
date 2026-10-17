@@ -42,6 +42,12 @@ import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationViewMetadata;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.schema.identity.HistoryTier;
+import ai.floedb.floecat.schema.identity.IdentityMode;
+import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
+import ai.floedb.floecat.schema.identity.ResolvedSchema;
+import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.StatsTargetScopeCodec;
 import io.grpc.Status;
@@ -2000,6 +2006,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                     SnapshotReuseManifestRef.newBuilder()
                         .setUri("s3://bucket/reuse/snapshot-201.pb")
                         .build())
+                .setColumnIdentityMap(emptyIdentityMap(snapshotId))
                 .build());
       }
 
@@ -2062,7 +2069,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 Map.of(),
                 0,
                 null,
-                ColumnIdentityMap.getDefaultInstance()));
+                emptyIdentityMap(201L)));
       }
     }
 
@@ -2416,6 +2423,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 .setSnapshotId(snapshotId)
                 .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
                 .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
+                .setColumnIdentityMap(emptyIdentityMap(snapshotId))
                 .build());
       }
 
@@ -2488,7 +2496,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 Map.of(),
                 0,
                 null,
-                ColumnIdentityMap.getDefaultInstance()));
+                emptyIdentityMap(501L)));
       }
 
       @Override
@@ -2649,7 +2657,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 Map.of(),
                 0,
                 null,
-                ColumnIdentityMap.getDefaultInstance()));
+                emptyIdentityMap(201L)));
       }
     }
 
@@ -2730,6 +2738,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 .setSnapshotId(snapshotId)
                 .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
                 .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
+                .setColumnIdentityMap(emptyIdentityMap(snapshotId))
                 .build());
       }
 
@@ -2802,7 +2811,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 Map.of(),
                 0,
                 null,
-                ColumnIdentityMap.getDefaultInstance()));
+                emptyIdentityMap(201L)));
       }
 
       @Override
@@ -3520,7 +3529,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
   }
 
-  /** A snapshot bundle with no schema, stats or identity, for enumeration-only tests. */
+  /** A snapshot bundle with no schema or stats and an empty identity map. */
   private static FloecatConnector.SnapshotBundle emptyBundle(long snapshotId, long parentId) {
     return new FloecatConnector.SnapshotBundle(
         snapshotId,
@@ -3533,6 +3542,19 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         Map.of(),
         0,
         null,
-        ColumnIdentityMap.getDefaultInstance());
+        emptyIdentityMap(snapshotId));
+  }
+
+  private static ColumnIdentityMap emptyIdentityMap(long sourceVersion) {
+    return ColumnIdentityMaps.toProto(
+        SchemaIdentityReconciler.reconcile(
+                ResolvedSchema.of(List.of()),
+                sourceVersion,
+                IdentityMode.STRUCTURED_PATH,
+                Optional.empty(),
+                0L,
+                PreferredCanonicalIds.NONE,
+                HistoryTier.VERSIONED_LOG)
+            .state());
   }
 }

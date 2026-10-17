@@ -22,10 +22,10 @@ import ai.floedb.floecat.catalog.delta.DeltaLogStorageProbe;
 import ai.floedb.floecat.client.unity.TemporaryTableCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogException;
+import ai.floedb.floecat.client.unity.UnityCatalogSchemaJson;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -826,83 +826,13 @@ final class UnityCatalogAccessClient implements CatalogClient {
 
   private String schemaJson(CatalogObjectName name, UnityCatalogTable table) {
     requireColumns(name, table, "table");
-    var fields = JSON.createArrayNode();
-    for (UnityCatalogTable.Column column : table.columns()) {
-      // The field Unity sent, kept whole where it parses, rather than three keys copied out of it.
-      // Its "metadata" carries delta.columnMapping.id and delta.columnMapping.physicalName on a
-      // column-mapped table -- the ordinary shape for a managed Unity table -- and those are read
-      // downstream: DeltaSchemaMapper takes the id as the field id, and
-      // DeltaSchemaNormalizer.defaultNameMappingJson builds the logical-to-physical Parquet name
-      // mapping from the physical name. Rebuilding the field dropped both, so a renamed or
-      // column-mapped column resolved against the wrong Parquet column or not at all.
-      ObjectNode parsed = fieldFromJson(column.typeJson());
-      var field = JSON.createObjectNode();
-      // Name and nullability come from the column record, not from type_json: those are what the
-      // listing and the detail read agree on, and a type_json that disagrees is not the authority
-      // on them. Written in a fixed order so the emitted schema does not depend on how the
-      // workspace happened to order its keys.
-      field.put("name", column.name());
-      if (parsed == null) {
-        String declared = column.typeText() != null ? column.typeText() : column.typeName();
-        if (declared == null || declared.isBlank()) {
-          // Refused rather than published as an empty type, which is the same policy viewSchemaJson
-          // applies to a type it cannot represent: a schema that parses and lies is worse than one
-          // that is missing, because the failure then surfaces in DeltaSchemaMapper or at scan time
-          // with nothing pointing back at the upstream column. Defensive -- Unity rejects a column
-          // with no type_json on create -- but this is the one place that would let such a column
-          // through.
-          throw new CatalogAccessException(
-              CatalogAccessException.Code.UNSUPPORTED,
-              "Unity Catalog column states no type: column="
-                  + column.name()
-                  + " table="
-                  + fullName(name));
-        }
-        field.put("type", declared);
-      } else {
-        field.set("type", parsed.get("type"));
-      }
-      field.put("nullable", column.nullable());
-      if (parsed != null) {
-        parsed
-            .properties()
-            .forEach(
-                entry -> {
-                  if (!field.has(entry.getKey())) {
-                    field.set(entry.getKey(), entry.getValue());
-                  }
-                });
-      }
-      fields.add(field);
-    }
-    var schema = JSON.createObjectNode();
-    schema.put("type", "struct");
-    schema.set("fields", fields);
-    return schema.toString();
-  }
-
-  /**
-   * Unity's {@code type_json} as an object, when it is one that carries a type.
-   *
-   * <p>Returned whole so anything beside the type -- {@code metadata} above all -- survives into
-   * the schema this provider publishes. A copy, so mutating it cannot reach the parsed tree.
-   */
-  private static ObjectNode fieldFromJson(String value) {
-    if (value == null || value.isBlank()) {
-      return null;
-    }
     try {
-      JsonNode parsed = JSON.readTree(value);
-      if (!parsed.isObject()) {
-        return null;
-      }
-      JsonNode type = parsed.get("type");
-      if (type == null || type.isNull()) {
-        return null;
-      }
-      return ((ObjectNode) parsed).deepCopy();
-    } catch (Exception notParseable) {
-      return null;
+      return UnityCatalogSchemaJson.fromColumns(table.columns());
+    } catch (IllegalArgumentException failure) {
+      throw new CatalogAccessException(
+          CatalogAccessException.Code.UNSUPPORTED,
+          failure.getMessage() + " table=" + fullName(name),
+          failure);
     }
   }
 

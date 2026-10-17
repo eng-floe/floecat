@@ -41,6 +41,7 @@ import ai.floedb.floecat.query.rpc.TargetStatsBundleEnd;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleHeader;
 import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
@@ -743,13 +744,24 @@ public class PlannerStatsBundleService {
           if (lookupResult.stats().isPresent()) {
             PlannerStatsResultMaterializer.Materialized materialized =
                 PlannerStatsResultMaterializer.materialize(need, lookupResult);
-            StatsResultStatus status = materialized.status();
-            counter =
-                switch (status) {
-                  case STATS_RESULT_HIT_PARTIAL -> TargetResultCounter.PARTIAL;
-                  default -> TargetResultCounter.RETURNED;
-                };
-            result = PlannerStatsResultMaterializer.buildFoundResult(materialized);
+            if (!identityCompatible(work, materialized.record())) {
+              result =
+                  notFoundResult(
+                      tableId,
+                      target,
+                      TARGET_MISSING_CODE,
+                      "captured statistics use a different column identity mapping",
+                      snapshot);
+              counter = TargetResultCounter.NOT_FOUND;
+            } else {
+              StatsResultStatus status = materialized.status();
+              counter =
+                  switch (status) {
+                    case STATS_RESULT_HIT_PARTIAL -> TargetResultCounter.PARTIAL;
+                    default -> TargetResultCounter.RETURNED;
+                  };
+              result = PlannerStatsResultMaterializer.buildFoundResult(materialized);
+            }
           } else {
             if (lookupResult.outcome() == StatsSyncOutcome.FAILED) {
               result =
@@ -953,6 +965,12 @@ public class PlannerStatsBundleService {
       return pinned.isEmpty()
           ? result
           : result.toBuilder().setPinnedSnapshotId(pinned.getAsLong()).build();
+    }
+
+    /** Rejects stats captured against a different authoritative column identity map. */
+    private boolean identityCompatible(TableWork work, TargetStatsRecord record) {
+      Optional<String> expected = selectionLookup.resolvedColumnIdentityFingerprint(work.tableId);
+      return ColumnIdentityMaps.matchesFingerprint(expected, record.getColumnIdentityFingerprint());
     }
 
     private static TargetStatsResult omittedByBudgetResult(ResourceId tableId, StatsTarget target) {

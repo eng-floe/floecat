@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.catalog.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
@@ -38,6 +39,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotService;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotResponse;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -45,6 +47,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
+import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
@@ -94,6 +97,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   @Inject StatsStore statsStore;
   @Inject ObjectCache objects;
   @Inject TableRootWriter rootWriter;
+  @Inject LogicalSchemaMapper schemaMapper;
 
   private static final Logger LOG = Logger.getLogger(SnapshotService.class);
 
@@ -400,8 +404,9 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   if (spec.hasMetadataLocation() && !spec.getMetadataLocation().isBlank()) {
                     snapBuilder.setMetadataLocation(spec.getMetadataLocation());
                   }
-                  applyColumnIdentity(spec, snapBuilder, corr);
+                  applyColumnIdentity(spec, snapBuilder);
                   var snap = snapBuilder.build();
+                  validateColumnIdentitySnapshot(snap, corr, true);
 
                   if (idempotencyKey == null) {
                     var existing = snapshotRepo.getById(tableId, snap.getSnapshotId());
@@ -639,6 +644,10 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                           "snapshot_id", Long.toString(snapshotId))));
 
                   var desired = applySnapshotSpecPatch(existing, spec, mask, corr);
+                  validateColumnIdentitySnapshot(
+                      desired,
+                      corr,
+                      maskTargets(mask, "schema_json") || maskTargets(mask, "column_identity_map"));
 
                   if (desired.equals(existing)) {
                     var noopMeta = snapshotRepo.metaFor(tableId, snapshotId);
@@ -787,7 +796,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           }
           builder.setMetadataLocation(spec.getMetadataLocation());
         }
-        case "column_identity_map" -> applyColumnIdentity(spec, builder, corr);
+        case "column_identity_map" -> applyColumnIdentity(spec, builder);
         default ->
             throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_PATH_INVALID, Map.of("path", path));
       }
@@ -851,18 +860,45 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     return c.bytes();
   }
 
-  private static void applyColumnIdentity(
-      SnapshotSpec spec, Snapshot.Builder builder, String correlationId) {
+  private static void applyColumnIdentity(SnapshotSpec spec, Snapshot.Builder builder) {
     if (!spec.hasColumnIdentityMap()) {
       return;
     }
+    builder.setColumnIdentityMap(spec.getColumnIdentityMap());
+  }
+
+  private void validateColumnIdentitySnapshot(
+      Snapshot snapshot, String correlationId, boolean requireCanonicalMap) {
     try {
-      ColumnIdentityMaps.restoreForSnapshot(spec.getColumnIdentityMap(), spec.getSnapshotId());
+      Table table =
+          tableRepo
+              .getById(snapshot.getTableId())
+              .orElseThrow(() -> new IllegalArgumentException("Column identity table is missing"));
+      boolean canonicalDelta =
+          table.getUpstream().getFormat() == TableFormat.TF_DELTA
+              && table.getUpstream().getColumnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP;
+      if (!snapshot.hasColumnIdentityMap()) {
+        if (canonicalDelta && requireCanonicalMap) {
+          throw new IllegalArgumentException(
+              "Canonical Delta snapshots require a column identity map");
+        }
+        return;
+      }
+      if (!canonicalDelta) {
+        throw new IllegalArgumentException("Column identity maps require a canonical Delta table");
+      }
+      ColumnIdentityMaps.restoreForSnapshot(
+          snapshot.getColumnIdentityMap(), snapshot.getSnapshotId());
+      schemaMapper.mapRaw(
+          ColumnIdAlgorithm.CID_CANONICAL_MAP,
+          TableFormat.TF_DELTA,
+          snapshot.getSchemaJson(),
+          Set.copyOf(table.getUpstream().getPartitionKeysList()),
+          snapshot.getColumnIdentityMap());
     } catch (IllegalArgumentException invalid) {
       throw GrpcErrors.invalidArgument(
           correlationId, SNAPSHOT_COLUMN_IDENTITY_INVALID, Map.of("reason", invalid.getMessage()));
     }
-    builder.setColumnIdentityMap(spec.getColumnIdentityMap());
   }
 
   private static void canonicalResourceId(Canonicalizer c, String key, ResourceId id) {
@@ -934,7 +970,11 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           request.hasSnapshot() ? request.getSnapshot() : null);
 
                   return GetSnapshotSchemaResponse.newBuilder()
-                      .setSchema(objects.mappedSchema(resolved.table(), resolved.schemaJson()))
+                      .setSchema(
+                          objects.mappedSchema(
+                              resolved.table(),
+                              resolved.schemaJson(),
+                              resolved.columnIdentityMap()))
                       .build();
                 }),
             correlationId())

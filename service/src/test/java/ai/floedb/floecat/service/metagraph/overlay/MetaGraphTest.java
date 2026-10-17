@@ -210,6 +210,68 @@ class MetaGraphTest {
   }
 
   @Test
+  void canonicalTableWithoutCurrentSnapshotHasNoQueryableSchema() {
+    UserTableNode base = TestNodes.tableNode(usrTable, "{}");
+    UserTableNode canonical =
+        new UserTableNode(
+            base.id(),
+            base.blobUri(),
+            base.catalogId(),
+            base.namespaceId(),
+            base.displayName(),
+            base.format(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
+            base.schemaJson(),
+            base.properties(),
+            base.partitionKeys(),
+            base.currentSnapshot(),
+            base.previousSnapshot(),
+            base.resolvedSnapshots(),
+            base.dependentViews(),
+            base.engineHints(),
+            base.columnHints());
+    when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
+    when(user.resolve(usrTable)).thenReturn(Optional.of(canonical));
+    when(user.schemaFor(eq("table-schema"), eq(usrTable), any(), eq(""), eq("")))
+        .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException());
+
+    assertThat(meta.tableSchema(usrTable, context)).isEmpty();
+  }
+
+  @Test
+  void canonicalCurrentSnapshotWithoutIdentityMapHasNoQueryableSchema() {
+    UserTableNode base = TestNodes.tableNode(usrTable, "{}");
+    UserTableNode canonical =
+        new UserTableNode(
+            base.id(),
+            base.blobUri(),
+            base.catalogId(),
+            base.namespaceId(),
+            base.displayName(),
+            base.format(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
+            base.schemaJson(),
+            base.properties(),
+            base.partitionKeys(),
+            base.currentSnapshot(),
+            base.previousSnapshot(),
+            base.resolvedSnapshots(),
+            base.dependentViews(),
+            base.engineHints(),
+            base.columnHints());
+    when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
+    when(user.resolve(usrTable)).thenReturn(Optional.of(canonical));
+    when(user.schemaFor(eq("table-schema"), eq(usrTable), any(), eq(""), eq("")))
+        .thenReturn(
+            new UserGraph.SchemaResolution(
+                canonical,
+                canonical.schemaJson(),
+                ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance()));
+
+    assertThat(meta.tableSchema(usrTable, context)).isEmpty();
+  }
+
+  @Test
   void resolvedSnapshotFor_system_returnsNull() {
     TablePin pin = meta.resolvedSnapshotFor("c", sysTable, null, Optional.empty(), context);
 

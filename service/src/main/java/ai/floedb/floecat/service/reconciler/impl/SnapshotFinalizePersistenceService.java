@@ -33,6 +33,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 @ApplicationScoped
@@ -188,7 +190,16 @@ public class SnapshotFinalizePersistenceService {
 
   public long persistEmptySnapshotCompletionMarker(
       ResourceId tableId, long snapshotId, boolean fullRescan) {
-    TargetStatsRecord zeroMarker =
+    return persistEmptySnapshotCompletionMarker(tableId, snapshotId, fullRescan, Optional.empty());
+  }
+
+  public long persistEmptySnapshotCompletionMarker(
+      ResourceId tableId,
+      long snapshotId,
+      boolean fullRescan,
+      Optional<String> columnIdentityFingerprint) {
+    Objects.requireNonNull(columnIdentityFingerprint, "columnIdentityFingerprint");
+    TargetStatsRecord.Builder zeroMarkerBuilder =
         TargetStatsRecords.tableRecord(
             tableId,
             snapshotId,
@@ -197,7 +208,10 @@ public class SnapshotFinalizePersistenceService {
                 .setDataFileCount(0L)
                 .setTotalSizeBytes(0L)
                 .build(),
-            null);
+            null)
+            .toBuilder();
+    columnIdentityFingerprint.ifPresent(zeroMarkerBuilder::setColumnIdentityFingerprint);
+    TargetStatsRecord zeroMarker = zeroMarkerBuilder.build();
     if (fullRescan) {
       statsStore.replaceAllStatsForSnapshot(
           tableId, snapshotId, List.of(TargetStatsRecords.canonicalize(zeroMarker)), false);

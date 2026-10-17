@@ -126,4 +126,11 @@ public final class DeltaCanonicalIdentity {
       SchemaIdentityState state,
       java.util.Map<String, Long> canonicalIdsByStatsKey,
       java.util.Map<String, Integer> ordinalsByStatsKey) {}
+  public static java.util.Map<ColumnPath, Long> canonicalIdsByPath(ColumnIdentityMap identityMap) {
+    SchemaIdentityState state = ColumnIdentityMaps.restore(identityMap);
+    java.util.Map<ColumnPath, Long> result = new java.util.LinkedHashMap<>();
+    state.entries().forEach(entry -> result.put(entry.path(), entry.canonicalId()));
+    return java.util.Map.copyOf(result);
+  }
+
 }

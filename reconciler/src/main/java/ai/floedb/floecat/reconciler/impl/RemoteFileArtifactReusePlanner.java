@@ -53,16 +53,18 @@ final class RemoteFileArtifactReusePlanner {
     }
     ReconcileCapturePolicy effectivePolicy =
         capturePolicy == null ? ReconcileCapturePolicy.empty() : capturePolicy;
+    String artifactReuseSchema =
+        ColumnIdentityExecutionSchema.artifactReuseSchema(executionSchemaJson);
     String statsSignature = FileArtifactReuse.statsCaptureSignature(effectivePolicy);
     String indexSignature =
-        FileArtifactReuse.indexCaptureSignature(effectivePolicy, executionSchemaJson);
+        FileArtifactReuse.indexCaptureSignature(effectivePolicy, artifactReuseSchema);
     boolean requestsStats =
         !FileGroupExecutionSupport.requestedFileGroupStatsTargetKinds(effectivePolicy).isEmpty();
     boolean requestsIndexes = effectivePolicy.requestsIndexes();
     List<ReconcileFileExecutionPlan> enriched = new ArrayList<>();
     for (ReconcileFileExecutionPlan plan :
         plans == null ? List.<ReconcileFileExecutionPlan>of() : plans) {
-      String sourceFingerprint = FileArtifactReuse.sourceFingerprint(plan, executionSchemaJson);
+      String sourceFingerprint = FileArtifactReuse.sourceFingerprint(plan, artifactReuseSchema);
       String indexSourceFingerprint = FileArtifactReuse.indexSourceFingerprint(plan);
       Map<String, String> auxiliaryFingerprints =
           FileArtifactReuse.auxiliaryStatsFingerprints(plan);

@@ -30,6 +30,9 @@ interface SnapshotSelectionLookup {
     return Optional.empty();
   }
 
+  /** The authoritative column-identity fingerprint frozen on the resolved selection. */
+  Optional<String> resolvedColumnIdentityFingerprint(ResourceId tableId);
+
   /** Whether the resolved selection represents the live CURRENT snapshot. */
   default boolean selectsCurrent(ResourceId tableId) {
     return false;

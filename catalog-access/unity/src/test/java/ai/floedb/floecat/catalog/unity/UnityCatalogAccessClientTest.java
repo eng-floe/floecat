@@ -1026,7 +1026,7 @@ class UnityCatalogAccessClientTest {
         new com.fasterxml.jackson.databind.ObjectMapper()
             .readTree(client.loadTable(ORDERS).schemaJson());
 
-    assertThat(mapped.get("fields").get(0).get("type").asText()).isEqualTo("LONG");
+    assertThat(mapped.get("fields").get(0).get("type").asText()).isEqualTo("long");
   }
 
   private static UnityCatalogTable.Column partitioned(String name, int partitionIndex) {

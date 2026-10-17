@@ -42,7 +42,11 @@ class ViewOutputColumnsTest {
 
   private SchemaDescriptor iceberg(String schemaJson) {
     return mapper.mapRaw(
-        ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_ICEBERG, schemaJson, Set.of());
+        ColumnIdAlgorithm.CID_PATH_ORDINAL,
+        TableFormat.TF_ICEBERG,
+        schemaJson,
+        Set.of(),
+        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
   }
 
   private static LogicalType type(SchemaColumn c) {
@@ -137,7 +141,8 @@ class ViewOutputColumnsTest {
               {"name":"tags","type":"ARRAY<STRING>"}
             ]}
             """,
-            Set.of());
+            Set.of(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
 
     List<SchemaColumn> out = QueuedReconcileWorkerSupport.topLevelOutputColumns(schema);
 

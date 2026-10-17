@@ -416,7 +416,10 @@ public final class UserObjectBundleTestSupport {
       if (!(node instanceof UserTableNode table)) {
         throw unsupported();
       }
-      return new SchemaResolution(table, table.schemaJson());
+      return new SchemaResolution(
+          table,
+          table.schemaJson(),
+          ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
     }
 
     @Override

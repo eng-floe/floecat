@@ -164,6 +164,21 @@ class ColumnIdentityMapsTest {
     assertThat(ColumnIdentityMaps.withHistoryTier(changed, HistoryTier.NONE)).isSameAs(changed);
   }
 
+  @Test
+  void comparesAbsentAndPresentFingerprintsWithoutSentinels() {
+    assertThat(ColumnIdentityMaps.matchesFingerprint(Optional.empty(), "")).isTrue();
+    assertThat(ColumnIdentityMaps.matchesFingerprint(Optional.empty(), "sha256:unexpected"))
+        .isFalse();
+    assertThat(
+            ColumnIdentityMaps.matchesFingerprint(
+                Optional.of("sha256:expected"), "sha256:expected"))
+        .isTrue();
+    assertThat(
+            ColumnIdentityMaps.matchesFingerprint(
+                Optional.of("sha256:expected"), "sha256:different"))
+        .isFalse();
+  }
+
   private static SchemaIdentityState state(long version) {
     SchemaNode node =
         new SchemaNode(
