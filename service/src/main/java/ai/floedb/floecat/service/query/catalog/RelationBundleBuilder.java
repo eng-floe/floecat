@@ -348,7 +348,8 @@ final class RelationBundleBuilder {
       // a loader for one key to recursively update another key in the same cache; the schema is a
       // separate immutable object entry, so composing both cache loads inside the relation loader
       // would intermittently fail with ConcurrentHashMap's "Recursive update" exception.
-      SchemaDescriptor schema = logicalSchemaForRelation(correlationId, userTable, pin);
+      SchemaDescriptor schema =
+          logicalSchemaForRelation(correlationId, userTable, pin, catalogContext);
       return objects.tableRelation(
           userTable,
           pin,
@@ -477,10 +478,17 @@ final class RelationBundleBuilder {
   }
 
   private SchemaDescriptor logicalSchemaForRelation(
-      String correlationId, UserTableNode userTable, Optional<TablePin> pin) {
+      String correlationId,
+      UserTableNode userTable,
+      Optional<TablePin> pin,
+      CatalogContext catalogContext) {
     if (pin.isEmpty()) {
-      // Not yet pinned (e.g. a relation resolved outside the pinned set): fall back to the table's
-      // default schema.
+      if (userTable.columnIdAlgorithm()
+          == ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP) {
+        return SchemaDescriptor.newBuilder()
+            .addAllColumns(graphView.tableSchema(userTable.id(), catalogContext))
+            .build();
+      }
       return objects.mappedSchema(userTable, userTable.schemaJson());
     }
     // The stream's producer-thread pre-pass validated this pin before the relation entered worker

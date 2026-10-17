@@ -37,6 +37,7 @@ import io.delta.kernel.types.FieldMetadata;
 import io.delta.kernel.types.StringType;
 import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
+import io.delta.kernel.types.VariantType;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +48,71 @@ import org.junit.jupiter.api.Test;
 class DeltaCanonicalIdentityTest {
   // Cross-language golden vector for canonical field 100 followed by ARRAY_ELEMENT (kind 2).
   private static final long DERIVED_TAG_ELEMENT = 6298796673527613865L;
+  // Cross-language golden vector for canonical field 9 followed by ARRAY_ELEMENT (kind 2).
+  private static final long DERIVED_ITEMS_ELEMENT = 8097164269834450107L;
+
+  @Test
+  void mappedVariantsRemainLeafNodesWithAuthoritativeIdsAtEveryNestingShape() {
+    StructType schema =
+        new StructType()
+            .add(mappedField("payload", VariantType.VARIANT, 2L, "col-payload"))
+            .add(
+                mappedField(
+                    "nested",
+                    new StructType()
+                        .add(mappedField("payload", VariantType.VARIANT, 4L, "col-nested-payload")),
+                    3L,
+                    "col-nested"))
+            .add(mappedField("items", new ArrayType(VariantType.VARIANT, true), 5L, "col-items"));
+    Snapshot snapshot =
+        new TestSnapshot(
+            9L,
+            schema,
+            Map.of(
+                ColumnMappingMode.PROPERTY,
+                "name",
+                DeltaColumnMapping.MAX_COLUMN_ID,
+                "5",
+                DeltaColumnMapping.ICEBERG_COMPAT_V2_ENABLED,
+                "false"),
+            new Protocol(3, 7, Set.of("columnMapping"), Set.of("columnMapping")));
+
+    DeltaCanonicalIdentity.Reconciled reconciled =
+        DeltaCanonicalIdentity.reset(snapshot, 9L, ColumnIdentityMap.getDefaultInstance());
+    ColumnIdentityMap identity = reconciled.identityMap();
+
+    assertThat(identity.getHighWaterMark()).isEqualTo(9L);
+    assertThat(columnId(identity, ColumnPath.ROOT.field("payload"))).isEqualTo(6L);
+    assertThat(columnId(identity, ColumnPath.ROOT.field("nested"))).isEqualTo(7L);
+    assertThat(columnId(identity, ColumnPath.ROOT.field("nested").field("payload"))).isEqualTo(8L);
+    assertThat(columnId(identity, ColumnPath.ROOT.field("items"))).isEqualTo(9L);
+    assertThat(columnId(identity, ColumnPath.ROOT.field("items").arrayElement()))
+        .isEqualTo(DERIVED_ITEMS_ELEMENT);
+    assertThat(
+            reconciled
+                .resolvedSchema()
+                .schema()
+                .byPath(ColumnPath.ROOT.field("payload"))
+                .orElseThrow()
+                .leaf())
+        .isTrue();
+    assertThat(
+            reconciled
+                .resolvedSchema()
+                .schema()
+                .byPath(ColumnPath.ROOT.field("nested").field("payload"))
+                .orElseThrow()
+                .leaf())
+        .isTrue();
+    assertThat(
+            reconciled
+                .resolvedSchema()
+                .schema()
+                .byPath(ColumnPath.ROOT.field("items").arrayElement())
+                .orElseThrow()
+                .leaf())
+        .isTrue();
+  }
 
   @Test
   void mappedCollectionsUseNativeAndDerivedIdentityWithoutIcebergCompatV2() {
@@ -234,6 +300,18 @@ class DeltaCanonicalIdentityTest {
         icebergCompatV2 ? Set.of("columnMapping", "icebergCompatV2") : Set.of("columnMapping");
     Protocol protocol = new Protocol(3, 7, Set.of("columnMapping"), writerFeatures);
     return new TestSnapshot(version, schema, properties, protocol);
+  }
+
+  private static StructField mappedField(
+      String name, io.delta.kernel.types.DataType type, long id, String physicalName) {
+    return new StructField(
+        name,
+        type,
+        true,
+        FieldMetadata.builder()
+            .putLong(DeltaSchemaResolver.COLUMN_ID, id)
+            .putString(DeltaSchemaResolver.PHYSICAL_NAME, physicalName)
+            .build());
   }
 
   private record TestSnapshot(

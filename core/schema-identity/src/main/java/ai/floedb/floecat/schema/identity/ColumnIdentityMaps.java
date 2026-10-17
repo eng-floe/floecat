@@ -96,6 +96,10 @@ public final class ColumnIdentityMaps {
             .fingerprint());
   }
 
+  /**
+   * Compares wire fingerprints without using an empty string as an in-memory absence sentinel. When
+   * identity is not applicable, only a record with no fingerprint is compatible.
+   */
   public static boolean matchesFingerprint(Optional<String> expected, String actual) {
     Objects.requireNonNull(expected, "expected");
     return expected

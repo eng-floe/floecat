@@ -252,6 +252,26 @@ class StatsProviderFactoryTest {
   }
 
   @Test
+  void tableStatsRejectMismatchedColumnIdentityFingerprint() {
+    CountingStatsRepository repository = new CountingStatsRepository();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    long snapshotId = 10L;
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+                TABLE, snapshotId, TableValueStats.newBuilder().setRowCount(5).build(), null)
+            .toBuilder()
+            .setColumnIdentityFingerprint("stale-fingerprint")
+            .build());
+
+    QueryContext ctx =
+        queryContextWithPin("query-table-fingerprint", snapshotId, "pinned-fingerprint");
+    store.seed(ctx);
+
+    assertTrue(factory(repository, store).forQuery(ctx, "corr").tableStats(TABLE).isEmpty());
+  }
+
+  @Test
   void totalSizeBytesIsReportedEvenWhenZero() {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
@@ -316,6 +336,32 @@ class StatsProviderFactoryTest {
 
     var missingProvider = factory.forQuery(queryContextWithoutPin(), "corr");
     assertTrue(missingProvider.columnStats(TABLE, columnId).isEmpty());
+  }
+
+  @Test
+  void columnStatsRejectMismatchedColumnIdentityFingerprint() {
+    CountingStatsRepository repository = new CountingStatsRepository();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    long snapshotId = 22L;
+    long columnId = 1L;
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+                TABLE,
+                snapshotId,
+                columnId,
+                ScalarStats.newBuilder().setDisplayName("col").setRowCount(77).build(),
+                null)
+            .toBuilder()
+            .setColumnIdentityFingerprint("stale-fingerprint")
+            .build());
+
+    QueryContext ctx =
+        queryContextWithPin("query-column-fingerprint", snapshotId, "pinned-fingerprint");
+    store.seed(ctx);
+
+    assertTrue(
+        factory(repository, store).forQuery(ctx, "corr").columnStats(TABLE, columnId).isEmpty());
   }
 
   @Test
@@ -788,11 +834,22 @@ class StatsProviderFactoryTest {
   }
 
   private static QueryContext queryContextWithPin(String queryId, long snapshotId) {
-    return queryContextWithPin(queryId, snapshotId, PinKind.PIN_KIND_CURRENT);
+    return queryContextWithPin(queryId, snapshotId, PinKind.PIN_KIND_CURRENT, "");
   }
 
   private static QueryContext queryContextWithPin(
       String queryId, long snapshotId, PinKind pinKind) {
+    return queryContextWithPin(queryId, snapshotId, pinKind, "");
+  }
+
+  private static QueryContext queryContextWithPin(
+      String queryId, long snapshotId, String columnIdentityFingerprint) {
+    return queryContextWithPin(
+        queryId, snapshotId, PinKind.PIN_KIND_CURRENT, columnIdentityFingerprint);
+  }
+
+  private static QueryContext queryContextWithPin(
+      String queryId, long snapshotId, PinKind pinKind, String columnIdentityFingerprint) {
     PrincipalContext principal =
         PrincipalContext.newBuilder()
             .setAccountId(TABLE.getAccountId())
@@ -806,6 +863,7 @@ class StatsProviderFactoryTest {
             SnapshotTestSupport.relationPins(
                     SnapshotTestSupport.blobBackedPin(TABLE, snapshotId).toBuilder()
                         .setPinKind(pinKind)
+                        .setColumnIdentityFingerprint(columnIdentityFingerprint)
                         .build())
                 .toByteArray())
         .createdAtMs(1)

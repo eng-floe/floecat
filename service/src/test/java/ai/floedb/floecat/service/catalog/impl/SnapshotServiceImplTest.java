@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
@@ -27,7 +28,9 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -56,6 +59,86 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class SnapshotServiceImplTest {
+
+  @Test
+  void createSnapshotRejectsCanonicalDeltaSnapshotWithoutIdentityMap() {
+    var tableId = tableId("canonical-mapless");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.tableNode(tableId, "{}"));
+    when(svc.tableRepo.getById(tableId))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(tableId)
+                    .setUpstream(
+                        UpstreamRef.newBuilder()
+                            .setFormat(TableFormat.TF_DELTA)
+                            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_CANONICAL_MAP))
+                    .build()));
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.createSnapshot(
+                        CreateSnapshotRequest.newBuilder()
+                            .setSpec(
+                                SnapshotSpec.newBuilder()
+                                    .setTableId(tableId)
+                                    .setSnapshotId(123L)
+                                    .setSchemaJson("{}"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, failure.getStatus().getCode());
+    verify(svc.snapshotRepo, never()).create(any(Snapshot.class));
+  }
+
+  @Test
+  void updateSnapshotAllowsNonIdentityPatchOnLegacyMaplessCanonicalSnapshot() {
+    var tableId = tableId("legacy-mapless");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.tableNode(tableId, "{}"));
+    when(svc.tableRepo.getById(tableId))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(tableId)
+                    .setUpstream(
+                        UpstreamRef.newBuilder()
+                            .setFormat(TableFormat.TF_DELTA)
+                            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_CANONICAL_MAP))
+                    .build()));
+    Snapshot existing =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(123L)
+            .setSchemaJson("{}")
+            .putSummary("state", "old")
+            .build();
+    when(svc.snapshotRepo.metaFor(tableId, 123L))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(4L).build());
+    when(svc.snapshotRepo.getById(tableId, 123L)).thenReturn(Optional.of(existing));
+    when(svc.snapshotRepo.update(any(Snapshot.class), eq(4L))).thenReturn(true);
+    when(svc.snapshotRepo.metaForSafe(tableId, 123L))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(5L).build());
+
+    svc.updateSnapshot(
+            UpdateSnapshotRequest.newBuilder()
+                .setSpec(
+                    SnapshotSpec.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshotId(123L)
+                        .putSummary("state", "new"))
+                .setUpdateMask(FieldMask.newBuilder().addPaths("summary"))
+                .build())
+        .await()
+        .indefinitely();
+
+    ArgumentCaptor<Snapshot> updated = ArgumentCaptor.forClass(Snapshot.class);
+    verify(svc.snapshotRepo).update(updated.capture(), eq(4L));
+    assertFalse(updated.getValue().hasColumnIdentityMap());
+    assertEquals("new", updated.getValue().getSummaryOrThrow("state"));
+  }
 
   @Test
   void latestFinalizedSnapshotUsesTheRootPublishedReuseBasis() {
@@ -822,6 +905,8 @@ class SnapshotServiceImplTest {
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     when(svc.graphView.resolve(eq(tableId), any())).thenReturn(Optional.of(node));
+    when(svc.tableRepo.getById(tableId))
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
 
     var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 

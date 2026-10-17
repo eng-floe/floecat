@@ -44,6 +44,7 @@ import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -200,6 +201,9 @@ class CatalogOverlayReconcilerTest {
     assertEquals(integration.getResourceId(), table.getUpstream().getCatalogIntegrationId());
     assertEquals(overlay.getResourceId(), table.getUpstream().getCatalogOverlayId());
     assertFalse(table.getUpstream().hasConnectorId());
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
+        table.getUpstream().getColumnIdAlgorithm());
     assertEquals(SCHEMA_JSON, table.getSchemaJson());
     assertTrue(
         views
@@ -516,6 +520,72 @@ class CatalogOverlayReconcilerTest {
       }
     }
     if (interrupted) Thread.currentThread().interrupt();
+  }
+
+  @Test
+  void promotesLegacyDeltaIdentityAndTracksSourceFormatChanges() {
+    NamespacePath sales = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(
+        new CatalogObjectName(sales, "orders"),
+        new CatalogTable(
+            new CatalogObjectName(sales, "orders"),
+            ExternalObjectIdentity.stable("delta-table-uuid"),
+            "DELTA",
+            SCHEMA_JSON,
+            List.of(),
+            Optional.of("s3://warehouse/orders/_delta_log"),
+            Optional.of("s3://warehouse/orders"),
+            Map.of()));
+
+    reconciler.reconcile(
+        overlay,
+        overlays.metaForSafe(overlay.getResourceId()),
+        integration,
+        integrations.metaForSafe(integration.getResourceId()));
+
+    var salesNamespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table table =
+        tables
+            .getByName("acct", "catalog", salesNamespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
+        table.getUpstream().getColumnIdAlgorithm());
+
+    MutationMeta tableMeta = tables.metaFor(table.getResourceId());
+    Table legacy =
+        table.toBuilder()
+            .setUpstream(
+                table.getUpstream().toBuilder()
+                    .setColumnIdAlgorithm(
+                        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL))
+            .build();
+    assertTrue(tables.update(legacy, tableMeta.getPointerVersion()));
+
+    var result = reconcile();
+    Table afterOverlay = tables.getById(table.getResourceId()).orElseThrow();
+    assertEquals(1, result.tablesUpdated());
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
+        afterOverlay.getUpstream().getColumnIdAlgorithm());
+
+    client.tables.put(
+        new CatalogObjectName(sales, "orders"),
+        new CatalogTable(
+            new CatalogObjectName(sales, "orders"),
+            ExternalObjectIdentity.stable("delta-table-uuid"),
+            "ICEBERG",
+            SCHEMA_JSON,
+            List.of(),
+            Optional.of("s3://warehouse/orders/metadata/v2.metadata.json"),
+            Optional.of("s3://warehouse/orders"),
+            Map.of()));
+    assertEquals(1, reconcile().tablesUpdated());
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
+        tables.getById(table.getResourceId()).orElseThrow().getUpstream().getColumnIdAlgorithm());
   }
 
   @Test

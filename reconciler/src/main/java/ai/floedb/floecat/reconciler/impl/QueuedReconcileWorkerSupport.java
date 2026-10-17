@@ -29,7 +29,6 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
-import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -47,6 +46,7 @@ import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
@@ -1016,7 +1016,8 @@ class QueuedReconcileWorkerSupport {
       java.util.function.Consumer<SnapshotEmission> emissionConsumer) {
     ensureNotCancelled(cancelRequested);
     FloecatConnector.TableDescriptor upstream =
-        connector.describe(table.sourceNamespace(), table.sourceTable());
+        withFormatCanonicalIdentity(
+            connector, connector.describe(table.sourceNamespace(), table.sourceTable()));
     String destTableDisplay =
         table.destinationTableDisplayName() == null || table.destinationTableDisplayName().isBlank()
             ? upstream.tableName()
@@ -1093,10 +1094,11 @@ class QueuedReconcileWorkerSupport {
     // snapshots are known precisely so it re-ingests all of them, but the canonical ID counter must
     // still advance from whatever was last persisted: restarting it at zero would reissue IDs that
     // already name different columns in stats and artifacts written before the rescan.
+    boolean canonicalDelta =
+        connector.format() == ConnectorFormat.CF_DELTA
+            && upstream.columnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP;
     ReconcilerBackend.SnapshotIdentityHistory identityHistory =
-        connector instanceof CanonicalIdentityConnector
-            ? backend.snapshotIdentityHistory(ctx, tableId)
-            : null;
+        canonicalDelta ? backend.snapshotIdentityHistory(ctx, tableId) : null;
     Set<Long> existingSnapshotIds =
         identityHistory == null
             ? backend.existingSnapshotIds(ctx, tableId)
@@ -1136,6 +1138,7 @@ class QueuedReconcileWorkerSupport {
                     scope,
                     tableId,
                     tableScopedConnector,
+                    canonicalDelta,
                     table.sourceNamespace(),
                     table.sourceTable(),
                     enumerationSelection,
@@ -1162,6 +1165,7 @@ class QueuedReconcileWorkerSupport {
                   scope,
                   tableId,
                   connector,
+                  canonicalDelta,
                   table.sourceNamespace(),
                   table.sourceTable(),
                   enumerationSelection,
@@ -1317,13 +1321,14 @@ class QueuedReconcileWorkerSupport {
   private boolean ensureSnapshot(
       ReconcileContext ctx,
       ResourceId tableId,
-      FloecatConnector connector,
+      boolean canonicalDelta,
       FloecatConnector.SnapshotBundle snapshotBundle,
       Snapshot existing) {
     if (snapshotBundle == null || snapshotBundle.snapshotId() < 0) {
       return false;
     }
-    Optional<Snapshot> snapshot = buildSnapshot(ctx, tableId, connector, snapshotBundle, existing);
+    Optional<Snapshot> snapshot =
+        buildSnapshot(ctx, tableId, canonicalDelta, snapshotBundle, existing);
     snapshot.ifPresent(candidate -> backend.ingestSnapshot(ctx, tableId, candidate));
     return snapshot.isPresent();
   }
@@ -1332,6 +1337,7 @@ class QueuedReconcileWorkerSupport {
       ReconcileContext ctx,
       ResourceId tableId,
       FloecatConnector connector,
+      boolean canonicalDelta,
       List<FloecatConnector.SnapshotBundle> bundles,
       Set<Long> knownSnapshotIds,
       boolean includeCoreMetadata,
@@ -1373,7 +1379,7 @@ class QueuedReconcileWorkerSupport {
             statsProcessedBase,
             "Processing snapshot " + snapshotId + " for " + sourceNs + "." + sourceTable);
         boolean snapshotChanged =
-            ensureSnapshot(ctx, tableId, connector, snapshotBundle, existingSnapshot);
+            ensureSnapshot(ctx, tableId, canonicalDelta, snapshotBundle, existingSnapshot);
         boolean constraintsChanged =
             maybeIngestSnapshotConstraints(
                 ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
@@ -1391,6 +1397,7 @@ class QueuedReconcileWorkerSupport {
       ReconcileScope scope,
       ResourceId tableId,
       FloecatConnector connector,
+      boolean canonicalDelta,
       String sourceNs,
       String sourceTable,
       ReconcileSnapshotSelection enumerationSelection,
@@ -1416,7 +1423,7 @@ class QueuedReconcileWorkerSupport {
             enumerationKnownSnapshotIds,
             targetSnapshotIds);
     FloecatConnector.SnapshotEnumerationOptions enumerationOptions = baseEnumerationOptions;
-    if (connector instanceof CanonicalIdentityConnector) {
+    if (canonicalDelta) {
       enumerationOptions =
           new FloecatConnector.SnapshotEnumerationOptions(
               baseEnumerationOptions.fullRescan(),
@@ -1455,6 +1462,7 @@ class QueuedReconcileWorkerSupport {
                     ctx,
                     tableId,
                     connector,
+                    canonicalDelta,
                     List.of(bundle),
                     knownSnapshotIds,
                     includeCoreMetadata,
@@ -1570,6 +1578,27 @@ class QueuedReconcileWorkerSupport {
         upstream.properties());
   }
 
+  static FloecatConnector.TableDescriptor withFormatCanonicalIdentity(
+      FloecatConnector connector, FloecatConnector.TableDescriptor upstream) {
+    ColumnIdAlgorithm algorithm =
+        switch (connector.format()) {
+          case CF_ICEBERG -> ColumnIdAlgorithm.CID_FIELD_ID;
+          case CF_DELTA -> ColumnIdAlgorithm.CID_CANONICAL_MAP;
+          default -> upstream.columnIdAlgorithm();
+        };
+    if (algorithm == upstream.columnIdAlgorithm()) {
+      return upstream;
+    }
+    return new FloecatConnector.TableDescriptor(
+        upstream.namespaceFq(),
+        upstream.tableName(),
+        upstream.storageLocation(),
+        upstream.schemaJson(),
+        upstream.partitionKeys(),
+        algorithm,
+        upstream.properties());
+  }
+
   private static Result tableSuccessResult(TableExecutionOutcome outcome) {
     return new Result(
         outcome.tablesScanned(),
@@ -1662,7 +1691,7 @@ class QueuedReconcileWorkerSupport {
   Optional<Snapshot> buildSnapshot(
       ReconcileContext ctx,
       ResourceId tableId,
-      FloecatConnector connector,
+      boolean canonicalDelta,
       FloecatConnector.SnapshotBundle bundle,
       Snapshot existing) {
     long parentSnapshotId = bundle.parentId();
@@ -1686,16 +1715,18 @@ class QueuedReconcileWorkerSupport {
             .setTableId(tableId)
             .setSnapshotId(bundle.snapshotId())
             .setUpstreamCreatedAt(upstreamTimestamp);
-    if (connector instanceof CanonicalIdentityConnector
-        && bundle.columnIdentityMap() != null
-        && !bundle
-            .columnIdentityMap()
-            .equals(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance())) {
+    if (canonicalDelta) {
+      if (bundle.columnIdentityMap() == null
+          || bundle
+              .columnIdentityMap()
+              .equals(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance())) {
+        throw new IllegalArgumentException(
+            "Canonical Delta table produced snapshot "
+                + bundle.snapshotId()
+                + " without a column identity map");
+      }
+      ColumnIdentityMaps.restoreForSnapshot(bundle.columnIdentityMap(), bundle.snapshotId());
       builder.setColumnIdentityMap(bundle.columnIdentityMap());
-    } else if (connector instanceof CanonicalIdentityConnector
-        && existing != null
-        && existing.hasColumnIdentityMap()) {
-      builder.setColumnIdentityMap(existing.getColumnIdentityMap());
     }
     if (hasParentSnapshotId) {
       builder.setParentSnapshotId(parentSnapshotId);

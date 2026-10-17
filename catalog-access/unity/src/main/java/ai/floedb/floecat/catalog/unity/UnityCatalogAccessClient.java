@@ -23,6 +23,7 @@ import ai.floedb.floecat.client.unity.TemporaryTableCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogException;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
+import ai.floedb.floecat.client.unity.UnityCatalogTypeText;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -858,7 +859,17 @@ final class UnityCatalogAccessClient implements CatalogClient {
                   + " table="
                   + fullName(name));
         }
-        field.put("type", declared);
+        try {
+          field.set("type", UnityCatalogTypeText.toDeltaType(declared));
+        } catch (IllegalArgumentException failure) {
+          throw new CatalogAccessException(
+              CatalogAccessException.Code.UNSUPPORTED,
+              "Unity Catalog column type is not representable: column="
+                  + column.name()
+                  + " table="
+                  + fullName(name),
+              failure);
+        }
       } else {
         field.set("type", parsed.get("type"));
       }

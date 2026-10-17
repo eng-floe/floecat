@@ -26,6 +26,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -45,6 +46,24 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class ObjectCacheTest {
+
+  @Test
+  void canonicalSchemaWithoutIdentityMapIsEmpty() {
+    ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
+    UserTableNode table =
+        table(
+            "account",
+            "table",
+            TableFormat.TF_DELTA,
+            ColumnIdAlgorithm.CID_CANONICAL_MAP,
+            List.of());
+
+    assertThat(
+            cache
+                .mappedSchema(table, "{}", ColumnIdentityMap.getDefaultInstance())
+                .getColumnsList())
+        .isEmpty();
+  }
 
   @Test
   void mappedSchemaIdentityIncludesEveryMappingInput() {
@@ -121,6 +140,29 @@ class ObjectCacheTest {
         "correlation", pin(table.id(), "definition-b", "constraints", "schema"), graphView);
 
     assertThat(loads).hasValue(2);
+  }
+
+  @Test
+  void resolvedCanonicalSnapshotWithoutIdentityMapHasNoQueryableSchema() {
+    ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
+    UserTableNode table =
+        table(
+            "account",
+            "table",
+            TableFormat.TF_DELTA,
+            ColumnIdAlgorithm.CID_CANONICAL_MAP,
+            List.of());
+    CatalogGraphView graphView = mock(CatalogGraphView.class);
+    when(graphView.schemaFor(anyString(), eq(table.id()), any(), anyString(), anyString()))
+        .thenReturn(
+            new CatalogGraphView.SchemaResolution(
+                table, "{}", ColumnIdentityMap.getDefaultInstance()));
+
+    SchemaDescriptor schema =
+        cache.resolvedSnapshotSchema(
+            "correlation", pin(table.id(), "definition", "constraints", "schema"), graphView);
+
+    assertThat(schema).isEqualTo(SchemaDescriptor.getDefaultInstance());
   }
 
   @Test
