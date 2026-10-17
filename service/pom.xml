@@ -145,6 +145,21 @@
     </dependency>
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-core-engine-utils</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-delta-identity</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-catalog-access-delta-common</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-metadata-admission-runtime</artifactId>
       <version>${project.version}</version>
     </dependency>

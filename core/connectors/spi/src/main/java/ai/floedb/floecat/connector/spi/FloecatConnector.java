@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.util.LogSafeText;
 import java.io.Closeable;
 import java.time.Instant;
 import java.util.ArrayList;

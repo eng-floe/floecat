@@ -18,10 +18,42 @@ package ai.floedb.floecat.delta.identity;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 /** Lazy, bounded access to persisted identity state for one table. */
 public interface PersistedIdentityLookup {
+  /** Lookup for overlay passes that have only the table-level current identity state. */
+  static PersistedIdentityLookup forTableMap(Optional<ColumnIdentityMap> tableMap) {
+    Optional<ColumnIdentityMap> retained = Objects.requireNonNull(tableMap, "tableMap");
+    return new PersistedIdentityLookup() {
+      @Override
+      public Optional<ColumnIdentityMap> exact(long version) {
+        return Optional.empty();
+      }
+
+      @Override
+      public Optional<Map.Entry<Long, ColumnIdentityMap>> floor(long version) {
+        return Optional.empty();
+      }
+
+      @Override
+      public Optional<Map.Entry<Long, ColumnIdentityMap>> ceiling(long version) {
+        return Optional.empty();
+      }
+
+      @Override
+      public Optional<ColumnIdentityMap> tableMap() {
+        return retained;
+      }
+
+      @Override
+      public long highWaterMark() {
+        return retained.map(ColumnIdentityMap::getHighWaterMark).orElse(0L);
+      }
+    };
+  }
+
   Optional<ColumnIdentityMap> exact(long version);
 
   Optional<Map.Entry<Long, ColumnIdentityMap>> floor(long version);

@@ -74,6 +74,64 @@ public final class KernelAdapter {
     }
   }
 
+  /** Builds the protocol-bearing snapshot used when a catalog exposes only the current schema. */
+  public static Snapshot currentSchemaSnapshot(
+      String tablePath,
+      long version,
+      String schemaJson,
+      Map<String, String> properties,
+      List<String> partitionColumns) {
+    ColumnMappingMode mappingMode = ColumnMappingMode.fromTableProperties(properties);
+    Set<String> writerFeatures = new LinkedHashSet<>();
+    Set<String> readerFeatures = new LinkedHashSet<>();
+    if (mappingMode.isEnabled()) {
+      readerFeatures.add("columnMapping");
+      writerFeatures.add("columnMapping");
+    }
+    if (Boolean.parseBoolean(
+        properties.getOrDefault(DeltaColumnMapping.ICEBERG_COMPAT_V2_ENABLED, "false"))) {
+      writerFeatures.add("icebergCompatV2");
+    }
+    int minReaderVersion = writerFeatures.isEmpty() ? 1 : 3;
+    int minWriterVersion = writerFeatures.isEmpty() ? 2 : 7;
+    return currentSchemaSnapshot(
+        tablePath,
+        version,
+        schemaJson,
+        properties,
+        partitionColumns,
+        minReaderVersion,
+        minWriterVersion,
+        readerFeatures,
+        writerFeatures);
+  }
+
+  /** Builds a snapshot from a catalog schema and an explicitly supplied Delta protocol. */
+  public static Snapshot currentSchemaSnapshot(
+      String tablePath,
+      long version,
+      String schemaJson,
+      Map<String, String> properties,
+      List<String> partitionColumns,
+      int minReaderVersion,
+      int minWriterVersion,
+      Set<String> readerFeatures,
+      Set<String> writerFeatures) {
+    Protocol protocol =
+        new Protocol(
+            minReaderVersion,
+            minWriterVersion,
+            Set.copyOf(readerFeatures),
+            Set.copyOf(writerFeatures));
+    return new CurrentSchemaSnapshot(
+        tablePath,
+        version,
+        deserializeSchema(schemaJson),
+        Map.copyOf(properties),
+        List.copyOf(partitionColumns),
+        protocol);
+  }
+
   static List<Long> metadataVersions(
       Engine engine, String tablePath, long firstVersion, long lastVersion) throws Exception {
     List<FileStatus> commitFiles =
@@ -254,6 +312,81 @@ public final class KernelAdapter {
   /** Test seam for protocol-bearing snapshots that are not Kernel implementations. */
   public interface ProtocolSnapshot {
     Protocol protocol();
+  }
+
+  private record CurrentSchemaSnapshot(
+      String path,
+      long version,
+      StructType schema,
+      Map<String, String> properties,
+      List<String> partitionColumns,
+      Protocol protocol)
+      implements Snapshot, ProtocolSnapshot {
+    @Override
+    public String getPath() {
+      return path;
+    }
+
+    @Override
+    public long getVersion() {
+      return version;
+    }
+
+    @Override
+    public List<String> getPartitionColumnNames() {
+      return partitionColumns;
+    }
+
+    @Override
+    public long getTimestamp(Engine engine) {
+      return version;
+    }
+
+    @Override
+    public StructType getSchema() {
+      return schema;
+    }
+
+    @Override
+    public Optional<String> getDomainMetadata(String domain) {
+      return Optional.empty();
+    }
+
+    @Override
+    public Map<String, String> getTableProperties() {
+      return properties;
+    }
+
+    @Override
+    public io.delta.kernel.statistics.SnapshotStatistics getStatistics() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public io.delta.kernel.ScanBuilder getScanBuilder() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public io.delta.kernel.transaction.UpdateTableTransactionBuilder buildUpdateTableTransaction(
+        String engineInfo, io.delta.kernel.Operation operation) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Snapshot publish(Engine engine) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void writeChecksum(Engine engine, ChecksumWriteMode checksumWriteMode) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void writeCheckpoint(Engine engine) {
+      throw new UnsupportedOperationException();
+    }
   }
 
   private record CommitMetadataSnapshot(

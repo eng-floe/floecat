@@ -58,6 +58,11 @@
     </dependency>
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-core-engine-utils</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-storage-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
@@ -69,6 +74,11 @@
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-delta-identity</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-catalog-access-delta-common</artifactId>
       <version>${project.version}</version>
     </dependency>
 

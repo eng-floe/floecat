@@ -233,7 +233,8 @@ class CatalogSurfaceWritePolicyTest {
         Optional.empty(),
         List.of(),
         Map.of(),
-        Map.<Long, Map<EngineHintKey, EngineHint>>of());
+        Map.<Long, Map<EngineHintKey, EngineHint>>of(),
+        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
   }
 
   private SystemTableNode systemTableNode(ResourceId id) {
