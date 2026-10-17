@@ -78,7 +78,8 @@ class DeltaCanonicalIdentityTest {
             new Protocol(3, 7, Set.of("columnMapping"), Set.of("columnMapping")));
 
     DeltaCanonicalIdentity.Reconciled reconciled =
-        DeltaCanonicalIdentity.reset(snapshot, 9L, ColumnIdentityMap.getDefaultInstance());
+        DeltaCanonicalIdentity.reset(
+            snapshot, 9L, ColumnIdentityMap.getDefaultInstance(), 0L, HistoryTier.VERSIONED_LOG);
     ColumnIdentityMap identity = reconciled.identityMap();
 
     assertThat(identity.getHighWaterMark()).isEqualTo(9L);

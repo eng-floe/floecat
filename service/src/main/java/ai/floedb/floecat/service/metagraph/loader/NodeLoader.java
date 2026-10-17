@@ -271,7 +271,10 @@ public class NodeLoader {
         Optional.empty(),
         List.of(),
         Map.of(),
-        Map.of());
+        Map.of(),
+        table.hasColumnIdentityMap()
+            ? table.getColumnIdentityMap()
+            : ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
   }
 
   private static final Logger LOG = Logger.getLogger(NodeLoader.class);

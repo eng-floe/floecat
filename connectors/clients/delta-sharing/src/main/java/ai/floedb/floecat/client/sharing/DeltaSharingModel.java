@@ -119,9 +119,14 @@ public final class DeltaSharingModel {
    * <p>{@code minReaderVersion} above 1 means the table uses features that require {@code
    * responseformat=delta}, and {@code readerFeatures} names them.
    */
-  public record Protocol(int minReaderVersion, List<String> readerFeatures) {
+  public record Protocol(
+      int minReaderVersion,
+      int minWriterVersion,
+      List<String> readerFeatures,
+      List<String> writerFeatures) {
     public Protocol {
       readerFeatures = readerFeatures == null ? List.of() : List.copyOf(readerFeatures);
+      writerFeatures = writerFeatures == null ? List.of() : List.copyOf(writerFeatures);
     }
   }
 
@@ -164,6 +169,26 @@ public final class DeltaSharingModel {
       Objects.requireNonNull(protocol, "protocol");
       Objects.requireNonNull(metadata, "metadata");
       version = version == null ? Optional.empty() : version;
+    }
+  }
+
+  /** A historical protocol action, versioned only when the Sharing endpoint guarantees it. */
+  public record HistoricalProtocol(Protocol protocol, Optional<Long> version) {
+    public HistoricalProtocol {
+      Objects.requireNonNull(protocol, "protocol");
+      version = version == null ? Optional.empty() : version;
+    }
+  }
+
+  /** Historical protocol and metadata actions returned by a Sharing history endpoint. */
+  public record TableHistory(
+      List<HistoricalProtocol> protocols,
+      List<TableMetadata> metadata,
+      Optional<Long> currentVersion) {
+    public TableHistory {
+      protocols = protocols == null ? List.of() : List.copyOf(protocols);
+      metadata = metadata == null ? List.of() : List.copyOf(metadata);
+      currentVersion = currentVersion == null ? Optional.empty() : currentVersion;
     }
   }
 

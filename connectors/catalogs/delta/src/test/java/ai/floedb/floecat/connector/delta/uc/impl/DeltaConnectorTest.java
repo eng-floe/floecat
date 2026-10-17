@@ -1340,7 +1340,10 @@ class DeltaConnectorTest {
             snapshot,
             snapshot.getVersion(),
             ColumnIdentityMap.getDefaultInstance(),
-            HistoryCoverage.COMPLETE_METADATA_HISTORY)
+            HistoryCoverage.COMPLETE_METADATA_HISTORY,
+            0L,
+            PreferredCanonicalIds.NONE,
+            HistoryTier.VERSIONED_LOG)
         .identityMap();
   }
 
@@ -1359,7 +1362,11 @@ class DeltaConnectorTest {
             .toList();
     return DeltaCanonicalIdentity.toProto(
         SchemaIdentityReconciler.reset(
-                ResolvedSchema.of(nodes), 7L, IdentityMode.NATIVE_FIELD_ID, 2L)
+                ResolvedSchema.of(nodes),
+                7L,
+                IdentityMode.NATIVE_FIELD_ID,
+                2L,
+                HistoryTier.VERSIONED_LOG)
             .state());
   }
 

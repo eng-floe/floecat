@@ -484,7 +484,8 @@ class ObjectCacheTest {
         Optional.empty(),
         List.of(),
         Map.of(),
-        Map.of());
+        Map.of(),
+        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
   }
 
   private static ResourceId tableId(String accountId, String id) {

@@ -19,6 +19,7 @@ import ai.floedb.floecat.client.sharing.DeltaSharingModel.Schema;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.Share;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.Table;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableDescription;
+import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableHistory;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TemporaryCredentials;
 import java.util.List;
 
@@ -51,6 +52,17 @@ public interface DeltaSharingClient extends AutoCloseable {
    * lines, which is the shape a proxy error page takes when it arrives with a success status.
    */
   TableDescription describeTable(String share, String schema, String table);
+
+  /** Protocol and metadata at one exact version, when the provider shares table history. */
+  TableDescription describeTableAtVersion(String share, String schema, String table, long version);
+
+  /** Ordered, versioned protocol and metadata actions from the table change-feed endpoint. */
+  TableHistory tableChanges(
+      String share, String schema, String table, long startingVersion, long endingVersion);
+
+  /** Historical actions from the query endpoint; action versions are optional on this surface. */
+  TableHistory queryHistory(
+      String share, String schema, String table, long startingVersion, long endingVersion);
 
   /**
    * Temporary credentials for reading a table location directly.

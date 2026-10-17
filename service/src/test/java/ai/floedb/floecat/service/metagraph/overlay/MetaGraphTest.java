@@ -229,13 +229,66 @@ class MetaGraphTest {
             base.resolvedSnapshots(),
             base.dependentViews(),
             base.engineHints(),
-            base.columnHints());
+            base.columnHints(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
     when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
     when(user.resolve(usrTable)).thenReturn(Optional.of(canonical));
     when(user.schemaFor(eq("table-schema"), eq(usrTable), any(), eq(""), eq("")))
         .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException());
 
     assertThat(meta.tableSchema(usrTable, context)).isEmpty();
+  }
+
+  @Test
+  void canonicalTableWithoutSnapshotUsesTableIdentityMap() {
+    String schemaJson =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":true,\"metadata\":{}}]}";
+    var history =
+        new ai.floedb.floecat.delta.identity.CurrentSchemaDeltaHistorySource(
+            "table",
+            "",
+            0L,
+            false,
+            schemaJson,
+            Map.of(),
+            List.of(),
+            ai.floedb.floecat.schema.identity.HistoryTier.NONE);
+    var identityMap =
+        new ai.floedb.floecat.delta.identity.DeltaIdentityService()
+            .reconcileCurrent(
+                history,
+                ai.floedb.floecat.delta.identity.PersistedIdentityLookup.forTableMap(
+                    Optional.empty()))
+            .maps()
+            .get(history.headVersion());
+    UserTableNode base = TestNodes.tableNode(usrTable, schemaJson);
+    UserTableNode canonical =
+        new UserTableNode(
+            base.id(),
+            base.blobUri(),
+            base.catalogId(),
+            base.namespaceId(),
+            base.displayName(),
+            ai.floedb.floecat.catalog.rpc.TableFormat.TF_DELTA,
+            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
+            schemaJson,
+            base.properties(),
+            base.partitionKeys(),
+            base.currentSnapshot(),
+            base.previousSnapshot(),
+            base.resolvedSnapshots(),
+            base.dependentViews(),
+            base.engineHints(),
+            base.columnHints(),
+            identityMap);
+    when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
+    when(user.resolve(usrTable)).thenReturn(Optional.of(canonical));
+    when(user.schemaFor(eq("table-schema"), eq(usrTable), any(), eq(""), eq("")))
+        .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException());
+
+    assertThat(meta.tableSchema(usrTable, context))
+        .singleElement()
+        .satisfies(column -> assertThat(column.getId()).isEqualTo(1L));
   }
 
   @Test
@@ -258,7 +311,8 @@ class MetaGraphTest {
             base.resolvedSnapshots(),
             base.dependentViews(),
             base.engineHints(),
-            base.columnHints());
+            base.columnHints(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
     when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
     when(user.resolve(usrTable)).thenReturn(Optional.of(canonical));
     when(user.schemaFor(eq("table-schema"), eq(usrTable), any(), eq(""), eq("")))

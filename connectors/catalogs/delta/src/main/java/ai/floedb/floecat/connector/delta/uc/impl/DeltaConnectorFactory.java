@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.aws.RefreshingAwsClient;
+import ai.floedb.floecat.catalog.delta.S3V2FileSystemClient;
 import ai.floedb.floecat.client.unity.HttpUnityCatalogClient;
 import ai.floedb.floecat.connector.common.auth.AwsGlueClientFactory;
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;

@@ -26,7 +26,9 @@ import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.delta.identity.DeltaCanonicalIdentity;
 import ai.floedb.floecat.schema.identity.ColumnPath;
 import ai.floedb.floecat.schema.identity.HistoryCoverage;
+import ai.floedb.floecat.schema.identity.HistoryTier;
 import ai.floedb.floecat.schema.identity.IdentityMode;
+import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
 import ai.floedb.floecat.schema.identity.ResolvedSchema;
 import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
 import ai.floedb.floecat.schema.identity.SchemaNode;
@@ -227,7 +229,10 @@ class DeltaConstraintMappingTest {
                 0L,
                 IdentityMode.STRUCTURED_PATH,
                 Optional.empty(),
-                HistoryCoverage.COMPLETE_METADATA_HISTORY)
+                HistoryCoverage.COMPLETE_METADATA_HISTORY,
+                0L,
+                PreferredCanonicalIds.NONE,
+                HistoryTier.VERSIONED_LOG)
             .state());
   }
 
@@ -242,7 +247,10 @@ class DeltaConstraintMappingTest {
                 0L,
                 IdentityMode.STRUCTURED_PATH,
                 Optional.empty(),
-                HistoryCoverage.COMPLETE_METADATA_HISTORY)
+                HistoryCoverage.COMPLETE_METADATA_HISTORY,
+                0L,
+                PreferredCanonicalIds.NONE,
+                HistoryTier.VERSIONED_LOG)
             .state());
   }
 
@@ -261,7 +269,11 @@ class DeltaConstraintMappingTest {
             .toList();
     return DeltaCanonicalIdentity.toProto(
         SchemaIdentityReconciler.reset(
-                ResolvedSchema.of(nodes), 1L, IdentityMode.NATIVE_FIELD_ID, 2L)
+                ResolvedSchema.of(nodes),
+                1L,
+                IdentityMode.NATIVE_FIELD_ID,
+                2L,
+                HistoryTier.VERSIONED_LOG)
             .state());
   }
 

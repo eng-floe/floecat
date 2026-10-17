@@ -20,9 +20,12 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.TABLE;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -52,6 +55,7 @@ public class CurrentSnapshotPointerService {
       boolean generationCommitted) {}
 
   @Inject SnapshotRepository snapshotRepo;
+  @Inject TableRepository tableRepo;
   @Inject TableRootWriter rootWriter;
   @Inject RootResyncQueue rootResyncQueue;
 
@@ -162,6 +166,7 @@ public class CurrentSnapshotPointerService {
     }
     long entryStartedNanos = System.nanoTime();
     rootWriter.commitSnapshotEntry(tableId, candidate.getSnapshotId());
+    synchronizeCurrentIdentityMap(tableId, candidate);
     long entryNanos = System.nanoTime() - entryStartedNanos;
     if (generationReconcile == GenerationReconcile.ALWAYS_AFTER_ENTRY
         || (generationReconcile == GenerationReconcile.WHEN_POINTER_MOVES
@@ -188,5 +193,39 @@ public class CurrentSnapshotPointerService {
           result, pointerNanos, entryNanos, System.nanoTime() - generationStartedNanos, true);
     }
     return new AdvanceTrace(result, pointerNanos, entryNanos, 0L, false);
+  }
+
+  private void synchronizeCurrentIdentityMap(ResourceId tableId, Snapshot candidate) {
+    if (!candidate.hasColumnIdentityMap()) {
+      return;
+    }
+    boolean candidateIsCurrent =
+        snapshotRepo
+            .getCommittedCurrentSnapshotPointer(tableId)
+            .filter(pointer -> pointer.getSnapshotId() == candidate.getSnapshotId())
+            .isPresent();
+    if (!candidateIsCurrent) {
+      return;
+    }
+    Table table =
+        tableRepo
+            .getById(tableId)
+            .orElseThrow(
+                () ->
+                    new BaseResourceRepository.AbortRetryableException(
+                        "table disappeared while publishing current column identity for "
+                            + tableId.getId()));
+    if (table.hasColumnIdentityMap()
+        && ColumnIdentityMaps.sameIdentityContent(
+            table.getColumnIdentityMap(), candidate.getColumnIdentityMap())) {
+      return;
+    }
+    long pointerVersion = tableRepo.metaFor(tableId).getPointerVersion();
+    if (!tableRepo.update(
+        table.toBuilder().setColumnIdentityMap(candidate.getColumnIdentityMap()).build(),
+        pointerVersion)) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "table changed while publishing current column identity for " + tableId.getId());
+    }
   }
 }

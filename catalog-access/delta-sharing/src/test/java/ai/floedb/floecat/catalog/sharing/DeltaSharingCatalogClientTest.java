@@ -31,19 +31,23 @@ import ai.floedb.floecat.client.sharing.DeltaSharingClient;
 import ai.floedb.floecat.client.sharing.DeltaSharingException;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.AccessMode;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.CredentialCloud;
+import ai.floedb.floecat.client.sharing.DeltaSharingModel.HistoricalProtocol;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.Protocol;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.Schema;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.Share;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.Table;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableDescription;
+import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableHistory;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableMetadata;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TemporaryCredentials;
+import ai.floedb.floecat.schema.identity.HistoryTier;
 import java.net.URI;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import org.junit.jupiter.api.Test;
 
 class DeltaSharingCatalogClientTest {
@@ -767,52 +771,122 @@ class DeltaSharingCatalogClientTest {
     }
   }
 
-  /**
-   * A url-only table is refused at the load, not left to fail at read time. Materializing it stores
-   * no storage location and leaves the share's own HTTPS endpoint as the upstream reference, which
-   * is the unreadable shape the location work exists to prevent -- so the two cases are refused the
-   * same way rather than one of each.
-   */
   @Test
-  void aUrlOnlyTableIsRefusedAtTheLoadWithoutBeingAsked() {
+  void aUrlOnlyTableLoadsWithoutAStorageLocationOrCredentialRequest() {
     FakeSharingClient fake = new FakeSharingClient();
     fake.accessModes = List.of(AccessMode.URL);
     try (DeltaSharingCatalogClient client = client(fake)) {
-      assertThatThrownBy(() -> client.loadTable(events()))
-          .isInstanceOfSatisfying(
-              CatalogAccessException.class,
-              failure -> {
-                assertThat(failure.code()).isEqualTo(CatalogAccessException.Code.UNSUPPORTED);
-                assertThat(failure.getMessage()).contains("url access only");
-              });
+      assertThat(client.loadTable(events()).storageLocation()).isEmpty();
     }
     assertThat(fake.credentialCalls).isZero();
   }
 
-  /**
-   * The load and the vend answer the same question the same way. The strict refusal sat below the
-   * early return on a stated location, so a table with no stated modes whose listing named a
-   * location loaded, and then the vend refused it on the rule the load had skipped: it reconciled
-   * and every read of it failed. Knowing where a table lives says nothing about whether it may be
-   * read that way.
-   */
   @Test
-  void strictModeRefusesAnUnstatedTableAtBothPathsEvenWhenTheListingNamesALocation() {
+  void urlOnlyIdentityUsesVersionedChangeFeedWhenAvailable() {
+    FakeSharingClient fake = new FakeSharingClient();
+    fake.accessModes = List.of(AccessMode.URL);
+    try (DeltaSharingCatalogClient client = client(fake)) {
+      CatalogTable table = client.loadTable(events());
+      var history = client.deltaIdentityHistory(table, OptionalLong.of(10L)).orElseThrow();
+
+      assertThat(history.historyTier()).isEqualTo(HistoryTier.VERSIONED_CHANGE_FEED);
+      assertThat(history.headVersion()).isEqualTo(12L);
+      assertThat(history.snapshot(10L)).isPresent();
+      assertThat(history.snapshot(12L)).isPresent();
+    }
+    assertThat(fake.changeFeedCalls).isEqualTo(1);
+    assertThat(fake.queryHistoryCalls).isZero();
+  }
+
+  @Test
+  void urlOnlyIdentityFallsBackToUnorderedQueryHistory() {
+    FakeSharingClient fake = new FakeSharingClient();
+    fake.accessModes = List.of(AccessMode.URL);
+    fake.changeFeedFailure = DeltaSharingException.Failure.INVALID_REQUEST;
+    try (DeltaSharingCatalogClient client = client(fake)) {
+      CatalogTable table = client.loadTable(events());
+      var history = client.deltaIdentityHistory(table, OptionalLong.of(10L)).orElseThrow();
+
+      assertThat(history.historyTier()).isEqualTo(HistoryTier.UNORDERED_QUERY_HISTORY);
+      assertThat(history.snapshot(12L)).isPresent();
+      assertThat(history.metadataVersions(11L, 12L).complete()).isTrue();
+    }
+    assertThat(fake.changeFeedCalls).isEqualTo(1);
+    assertThat(fake.queryHistoryCalls).isEqualTo(1);
+  }
+
+  @Test
+  void unorderedQueryHistoryRetainsMetadataAndProtocolEvidence() {
+    FakeSharingClient fake = new FakeSharingClient();
+    fake.accessModes = List.of(AccessMode.URL);
+    fake.changeFeedFailure = DeltaSharingException.Failure.INVALID_REQUEST;
+    fake.queryHistoryMetadata =
+        List.of(
+            new TableMetadata(
+                Optional.empty(),
+                Optional.empty(),
+                "parquet",
+                "{\"type\":\"struct\",\"fields\":[]}",
+                List.of(),
+                Map.of("delta.columnMapping.mode", "none"),
+                Optional.empty(),
+                Optional.empty(),
+                List.of(),
+                List.of(AccessMode.URL)));
+    fake.queryHistoryProtocols =
+        List.of(new HistoricalProtocol(new Protocol(1, 2, List.of(), List.of()), Optional.empty()));
+    try (DeltaSharingCatalogClient client = client(fake)) {
+      CatalogTable table = client.loadTable(events());
+      var history = client.deltaIdentityHistory(table, OptionalLong.of(10L)).orElseThrow();
+
+      assertThat(history.unorderedHistory().metadata()).hasSize(1);
+      assertThat(history.unorderedHistory().metadata().getFirst().configuration())
+          .containsEntry("delta.columnMapping.mode", "none");
+      assertThat(history.unorderedHistory().protocols()).hasSize(1);
+      assertThat(history.unorderedHistory().protocols().getFirst().supportsColumnMapping())
+          .isFalse();
+    }
+  }
+
+  @Test
+  void historyForbiddenAfterHeadAccessFallsBackToTheNextTier() {
+    FakeSharingClient fake = new FakeSharingClient();
+    fake.accessModes = List.of(AccessMode.URL);
+    fake.changeFeedFailure = DeltaSharingException.Failure.PERMISSION_DENIED;
+    fake.changeFeedStatus = 403;
+    try (DeltaSharingCatalogClient client = client(fake)) {
+      CatalogTable table = client.loadTable(events());
+      var history = client.deltaIdentityHistory(table, OptionalLong.of(10L)).orElseThrow();
+
+      assertThat(history.historyTier()).isEqualTo(HistoryTier.UNORDERED_QUERY_HISTORY);
+    }
+    assertThat(fake.changeFeedCalls).isEqualTo(1);
+    assertThat(fake.queryHistoryCalls).isEqualTo(1);
+  }
+
+  @Test
+  void urlOnlyIdentityReportsNoHistoryWhenNeitherEndpointIsShared() {
+    FakeSharingClient fake = new FakeSharingClient();
+    fake.accessModes = List.of(AccessMode.URL);
+    fake.changeFeedFailure = DeltaSharingException.Failure.NOT_FOUND;
+    fake.queryHistoryFailure = DeltaSharingException.Failure.NOT_FOUND;
+    try (DeltaSharingCatalogClient client = client(fake)) {
+      CatalogTable table = client.loadTable(events());
+      assertThat(client.deltaIdentityHistory(table, OptionalLong.empty())).isEmpty();
+    }
+    assertThat(fake.changeFeedCalls).isEqualTo(1);
+    assertThat(fake.queryHistoryCalls).isEqualTo(1);
+  }
+
+  @Test
+  void strictModeLoadsAnUnstatedTableAsUrlOnlyButStillRefusesCredentialVending() {
     FakeSharingClient fake = new FakeSharingClient();
     fake.accessModes = List.of();
     fake.listedLocation = Optional.of(LOCATION);
     fake.metadataLocation = Optional.empty();
     try (DeltaSharingCatalogClient client =
         new DeltaSharingCatalogClient(fake, Map.of(), true, new RecordingProbe())) {
-      assertThatThrownBy(() -> client.loadTable(events()))
-          .as("load")
-          .isInstanceOfSatisfying(
-              CatalogAccessException.class,
-              failure -> {
-                assertThat(failure.code()).isEqualTo(CatalogAccessException.Code.UNSUPPORTED);
-                assertThat(failure.getMessage())
-                    .contains(DeltaSharingCatalogClient.STRICT_ACCESS_MODES);
-              });
+      assertThat(client.loadTable(events()).storageLocation()).isEmpty();
       assertThatThrownBy(() -> client.vendStorageCredentials(events()))
           .as("vend")
           .isInstanceOfSatisfying(
@@ -1097,27 +1171,14 @@ class DeltaSharingCatalogClientTest {
     }
   }
 
-  /**
-   * The two surfaces disagreeing is refused, not resolved in the load's favour. statedModes prefers
-   * the listing and the vend reads the metaData action alone, so a server saying dir on one and url
-   * on the other reconciled here and was refused on every read for the life of the table. Whichever
-   * surface refuses, the load has to be no more permissive than the vend.
-   */
   @Test
-  void surfacesDisagreeingAboutAccessModesAreRefusedAtBothPaths() {
+  void aUrlModeOnEitherSurfaceLoadsWithoutStorageButStillCannotVendCredentials() {
     FakeSharingClient fake = new FakeSharingClient();
     fake.accessModes = List.of(AccessMode.DIR);
     fake.metadataAccessModes = List.of(AccessMode.URL);
     try (DeltaSharingCatalogClient client =
         new DeltaSharingCatalogClient(fake, Map.of(), false, new RecordingProbe())) {
-      assertThatThrownBy(() -> client.loadTable(events()))
-          .as("load")
-          .isInstanceOfSatisfying(
-              CatalogAccessException.class,
-              failure -> {
-                assertThat(failure.code()).isEqualTo(CatalogAccessException.Code.UNSUPPORTED);
-                assertThat(failure.getMessage()).contains("url access only");
-              });
+      assertThat(client.loadTable(events()).storageLocation()).isEmpty();
       assertThatThrownBy(() -> client.vendStorageCredentials(events()))
           .as("vend")
           .isInstanceOfSatisfying(
@@ -1172,27 +1233,15 @@ class DeltaSharingCatalogClientTest {
     assertThat(fake.credentialCalls).isPositive();
   }
 
-  /**
-   * Strict mode refuses without asking, which is the point of it. Asking for a location would be
-   * the round trip the knob turns off, and answering would reconcile a table whose every vend then
-   * fails -- a configuration choice turned into a runtime failure.
-   */
   @Test
-  void strictModeRefusesAnUnstatedTableAtTheLoadWithoutAsking() {
+  void strictModeLoadsAnUnstatedTableWithoutStorageOrAsking() {
     FakeSharingClient fake = new FakeSharingClient();
     fake.accessModes = List.of();
     fake.listedLocation = Optional.empty();
     fake.metadataLocation = Optional.empty();
     try (DeltaSharingCatalogClient client =
         new DeltaSharingCatalogClient(fake, Map.of(), true, new RecordingProbe())) {
-      assertThatThrownBy(() -> client.loadTable(events()))
-          .isInstanceOfSatisfying(
-              CatalogAccessException.class,
-              failure -> {
-                assertThat(failure.code()).isEqualTo(CatalogAccessException.Code.UNSUPPORTED);
-                assertThat(failure.getMessage())
-                    .contains(DeltaSharingCatalogClient.STRICT_ACCESS_MODES);
-              });
+      assertThat(client.loadTable(events()).storageLocation()).isEmpty();
     }
     assertThat(fake.credentialCalls).isZero();
   }
@@ -1476,6 +1525,14 @@ class DeltaSharingCatalogClientTest {
             Optional.of(Instant.parse("2026-01-01T00:00:00Z")));
     private int listSharesCalls;
     private int listTablesCalls;
+    private DeltaSharingException.Failure changeFeedFailure;
+    private DeltaSharingException.Failure queryHistoryFailure;
+    private int changeFeedStatus = 404;
+    private int queryHistoryStatus = 404;
+    private int changeFeedCalls;
+    private int queryHistoryCalls;
+    private List<HistoricalProtocol> queryHistoryProtocols = List.of();
+    private List<TableMetadata> queryHistoryMetadata = List.of();
     private boolean closed;
 
     @Override
@@ -1513,7 +1570,7 @@ class DeltaSharingCatalogClientTest {
     public TableDescription describeTable(String share, String schema, String table) {
       raiseIfConfigured();
       return new TableDescription(
-          new Protocol(1, List.of()),
+          new Protocol(1, 2, List.of(), List.of()),
           new TableMetadata(
               metadataId,
               Optional.of(table),
@@ -1526,6 +1583,50 @@ class DeltaSharingCatalogClientTest {
               auxiliaryLocations,
               metadataAccessModes == null ? accessModes : metadataAccessModes),
           Optional.of(12L));
+    }
+
+    @Override
+    public TableDescription describeTableAtVersion(
+        String share, String schema, String table, long version) {
+      TableDescription current = describeTable(share, schema, table);
+      TableMetadata metadata = current.metadata();
+      return new TableDescription(
+          current.protocol(),
+          new TableMetadata(
+              metadata.id(),
+              metadata.name(),
+              metadata.format(),
+              metadata.schemaJson(),
+              metadata.partitionColumns(),
+              metadata.configuration(),
+              Optional.of(version),
+              metadata.location(),
+              metadata.auxiliaryLocations(),
+              metadata.accessModes()),
+          Optional.of(version));
+    }
+
+    @Override
+    public ai.floedb.floecat.client.sharing.DeltaSharingModel.TableHistory tableChanges(
+        String share, String schema, String table, long startingVersion, long endingVersion) {
+      changeFeedCalls++;
+      if (changeFeedFailure != null) {
+        throw new DeltaSharingException(changeFeedFailure, changeFeedStatus, "history unavailable");
+      }
+      return new ai.floedb.floecat.client.sharing.DeltaSharingModel.TableHistory(
+          List.of(), List.of(), Optional.of(endingVersion));
+    }
+
+    @Override
+    public TableHistory queryHistory(
+        String share, String schema, String table, long startingVersion, long endingVersion) {
+      queryHistoryCalls++;
+      if (queryHistoryFailure != null) {
+        throw new DeltaSharingException(
+            queryHistoryFailure, queryHistoryStatus, "history unavailable");
+      }
+      return new TableHistory(
+          queryHistoryProtocols, queryHistoryMetadata, Optional.of(endingVersion));
     }
 
     @Override

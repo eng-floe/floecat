@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.StorageLocations;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import ai.floedb.floecat.catalog.delta.DeltaIdentityHistoryProvider;
 import ai.floedb.floecat.catalog.delta.DeltaLogStorageProbe;
 import ai.floedb.floecat.client.sharing.DeltaSharingClient;
 import ai.floedb.floecat.client.sharing.DeltaSharingException;
@@ -34,13 +35,16 @@ import ai.floedb.floecat.client.sharing.DeltaSharingModel.Schema;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.Share;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.Table;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableDescription;
+import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableHistory;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TemporaryCredentials;
+import ai.floedb.floecat.delta.identity.DeltaHistorySource;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 /**
  * A Delta Sharing recipient behind the catalog-access SPI.
@@ -49,12 +53,12 @@ import java.util.Optional;
  * without translation: an empty parent lists shares as one-segment paths and a one-segment parent
  * lists schemas as two.
  *
- * <p>Directory access only. A table advertising url alone is discoverable and describable, and
- * refused at the vend by name rather than returning nothing, because a caller that got an empty
- * answer would report a missing storage authority for a table whose provider simply does not
- * delegate storage.
+ * <p>Directory access supplies a storage location and credentials. A URL-only table is still
+ * discoverable and describable for overlays, but has no storage location and is refused at the
+ * credential vend by name rather than being mistaken for a missing storage authority.
  */
-public final class DeltaSharingCatalogClient implements CatalogClient {
+public final class DeltaSharingCatalogClient
+    implements CatalogClient, DeltaIdentityHistoryProvider {
 
   private static final CatalogCapabilities CAPABILITIES =
       CatalogCapabilities.of(
@@ -231,8 +235,103 @@ public final class DeltaSharingCatalogClient implements CatalogClient {
         Optional.empty(),
         // Present for directory access and absent otherwise, which is the protocol being explicit
         // that a url-only recipient is never told where the table lives.
-        Optional.of(requireStorageLocation(addressed, name, listed, described, modes)),
+        storageLocation(addressed, name, listed, described, modes),
         Map.copyOf(properties));
+  }
+
+  @Override
+  public Optional<DeltaHistorySource> deltaIdentityHistory(
+      CatalogTable table, OptionalLong predecessorVersion) {
+    Schema addressed = requireSchema(table.name().namespace());
+    long headVersion = sharedVersion(table);
+    long baseVersion = predecessorVersion.orElse(Math.max(0L, headVersion - 1L));
+    if (baseVersion > headVersion) {
+      baseVersion = headVersion;
+    }
+    if (headVersion - baseVersion > DeltaHistorySource.MAX_IDENTITY_HISTORY_COMMITS) {
+      // Fetch only enough state to reconcile the head. The history source will report the missing
+      // predecessor range as a gap, which starts a new generation without issuing an unbounded
+      // Sharing query over the whole retained table history.
+      baseVersion = Math.max(0L, headVersion - 1L);
+    }
+    String qualified = addressed.share() + "." + addressed.name() + "." + table.name().name();
+    try {
+      TableDescription base =
+          client.describeTableAtVersion(
+              addressed.share(), addressed.name(), table.name().name(), baseVersion);
+      if (base.version().isEmpty() || base.version().orElseThrow() != baseVersion) {
+        throw new DeltaSharingException(
+            DeltaSharingException.Failure.INVALID_RESPONSE,
+            200,
+            "Delta Sharing metadata for "
+                + qualified
+                + " did not confirm requested version "
+                + baseVersion);
+      }
+      TableDescription head =
+          baseVersion == headVersion
+              ? base
+              : client.describeTable(addressed.share(), addressed.name(), table.name().name());
+      TableHistory changes =
+          baseVersion == headVersion
+              ? new TableHistory(List.of(), List.of(), Optional.of(headVersion))
+              : client.tableChanges(
+                  addressed.share(),
+                  addressed.name(),
+                  table.name().name(),
+                  baseVersion + 1L,
+                  headVersion);
+      return Optional.of(
+          new DeltaSharingHistorySource(qualified, baseVersion, base, headVersion, head, changes));
+    } catch (DeltaSharingException unavailable) {
+      if (!historyEndpointUnavailable(unavailable)) {
+        throw new CatalogAccessException(
+            codeFor(unavailable.failure()),
+            messageFor("reading versioned history for " + qualified, unavailable),
+            unavailable);
+      }
+    }
+
+    long startVersion = predecessorVersion.orElse(headVersion);
+    try {
+      TableHistory queryHistory =
+          client.queryHistory(
+              addressed.share(), addressed.name(), table.name().name(), startVersion, headVersion);
+      TableDescription current =
+          client.describeTable(addressed.share(), addressed.name(), table.name().name());
+      return Optional.of(
+          new DeltaSharingQueryHistorySource(qualified, headVersion, current, queryHistory));
+    } catch (DeltaSharingException unavailable) {
+      if (!historyEndpointUnavailable(unavailable)) {
+        throw new CatalogAccessException(
+            codeFor(unavailable.failure()),
+            messageFor("reading query history for " + qualified, unavailable),
+            unavailable);
+      }
+      return Optional.empty();
+    }
+  }
+
+  private static boolean historyEndpointUnavailable(DeltaSharingException failure) {
+    return failure.failure() == DeltaSharingException.Failure.NOT_FOUND
+        || failure.failure() == DeltaSharingException.Failure.INVALID_REQUEST
+        || (failure.failure() == DeltaSharingException.Failure.PERMISSION_DENIED
+            && failure.statusCode() == 403);
+  }
+
+  private static long sharedVersion(CatalogTable table) {
+    String raw = table.properties().get("delta.sharing.version");
+    if (raw == null || raw.isBlank()) {
+      return 0L;
+    }
+    try {
+      return Long.parseLong(raw);
+    } catch (NumberFormatException invalid) {
+      throw new CatalogAccessException(
+          CatalogAccessException.Code.INTERNAL,
+          "Delta Sharing table " + table.name() + " reported an invalid version " + raw,
+          invalid);
+    }
   }
 
   @Override
@@ -656,6 +755,31 @@ public final class DeltaSharingCatalogClient implements CatalogClient {
           "Delta Sharing answered for " + qualified + " with credentials that do not reach it");
     }
     return requireServable(stated.orElse(vended), qualified);
+  }
+
+  private Optional<String> storageLocation(
+      Schema addressed,
+      CatalogObjectName name,
+      Table listed,
+      TableDescription described,
+      List<AccessMode> modes) {
+    boolean refusesDirectory =
+        refusesDir(listed.accessModes()) || refusesDir(described.metadata().accessModes());
+    if (refusesDirectory) {
+      boolean unrecognised =
+          onlyUnrecognised(listed.accessModes())
+              || onlyUnrecognised(described.metadata().accessModes());
+      if (unrecognised) {
+        return Optional.of(requireStorageLocation(addressed, name, listed, described, modes));
+      }
+      // URL mode deliberately discloses no object-store location. It is still a valid table for
+      // overlay metadata and canonical identity; reads and overlay capture use Sharing endpoints.
+      return Optional.empty();
+    }
+    if (modes.isEmpty() && strictAccessModes) {
+      return Optional.empty();
+    }
+    return Optional.of(requireStorageLocation(addressed, name, listed, described, modes));
   }
 
   /**
