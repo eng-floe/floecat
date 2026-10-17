@@ -1,0 +1,73 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package ai.floedb.floecat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.catalog.rpc";
+
+enum ColumnIdentityMode {
+  COLUMN_IDENTITY_MODE_UNSPECIFIED = 0;
+  COLUMN_IDENTITY_MODE_NATIVE_FIELD_ID = 1;
+  COLUMN_IDENTITY_MODE_STRUCTURED_PATH = 2;
+}
+
+enum ColumnIdentityHistoryTier {
+  COLUMN_IDENTITY_HISTORY_TIER_UNSPECIFIED = 0;
+  COLUMN_IDENTITY_HISTORY_TIER_VERSIONED_LOG = 1;
+  COLUMN_IDENTITY_HISTORY_TIER_VERSIONED_CHANGE_FEED = 2;
+  COLUMN_IDENTITY_HISTORY_TIER_UNORDERED_QUERY_HISTORY = 3;
+  COLUMN_IDENTITY_HISTORY_TIER_NONE = 4;
+}
+
+enum ColumnIdentityPathElementKind {
+  COLUMN_IDENTITY_PATH_ELEMENT_KIND_UNSPECIFIED = 0;
+  COLUMN_IDENTITY_PATH_ELEMENT_KIND_FIELD = 1;
+  COLUMN_IDENTITY_PATH_ELEMENT_KIND_ARRAY_ELEMENT = 2;
+  COLUMN_IDENTITY_PATH_ELEMENT_KIND_MAP_KEY = 3;
+  COLUMN_IDENTITY_PATH_ELEMENT_KIND_MAP_VALUE = 4;
+}
+
+message ColumnIdentityPathElement {
+  ColumnIdentityPathElementKind kind = 1;
+  // Set only for FIELD elements. Collection-interior elements never carry a name.
+  string name = 2;
+}
+
+message ColumnIdentityEntry {
+  repeated ColumnIdentityPathElement path = 1;
+  optional int32 native_field_id = 2;
+  int64 column_id = 3;
+}
+
+message ColumnIdentityMap {
+  uint32 format_version = 1;
+  int64 source_version = 2;
+  // Highest allocated canonical ID. Deterministic collection-derived IDs are excluded.
+  int64 high_water_mark = 3;
+  ColumnIdentityMode mode = 4;
+  repeated ColumnIdentityEntry entries = 5;
+  // Identity-only digest used to gate statistics reuse across snapshots.
+  string fingerprint = 6;
+  // Integrity digest over fingerprint plus source version and high-water state.
+  string state_checksum = 7;
+  ColumnIdentityHistoryTier history_tier = 8;
+  // Delta's maxColumnId at source_version. Present only for native-ID identity mode. This is
+  // source state, not the canonical allocation counter in high_water_mark.
+  optional int64 native_high_water_mark = 9;
+  // False when source_version is only a local sequencing token rather than a confirmed Delta log
+  // version. An unanchored map must not seed a later ordered history walk.
+  bool source_version_anchored = 10;
+}

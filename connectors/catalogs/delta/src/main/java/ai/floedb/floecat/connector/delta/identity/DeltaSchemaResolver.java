@@ -27,13 +27,11 @@ import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.Set;
 
 /**
  * Resolves a Delta schema into format-neutral source identity facts.
@@ -73,7 +71,6 @@ public final class DeltaSchemaResolver {
   private static final class Walk {
     private final ColumnMappingMode mode;
     private final List<SchemaNode> nodes = new ArrayList<>();
-    private final List<NestedIds> nestedIdHolders = new ArrayList<>();
     private final List<String> problems = new ArrayList<>();
 
     private Walk(ColumnMappingMode mode) {
@@ -208,17 +205,10 @@ public final class DeltaSchemaResolver {
                   ids.put(key, id.getAsInt());
                 }
               });
-      NestedIds holder = new NestedIds(path, ids);
-      nestedIdHolders.add(holder);
-      return holder;
+      return new NestedIds(ids);
     }
 
     private void verify() {
-      for (NestedIds holder : nestedIdHolders) {
-        for (String key : holder.unconsumed()) {
-          problems.add(describe(holder.owner) + " has an unused nested ID for '" + key + "'");
-        }
-      }
       if (!problems.isEmpty()) {
         throw new IllegalArgumentException("Invalid Delta schema: " + String.join("; ", problems));
       }
@@ -243,17 +233,14 @@ public final class DeltaSchemaResolver {
   }
 
   private static final class NestedIds {
-    private final ColumnPath owner;
     private final Map<String, Integer> ids;
-    private final Set<String> consumed = new LinkedHashSet<>();
 
-    private NestedIds(ColumnPath owner, Map<String, Integer> ids) {
-      this.owner = owner;
+    private NestedIds(Map<String, Integer> ids) {
       this.ids = Map.copyOf(ids);
     }
 
     private static NestedIds empty() {
-      return new NestedIds(ColumnPath.ROOT, Map.of());
+      return new NestedIds(Map.of());
     }
 
     private OptionalInt take(String key) {
@@ -261,14 +248,7 @@ public final class DeltaSchemaResolver {
       if (id == null) {
         return OptionalInt.empty();
       }
-      consumed.add(key);
       return OptionalInt.of(id);
-    }
-
-    private Set<String> unconsumed() {
-      Set<String> result = new LinkedHashSet<>(ids.keySet());
-      result.removeAll(consumed);
-      return result;
     }
   }
 

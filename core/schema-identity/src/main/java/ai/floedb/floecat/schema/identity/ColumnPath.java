@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.schema.identity;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -29,7 +30,8 @@ import java.util.Objects;
  *
  * <p>{@link #display()} is for diagnostics. {@link #legacyDottedKey()} is for the string-based
  * connector contract, where callers must guard against collisions with {@link LegacyDottedKeyIndex}
- * rather than assuming the rendered key identifies one column.
+ * rather than assuming the rendered key identifies one column. {@link #stableKey()} is the
+ * canonical, unambiguous encoding used wherever a stable serialized identity is required.
  */
 public record ColumnPath(List<Element> elements) {
 
@@ -101,6 +103,28 @@ public record ColumnPath(List<Element> elements) {
    */
   public String legacyDottedKey() {
     return renderDottedPath();
+  }
+
+  /**
+   * Serializes this path to a stable, unambiguous identity key.
+   *
+   * <p>Each element includes its stable kind code and the UTF-8 byte length of its name, so field
+   * names cannot collide with separators or collection-interior syntax. The byte length makes this
+   * contract independent of a language's in-memory string representation. This encoding is part of
+   * the persisted fingerprint contract and must remain stable.
+   */
+  public String stableKey() {
+    StringBuilder result = new StringBuilder();
+    for (Element element : elements) {
+      result.append(element.kind().stableCode()).append(':');
+      String name = element.name() == null ? "" : element.name();
+      result
+          .append(name.getBytes(StandardCharsets.UTF_8).length)
+          .append(':')
+          .append(name)
+          .append(';');
+    }
+    return result.toString();
   }
 
   private String renderDottedPath() {
