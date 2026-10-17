@@ -121,6 +121,9 @@ message SnapshotManifestEntry {
 
   reserved 9, 10;
   reserved "superseded_stats_generation_refs", "superseded_constraints_refs";
+
+  /** Fingerprint of the snapshot's authoritative column identity map. */
+  string column_identity_fingerprint = 11;
 }
 
 /**
