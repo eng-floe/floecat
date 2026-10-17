@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
@@ -419,6 +420,31 @@ class SchemaIdentityReconcilerTest {
   }
 
   @Test
+  void independentHighWaterFloorPreventsAllocationAndStampRegression() {
+    var first = reconcile(4, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1));
+
+    var reconciled =
+        SchemaIdentityReconciler.reconcile(
+            ResolvedSchema.of(List.of(field("a", 1), field("b", 2))),
+            5L,
+            IdentityMode.STRUCTURED_PATH,
+            Optional.of(first.state()),
+            HistoryCoverage.COMPLETE_METADATA_HISTORY,
+            99L,
+            PreferredCanonicalIds.NONE,
+            HistoryTier.VERSIONED_LOG);
+    SchemaIdentityState stamped =
+        SchemaIdentityReconciler.stampSourceVersion(
+            reconciled.state(), 6L, HistoryCoverage.COMPLETE_METADATA_HISTORY, 200L);
+
+    assertThat(reconciled.idsByPath().get(ColumnPath.ROOT.field("a"))).isEqualTo(1L);
+    assertThat(reconciled.idsByPath().get(ColumnPath.ROOT.field("b"))).isEqualTo(100L);
+    assertThat(reconciled.state().highWaterMark()).isEqualTo(100L);
+    assertThat(stamped.highWaterMark()).isEqualTo(200L);
+    assertThat(stamped.fingerprint()).isEqualTo(reconciled.state().fingerprint());
+  }
+
+  @Test
   void stampingCannotMoveSourceVersionBackwards() {
     var first = reconcile(4, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1));
 
@@ -477,6 +503,29 @@ class SchemaIdentityReconcilerTest {
 
     assertThat(reset.nodes()).extracting(CanonicalSchemaNode::canonicalId).containsExactly(4L, 5L);
     assertThat(reset.state().highWaterMark()).isEqualTo(5L);
+  }
+
+  @Test
+  void preferredNewerIdentityPreservesBackfillContinuityWithoutLoweringCounter() {
+    var previous =
+        reconcile(
+            40L, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1), field("b", 2));
+
+    var backfill =
+        SchemaIdentityReconciler.reconcile(
+            ResolvedSchema.of(List.of(field("a", 1), field("b", 2), field("d", 3))),
+            60L,
+            IdentityMode.STRUCTURED_PATH,
+            Optional.of(previous.state()),
+            HistoryCoverage.COMPLETE_METADATA_HISTORY,
+            3L,
+            PreferredCanonicalIds.byPath(Map.of(ColumnPath.ROOT.field("d"), 3L)),
+            HistoryTier.VERSIONED_LOG);
+
+    assertThat(backfill.nodes())
+        .extracting(CanonicalSchemaNode::canonicalId)
+        .containsExactly(1L, 2L, 3L);
+    assertThat(backfill.state().highWaterMark()).isEqualTo(3L);
   }
 
   @Test

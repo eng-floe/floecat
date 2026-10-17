@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.connector.delta.identity;
+package ai.floedb.floecat.delta.identity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

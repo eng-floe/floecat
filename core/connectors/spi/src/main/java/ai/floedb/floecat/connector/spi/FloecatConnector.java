@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.spi;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
@@ -280,29 +281,13 @@ public interface FloecatConnector extends Closeable {
       ResourceId destinationTableId,
       long snapshotId,
       Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds) {
-    return captureSnapshotTargetStatsDirect(
-        namespaceFq,
-        tableName,
-        destinationTableId,
-        snapshotId,
-        includeColumns,
-        includeTargetKinds,
-        ColumnSelectorPolicy.defaults());
-  }
-
-  default Optional<DirectSnapshotStatsCapture> captureSnapshotTargetStatsDirect(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds,
-      ColumnSelectorPolicy columnSelectorPolicy) {
+      ColumnSelectorPolicy columnSelectorPolicy,
+      ColumnIdentityMap columnIdentityMap) {
     return Optional.empty();
   }
 
-  /** Captures requested outputs for one planned file-group within a snapshot. */
+  /** Captures a planned group using the snapshot's authoritative column identity map. */
   FileGroupCaptureResult capturePlannedFileGroup(
       String namespaceFq,
       String tableName,
@@ -313,7 +298,8 @@ public interface FloecatConnector extends Closeable {
       Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy);
+      ColumnSelectorPolicy columnSelectorPolicy,
+      ColumnIdentityMap columnIdentityMap);
 
   /**
    * Applies connector-specific selector semantics to decoded Parquet page-index entries.
@@ -328,15 +314,33 @@ public interface FloecatConnector extends Closeable {
       long snapshotId,
       Set<String> selectors,
       ColumnSelectorPolicy columnSelectorPolicy,
-      List<ParquetPageIndexEntry> entries) {
-    Set<String> plannedFilePaths =
-        entries == null
-            ? Set.of()
-            : entries.stream()
-                .filter(java.util.Objects::nonNull)
-                .map(ParquetPageIndexEntry::filePath)
-                .filter(path -> path != null && !path.isBlank())
-                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+      List<ParquetPageIndexEntry> entries,
+      ColumnIdentityMap columnIdentityMap) {
+    Set<String> plannedFilePaths = pageIndexPlannedFilePaths(entries);
+    List<ParquetRowGroup> rowGroups = pageIndexRowGroups(entries);
+    return selectPageIndexEntries(
+        namespaceFq,
+        tableName,
+        snapshotId,
+        selectors,
+        columnSelectorPolicy,
+        plannedFilePaths,
+        entries,
+        rowGroups,
+        columnIdentityMap);
+  }
+
+  private static Set<String> pageIndexPlannedFilePaths(List<ParquetPageIndexEntry> entries) {
+    return entries == null
+        ? Set.of()
+        : entries.stream()
+            .filter(java.util.Objects::nonNull)
+            .map(ParquetPageIndexEntry::filePath)
+            .filter(path -> path != null && !path.isBlank())
+            .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+  }
+
+  private static List<ParquetRowGroup> pageIndexRowGroups(List<ParquetPageIndexEntry> entries) {
     Map<String, Map<Integer, Integer>> rowGroupsByFile = new LinkedHashMap<>();
     if (entries != null) {
       for (ParquetPageIndexEntry entry : entries) {
@@ -357,20 +361,13 @@ public interface FloecatConnector extends Closeable {
             groups.forEach(
                 (rowGroup, rowCount) ->
                     rowGroups.add(new ParquetRowGroup(filePath, rowGroup, rowCount))));
-    return selectPageIndexEntries(
-        namespaceFq,
-        tableName,
-        snapshotId,
-        selectors,
-        columnSelectorPolicy,
-        plannedFilePaths,
-        entries,
-        rowGroups);
+    return List.copyOf(rowGroups);
   }
 
   /**
-   * Applies connector-specific selector semantics with complete planned-file and row-group
-   * metadata, including files for which no decodable page-index entry was produced.
+   * Applies connector-specific selector semantics using the authoritative column identity map.
+   *
+   * <p>Connectors without canonical identity requirements may ignore the identity map.
    */
   default Optional<List<ParquetPageIndexEntry>> selectPageIndexEntries(
       String namespaceFq,
@@ -380,7 +377,8 @@ public interface FloecatConnector extends Closeable {
       ColumnSelectorPolicy columnSelectorPolicy,
       Set<String> plannedFilePaths,
       List<ParquetPageIndexEntry> entries,
-      List<ParquetRowGroup> rowGroups) {
+      List<ParquetRowGroup> rowGroups,
+      ColumnIdentityMap columnIdentityMap) {
     return Optional.empty();
   }
 
@@ -541,7 +539,9 @@ public interface FloecatConnector extends Closeable {
       Set<Long> targetSnapshotIds,
       SnapshotSelectionKind selectionKind,
       Set<Long> selectionSnapshotIds,
-      int latestN) {
+      int latestN,
+      Map<Long, ColumnIdentityMap> persistedColumnIdentityMaps,
+      long persistedIdentityHighWaterMark) {
     public SnapshotEnumerationOptions {
       knownSnapshotIds =
           knownSnapshotIds == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(knownSnapshotIds));
@@ -553,60 +553,114 @@ public interface FloecatConnector extends Closeable {
               ? Set.of()
               : Set.copyOf(new LinkedHashSet<>(selectionSnapshotIds));
       latestN = Math.max(0, latestN);
+      persistedColumnIdentityMaps =
+          persistedColumnIdentityMaps == null ? Map.of() : Map.copyOf(persistedColumnIdentityMaps);
+      if (persistedIdentityHighWaterMark < 0L) {
+        throw new IllegalArgumentException("Persisted identity high-water mark cannot be negative");
+      }
     }
 
     public static SnapshotEnumerationOptions full(boolean fullRescan) {
       return new SnapshotEnumerationOptions(
-          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.ALL, Set.of(), 0);
+          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.ALL, Set.of(), 0, Map.of(), 0L);
     }
 
     public static SnapshotEnumerationOptions full(boolean fullRescan, Set<Long> targetSnapshotIds) {
       return new SnapshotEnumerationOptions(
-          fullRescan, Set.of(), targetSnapshotIds, SnapshotSelectionKind.ALL, Set.of(), 0);
+          fullRescan,
+          Set.of(),
+          targetSnapshotIds,
+          SnapshotSelectionKind.ALL,
+          Set.of(),
+          0,
+          Map.of(),
+          0L);
     }
 
     public static SnapshotEnumerationOptions incremental(Set<Long> knownSnapshotIds) {
       return new SnapshotEnumerationOptions(
-          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.ALL, Set.of(), 0);
+          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.ALL, Set.of(), 0, Map.of(), 0L);
     }
 
     public static SnapshotEnumerationOptions incremental(
         Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
       return new SnapshotEnumerationOptions(
-          false, knownSnapshotIds, targetSnapshotIds, SnapshotSelectionKind.ALL, Set.of(), 0);
+          false,
+          knownSnapshotIds,
+          targetSnapshotIds,
+          SnapshotSelectionKind.ALL,
+          Set.of(),
+          0,
+          Map.of(),
+          0L);
     }
 
     public static SnapshotEnumerationOptions fullCurrent(boolean fullRescan) {
       return new SnapshotEnumerationOptions(
-          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.CURRENT, Set.of(), 0);
+          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.CURRENT, Set.of(), 0, Map.of(), 0L);
     }
 
     public static SnapshotEnumerationOptions incrementalCurrent(Set<Long> knownSnapshotIds) {
       return new SnapshotEnumerationOptions(
-          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.CURRENT, Set.of(), 0);
+          false,
+          knownSnapshotIds,
+          Set.of(),
+          SnapshotSelectionKind.CURRENT,
+          Set.of(),
+          0,
+          Map.of(),
+          0L);
     }
 
     public static SnapshotEnumerationOptions fullLatestN(boolean fullRescan, int latestN) {
       return new SnapshotEnumerationOptions(
-          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.LATEST_N, Set.of(), latestN);
+          fullRescan,
+          Set.of(),
+          Set.of(),
+          SnapshotSelectionKind.LATEST_N,
+          Set.of(),
+          latestN,
+          Map.of(),
+          0L);
     }
 
     public static SnapshotEnumerationOptions incrementalLatestN(
         Set<Long> knownSnapshotIds, int latestN) {
       return new SnapshotEnumerationOptions(
-          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.LATEST_N, Set.of(), latestN);
+          false,
+          knownSnapshotIds,
+          Set.of(),
+          SnapshotSelectionKind.LATEST_N,
+          Set.of(),
+          latestN,
+          Map.of(),
+          0L);
     }
 
     public static SnapshotEnumerationOptions fullExplicit(
         boolean fullRescan, Set<Long> snapshotIds) {
       return new SnapshotEnumerationOptions(
-          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.EXPLICIT, snapshotIds, 0);
+          fullRescan,
+          Set.of(),
+          Set.of(),
+          SnapshotSelectionKind.EXPLICIT,
+          snapshotIds,
+          0,
+          Map.of(),
+          0L);
     }
 
     public static SnapshotEnumerationOptions incrementalExplicit(
         Set<Long> knownSnapshotIds, Set<Long> snapshotIds) {
       return new SnapshotEnumerationOptions(
-          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.EXPLICIT, snapshotIds, 0);
+          false,
+          knownSnapshotIds,
+          Set.of(),
+          SnapshotSelectionKind.EXPLICIT,
+          snapshotIds,
+          0,
+          Map.of(),
+          0L);
     }
   }
 
@@ -695,7 +749,8 @@ public interface FloecatConnector extends Closeable {
       String name, // leaf name (required for many engines)
       String physicalPath, // canonical leaf path (recommended; may be blank)
       int ordinal, // 1-based within parent struct, or 0 if unknown
-      int fieldId // 0 if unknown
+      int fieldId, // 0 if unknown
+      long canonicalId // authoritative snapshot identity, or 0 if unavailable
       ) {}
 
   record ColumnStatsView(
@@ -725,7 +780,7 @@ public interface FloecatConnector extends Closeable {
 
   record SnapshotBundle(
       long snapshotId,
-      /** The explicit predecessor snapshot ID, or {@code -1} when there is no predecessor. */
+      // The explicit predecessor snapshot ID, or -1 when there is no predecessor.
       long parentId,
       long upstreamCreatedAtMs,
       String schemaJson,
@@ -734,7 +789,13 @@ public interface FloecatConnector extends Closeable {
       String manifestList,
       Map<String, String> summary,
       int schemaId,
-      String metadataLocation) {}
+      String metadataLocation,
+      ColumnIdentityMap columnIdentityMap) {
+    public SnapshotBundle {
+      columnIdentityMap =
+          columnIdentityMap == null ? ColumnIdentityMap.getDefaultInstance() : columnIdentityMap;
+    }
+  }
 
   record SnapshotFileEntry(
       String filePath,

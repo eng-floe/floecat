@@ -396,10 +396,15 @@ public final class UserGraph {
                 cid,
                 tblId,
                 () -> currentRootOwnsTableBlob(tblId, tableBlobUri));
-    return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri));
+    var resolved = snapshots.schemaFor(cid, tbl, snapshot, snapshotBlobUri, tbl::schemaJson);
+    return new SchemaResolution(
+        resolved.table(), resolved.schemaJson(), resolved.columnIdentityMap());
   }
 
-  public record SchemaResolution(UserTableNode table, String schemaJson) {}
+  public record SchemaResolution(
+      UserTableNode table,
+      String schemaJson,
+      ai.floedb.floecat.catalog.rpc.ColumnIdentityMap columnIdentityMap) {}
 
   private boolean currentRootOwnsTableBlob(ResourceId tableId, String tableBlobUri) {
     if (tableRoots == null) {

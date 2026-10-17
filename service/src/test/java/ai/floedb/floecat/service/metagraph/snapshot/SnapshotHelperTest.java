@@ -26,6 +26,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
@@ -212,6 +213,34 @@ class SnapshotHelperTest {
             () -> "{}");
 
     assertThat(schema).contains("current");
+  }
+
+  @Test
+  void schemaResolutionReadsSchemaAndIdentityFromOneSnapshotPayload() {
+    ResourceId tableId = tableId("tbl");
+    ColumnIdentityMap identityMap =
+        ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build();
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(41L)
+            .setSchemaJson("{\"fields\":[\"pinned\"]}")
+            .setColumnIdentityMap(identityMap)
+            .setUpstreamCreatedAt(ts("2024-04-01T00:00:00Z"))
+            .build();
+    repository.put(tableId, snapshot);
+
+    var resolved =
+        helper.schemaFor(
+            "corr",
+            TestNodes.tableNode(tableId, "{}"),
+            SnapshotRef.newBuilder().setSnapshotId(41L).build(),
+            "s3://tbl/snap-41.pb",
+            () -> "{}");
+
+    assertThat(resolved.schemaJson()).contains("pinned");
+    assertThat(resolved.columnIdentityMap()).isEqualTo(identityMap);
+    assertThat(repository.liveBlobReads()).isZero();
   }
 
   @Test

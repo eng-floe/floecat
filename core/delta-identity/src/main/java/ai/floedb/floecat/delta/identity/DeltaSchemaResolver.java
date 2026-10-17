@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.connector.delta.identity;
+package ai.floedb.floecat.delta.identity;
 
 import ai.floedb.floecat.schema.identity.ColumnPath;
 import ai.floedb.floecat.schema.identity.ResolvedSchema;
