@@ -16,6 +16,7 @@
 package ai.floedb.floecat.reconciler.spi;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
@@ -94,6 +95,51 @@ public interface ReconcilerBackend {
       ReconcileContext ctx, ResourceId tableId, long excludedSnapshotId);
 
   Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId);
+
+  /** Snapshot IDs and their identity maps loaded from one consistent history walk. */
+  record SnapshotIdentityHistory(
+      Set<Long> snapshotIds, Map<Long, ColumnIdentityMap> columnIdentityMaps, long highWaterMark) {
+    public SnapshotIdentityHistory {
+      snapshotIds = snapshotIds == null ? Set.of() : Set.copyOf(snapshotIds);
+      columnIdentityMaps = columnIdentityMaps == null ? Map.of() : Map.copyOf(columnIdentityMaps);
+      if (highWaterMark < 0L) {
+        throw new IllegalArgumentException("Identity high-water mark cannot be negative");
+      }
+    }
+  }
+
+  /**
+   * Returns persisted snapshot identity state.
+   *
+   * <p>Backends with a paged snapshot API should override this so IDs and maps share one walk.
+   */
+  default SnapshotIdentityHistory snapshotIdentityHistory(
+      ReconcileContext ctx, ResourceId tableId) {
+    Set<Long> snapshotIds = existingSnapshotIds(ctx, tableId);
+    Map<Long, ColumnIdentityMap> maps = persistedColumnIdentityMaps(ctx, tableId, snapshotIds);
+    return new SnapshotIdentityHistory(
+        snapshotIds,
+        maps,
+        maps.values().stream().mapToLong(ColumnIdentityMap::getHighWaterMark).max().orElse(0L));
+  }
+
+  /** Returns persisted column identity maps keyed by snapshot ID. */
+  default Map<Long, ColumnIdentityMap> persistedColumnIdentityMaps(
+      ReconcileContext ctx, ResourceId tableId, Set<Long> snapshotIds) {
+    if (snapshotIds == null || snapshotIds.isEmpty()) {
+      return Map.of();
+    }
+    Map<Long, ColumnIdentityMap> maps = new java.util.LinkedHashMap<>();
+    snapshotIds.stream()
+        .filter(java.util.Objects::nonNull)
+        .sorted()
+        .forEach(
+            snapshotId ->
+                fetchSnapshot(ctx, tableId, snapshotId)
+                    .filter(Snapshot::hasColumnIdentityMap)
+                    .ifPresent(snapshot -> maps.put(snapshotId, snapshot.getColumnIdentityMap())));
+    return Map.copyOf(maps);
+  }
 
   void ingestSnapshot(ReconcileContext ctx, ResourceId tableId, Snapshot snapshot);
 

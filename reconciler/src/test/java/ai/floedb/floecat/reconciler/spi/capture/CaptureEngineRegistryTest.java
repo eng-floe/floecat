@@ -19,6 +19,7 @@ package ai.floedb.floecat.reconciler.spi.capture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -185,7 +186,8 @@ class CaptureEngineRegistryTest {
             java.util.Optional.empty(),
             java.util.Optional.empty(),
             java.util.Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
     CaptureEngineRequest columnSelectors =
         new CaptureEngineRequest(
             request(false, Set.of(FloecatConnector.StatsTargetKind.FILE)).sourceConnector(),
@@ -209,7 +211,8 @@ class CaptureEngineRegistryTest {
             java.util.Optional.empty(),
             java.util.Optional.empty(),
             java.util.Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     assertThat(capabilities.supports(missingPlannedFiles)).isFalse();
     assertThat(capabilities.supports(columnSelectors)).isFalse();
@@ -251,7 +254,8 @@ class CaptureEngineRegistryTest {
             java.util.Optional.empty(),
             java.util.Optional.empty(),
             java.util.Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     assertThat(request.statsColumns()).containsExactly("c1");
     assertThat(request.indexColumns()).containsExactly("idx");
@@ -290,7 +294,8 @@ class CaptureEngineRegistryTest {
         java.util.Optional.empty(),
         java.util.Optional.empty(),
         java.util.Optional.empty(),
-        () -> false);
+        () -> false,
+        ColumnIdentityMap.getDefaultInstance());
   }
 
   private record TestCaptureEngine(

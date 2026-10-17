@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.connector.delta.uc.impl;
+package ai.floedb.floecat.delta.identity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -43,7 +43,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for the package-private {@link DeltaTypeMapper}.
+ * Unit tests for {@link DeltaSchemaMapper}.
  *
  * <p>Validates:
  *
@@ -55,10 +55,10 @@ import org.junit.jupiter.api.Test;
  *   <li>Unknown types fail fast (null-bug regression guard)
  * </ul>
  */
-class DeltaTypeMapperTest {
+class DeltaSchemaMapperTest {
 
   private static LogicalKind kind(DataType dt) {
-    return DeltaTypeMapper.toLogical(dt).kind();
+    return DeltaSchemaMapper.toLogical(dt).kind();
   }
 
   // ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ class DeltaTypeMapperTest {
 
   @Test
   void decimalTypeMapsToDecimalWithParameters() {
-    LogicalType t = DeltaTypeMapper.toLogical(new DecimalType(10, 2));
+    LogicalType t = DeltaSchemaMapper.toLogical(new DecimalType(10, 2));
     assertThat(t.kind()).isEqualTo(LogicalKind.DECIMAL);
     assertThat(t.precision()).isEqualTo(10);
     assertThat(t.scale()).isEqualTo(2);
@@ -160,7 +160,7 @@ class DeltaTypeMapperTest {
 
   @Test
   void decimalMaxPrecisionMaps() {
-    LogicalType t = DeltaTypeMapper.toLogical(new DecimalType(38, 0));
+    LogicalType t = DeltaSchemaMapper.toLogical(new DecimalType(38, 0));
     assertThat(t.kind()).isEqualTo(LogicalKind.DECIMAL);
     assertThat(t.precision()).isEqualTo(38);
     assertThat(t.scale()).isEqualTo(0);
@@ -193,7 +193,7 @@ class DeltaTypeMapperTest {
 
   @Test
   void arrayPreservesElementTypeAndContainsNull() {
-    LogicalType t = DeltaTypeMapper.toLogical(new ArrayType(StringType.STRING, false));
+    LogicalType t = DeltaSchemaMapper.toLogical(new ArrayType(StringType.STRING, false));
     assertThat(t.element().kind()).isEqualTo(LogicalKind.STRING);
     assertThat(t.elementNullable()).isFalse();
   }
@@ -201,7 +201,7 @@ class DeltaTypeMapperTest {
   @Test
   void mapPreservesKeyValueTypesAndValueContainsNull() {
     LogicalType t =
-        DeltaTypeMapper.toLogical(new MapType(StringType.STRING, DoubleType.DOUBLE, true));
+        DeltaSchemaMapper.toLogical(new MapType(StringType.STRING, DoubleType.DOUBLE, true));
     assertThat(t.key().kind()).isEqualTo(LogicalKind.STRING);
     assertThat(t.value().kind()).isEqualTo(LogicalKind.DOUBLE);
     assertThat(t.valueNullable()).isTrue();
@@ -211,7 +211,7 @@ class DeltaTypeMapperTest {
   void structPreservesFieldNamesAndNullability() {
     StructType struct =
         new StructType().add("sku", StringType.STRING, false).add("qty", IntegerType.INTEGER, true);
-    LogicalType t = DeltaTypeMapper.toLogical(struct);
+    LogicalType t = DeltaSchemaMapper.toLogical(struct);
     assertThat(t.fields()).hasSize(2);
     assertThat(t.fields().get(0).name()).isEqualTo("sku");
     assertThat(t.fields().get(0).nullable()).isFalse();
@@ -229,7 +229,7 @@ class DeltaTypeMapperTest {
                     .add("tags", new ArrayType(StringType.STRING, true), true),
                 true);
 
-    Map<String, LogicalType> types = DeltaTypeMapper.deltaStatsTypeMap(schema);
+    Map<String, LogicalType> types = DeltaSchemaMapper.deltaStatsTypeMap(schema);
 
     assertThat(types.keySet()).containsExactly("profile", "profile.age", "profile.tags");
     assertThat(types).doesNotContainKey("profile.tags[]");
@@ -242,13 +242,15 @@ class DeltaTypeMapperTest {
             .add("a.b", StringType.STRING, true)
             .add("a", new StructType().add("b", IntegerType.INTEGER, true), true);
 
-    assertThat(DeltaTypeMapper.deltaStatsTypeMap(schema)).containsKey("a").doesNotContainKey("a.b");
+    assertThat(DeltaSchemaMapper.deltaStatsTypeMap(schema))
+        .containsKey("a")
+        .doesNotContainKey("a.b");
   }
 
   @Test
   void nestedContainersCompose() {
     LogicalType t =
-        DeltaTypeMapper.toLogical(new ArrayType(new ArrayType(IntegerType.INTEGER, false), true));
+        DeltaSchemaMapper.toLogical(new ArrayType(new ArrayType(IntegerType.INTEGER, false), true));
     assertThat(t.element().element().kind()).isEqualTo(LogicalKind.INT);
     assertThat(t.element().elementNullable()).isFalse();
   }
@@ -282,7 +284,7 @@ class DeltaTypeMapperTest {
             return System.identityHashCode(this);
           }
         };
-    assertThatThrownBy(() -> DeltaTypeMapper.toLogical(unknownType))
+    assertThatThrownBy(() -> DeltaSchemaMapper.toLogical(unknownType))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Unrecognised Delta type");
   }

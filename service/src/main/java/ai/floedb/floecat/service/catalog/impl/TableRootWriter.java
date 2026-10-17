@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotManifests;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -149,7 +150,8 @@ public class TableRootWriter {
             .setSnapshotId(candidate.getSnapshotId())
             .setSnapshotRef(snapshotRef)
             .setSchemaFingerprint(
-                ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(candidate));
+                ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(candidate))
+            .setColumnIdentityFingerprint(ColumnIdentityMaps.fingerprint(candidate).orElse(""));
     if (candidate.hasUpstreamCreatedAt()) {
       entry.setUpstreamCreatedAt(candidate.getUpstreamCreatedAt());
     }
@@ -473,6 +475,7 @@ public class TableRootWriter {
               }
               builder.setSchemaFingerprint(
                   ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(s));
+              builder.setColumnIdentityFingerprint(ColumnIdentityMaps.fingerprint(s).orElse(""));
               ai.floedb.floecat.service.repo.impl.SnapshotManifests.applyReuseGenerationRef(
                   builder, s);
             });

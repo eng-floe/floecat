@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintEnforcement;
@@ -40,19 +41,26 @@ import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.floecat.connector.common.resolver.ColumnIdComputer;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
+import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind;
+import ai.floedb.floecat.delta.identity.DeltaColumnMapping;
+import ai.floedb.floecat.delta.identity.DeltaHistorySource;
+import ai.floedb.floecat.delta.identity.DeltaIdentityService;
+import ai.floedb.floecat.delta.identity.DeltaLogHistorySource;
+import ai.floedb.floecat.delta.identity.DeltaSchemaMapper;
+import ai.floedb.floecat.delta.identity.IdentityResult;
+import ai.floedb.floecat.delta.identity.KernelAdapter;
+import ai.floedb.floecat.delta.identity.PersistedIdentityLookup;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.delta.kernel.Snapshot;
 import io.delta.kernel.Table;
 import io.delta.kernel.data.ColumnVector;
 import io.delta.kernel.engine.Engine;
-import io.delta.kernel.exceptions.KernelException;
 import io.delta.kernel.internal.DeltaLogActionUtils;
 import io.delta.kernel.internal.DeltaLogActionUtils.DeltaAction;
-import io.delta.kernel.internal.SnapshotImpl;
 import io.delta.kernel.internal.TableChangesUtils;
 import io.delta.kernel.internal.TableImpl;
 import io.delta.kernel.internal.actions.AddFile;
@@ -60,7 +68,6 @@ import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
 import io.delta.kernel.internal.actions.Metadata;
 import io.delta.kernel.internal.fs.Path;
 import io.delta.kernel.internal.types.DataTypeJsonSerDe;
-import io.delta.kernel.internal.util.FileNames;
 import io.delta.kernel.types.ArrayType;
 import io.delta.kernel.types.BooleanType;
 import io.delta.kernel.types.ByteType;
@@ -86,9 +93,10 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Optional;
 import java.util.Set;
-import java.util.Spliterators;
+import java.util.TreeMap;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
@@ -96,14 +104,12 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 import org.apache.parquet.io.InputFile;
 import org.jboss.logging.Logger;
 
-abstract class DeltaConnector implements FloecatConnector {
+abstract class DeltaConnector implements CanonicalIdentityConnector {
 
   protected static final ObjectMapper M = new ObjectMapper();
   private static final String DELTA_CHECK_CONSTRAINT_PREFIX = "delta.constraints.";
@@ -178,12 +184,6 @@ abstract class DeltaConnector implements FloecatConnector {
 
     FloecatConnector.SnapshotSelectionKind selectionKind =
         options == null ? FloecatConnector.SnapshotSelectionKind.ALL : options.selectionKind();
-    if (table instanceof TableImpl
-        && selectionKind == FloecatConnector.SnapshotSelectionKind.ALL
-        && targetSnapshotIds.isEmpty()) {
-      return enumerateDeltaCommits(
-          storageLocation, table, latestVersion, fullRescan, knownSnapshotIds);
-    }
 
     List<Long> versions =
         versionsToEnumerate(
@@ -197,188 +197,95 @@ abstract class DeltaConnector implements FloecatConnector {
     if (versions.isEmpty()) {
       return Stream.empty();
     }
-    long[] earliestAvailableVersion = {0L};
-    return versions.stream()
-        .filter(version -> version >= earliestAvailableVersion[0])
-        .map(
-            version -> {
-              SnapshotLoadResult result =
-                  version == latestVersion
-                      ? SnapshotLoadResult.snapshot(latestSnapshot)
-                      : loadSnapshotAsOfVersion(
-                          table, version, storageLocation, earliestAvailableVersion[0]);
-              earliestAvailableVersion[0] =
-                  Math.max(earliestAvailableVersion[0], result.earliestAvailableVersion());
-              return result.snapshot() == null
-                  ? null
-                  : buildSnapshotBundle(storageLocation, version, result.snapshot());
-            })
-        .filter(java.util.Objects::nonNull);
-  }
-
-  private Stream<SnapshotBundle> enumerateDeltaCommits(
-      String storageLocation,
-      Table table,
-      long latestVersion,
-      boolean fullRescan,
-      Set<Long> knownSnapshotIds) {
-    long startVersion = 0L;
-    if (!fullRescan && knownSnapshotIds != null && !knownSnapshotIds.isEmpty()) {
-      while (startVersion <= latestVersion && knownSnapshotIds.contains(startVersion)) {
-        startVersion++;
+    NavigableMap<Long, ColumnIdentityMap> persistedIdentityMaps = new TreeMap<>();
+    if (options != null) {
+      options
+          .persistedColumnIdentityMaps()
+          .forEach(
+              (snapshotId, identityMap) -> {
+                if (snapshotId != null
+                    && identityMap != null
+                    && !identityMap.equals(ColumnIdentityMap.getDefaultInstance())) {
+                  persistedIdentityMaps.put(snapshotId, identityMap);
+                }
+              });
+    }
+    long highWaterMark =
+        Math.max(
+            options == null ? 0L : options.persistedIdentityHighWaterMark(),
+            persistedIdentityMaps.values().stream()
+                .mapToLong(ColumnIdentityMap::getHighWaterMark)
+                .max()
+                .orElse(0L));
+    PersistedIdentityLookup lookup =
+        new MapPersistedIdentityLookup(persistedIdentityMaps, highWaterMark);
+    DeltaHistorySource history = historySource(storageLocation, table);
+    versions.forEach(
+        version ->
+            history
+                .snapshotExclusionReason(version)
+                .ifPresent(
+                    reason ->
+                        LOG.warnf(
+                            "Skipping Delta table %s snapshot %d: %s",
+                            storageLocation, version, reason)));
+    IdentityResult identity =
+        new DeltaIdentityService().reconcileSnapshots(history, lookup, versions);
+    if (!identity.succeeded()) {
+      IdentityResult.Failure failure = identity.failures().getFirst();
+      throw new IllegalArgumentException(
+          "Delta identity reconciliation failed for table "
+              + failure.table()
+              + " snapshot "
+              + failure.snapshotVersion()
+              + ": "
+              + failure.message());
+    }
+    List<SnapshotBundle> bundles = new ArrayList<>(identity.maps().size());
+    for (long selectedVersion : versions) {
+      ColumnIdentityMap identityMap = identity.maps().get(selectedVersion);
+      if (identityMap == null) {
+        continue;
+      }
+      Snapshot selectedSnapshot = history.snapshot(selectedVersion).orElse(null);
+      if (selectedSnapshot != null) {
+        bundles.add(
+            buildSnapshotBundle(storageLocation, selectedVersion, selectedSnapshot, identityMap));
       }
     }
-    if (startVersion > latestVersion) {
-      return Stream.empty();
-    }
-
-    SnapshotBaseline baselineLoad =
-        loadSnapshotBaseline(table, startVersion, latestVersion, storageLocation);
-    if (baselineLoad == null) {
-      return Stream.empty();
-    }
-    startVersion = baselineLoad.version();
-    Snapshot baselineSnapshot = baselineLoad.snapshot();
-    if (!(baselineSnapshot instanceof SnapshotImpl baselineSnapshotImpl)) {
-      throw new IllegalStateException("Delta snapshot metadata is required");
-    }
-    long baselineVersion = startVersion;
-    Metadata baselineMetadata = baselineSnapshotImpl.getMetadata();
-    boolean includeBaseline = fullRescan || !knownSnapshotIds.contains(baselineVersion);
-    Stream<SnapshotBundle> baseline =
-        includeBaseline
-            ? Stream.of(buildSnapshotBundle(storageLocation, baselineVersion, baselineSnapshot))
-            : Stream.empty();
-    if (baselineVersion == latestVersion) {
-      return baseline;
-    }
-
-    io.delta.kernel.utils.CloseableIterator<io.delta.kernel.utils.FileStatus> files =
-        DeltaLogActionUtils.listDeltaLogFilesAsIter(
-            engine,
-            Set.of(FileNames.DeltaLogFileType.COMMIT),
-            new Path(storageLocation),
-            baselineVersion + 1L,
-            Optional.of(latestVersion),
-            true);
-    java.util.Iterator<SnapshotBundle> iterator =
-        new java.util.Iterator<>() {
-          private Metadata metadata = baselineMetadata;
-          private SnapshotBundle next;
-          private boolean loaded;
-
-          @Override
-          public boolean hasNext() {
-            if (!loaded) {
-              next = readNext();
-              loaded = true;
-            }
-            return next != null;
-          }
-
-          @Override
-          public SnapshotBundle next() {
-            if (!hasNext()) {
-              throw new java.util.NoSuchElementException();
-            }
-            SnapshotBundle result = next;
-            next = null;
-            loaded = false;
-            return result;
-          }
-
-          private SnapshotBundle readNext() {
-            while (files.hasNext()) {
-              io.delta.kernel.utils.FileStatus file = files.next();
-              long version = FileNames.deltaVersion(file.getPath());
-              long timestamp;
-              try (var commits =
-                  DeltaLogActionUtils.getActionsFromCommitFilesWithProtocolValidation(
-                      engine,
-                      storageLocation,
-                      List.of(file),
-                      Set.of(DeltaAction.METADATA, DeltaAction.COMMITINFO))) {
-                if (!commits.hasNext()) {
-                  continue;
-                }
-                var commit = commits.next();
-                timestamp = commit.getTimestamp();
-                try (var actions = commit.getActions()) {
-                  while (actions.hasNext()) {
-                    var batch = actions.next();
-                    int ordinal = batch.getSchema().indexOf("metaData");
-                    if (ordinal < 0) {
-                      ordinal = batch.getSchema().indexOf("metadata");
-                    }
-                    if (ordinal < 0) {
-                      continue;
-                    }
-                    ColumnVector vector = batch.getColumnVector(ordinal);
-                    for (int row = 0; row < batch.getSize(); row++) {
-                      if (!vector.isNullAt(row)) {
-                        metadata = Metadata.fromColumnVector(vector, row);
-                      }
-                    }
-                  }
-                }
-              } catch (Exception e) {
-                throw new RuntimeException(
-                    "Failed to enumerate Delta commit version " + version, e);
-              }
-              if (!fullRescan && knownSnapshotIds.contains(version)) {
-                continue;
-              }
-              return buildSnapshotBundle(version, timestamp, metadata);
-            }
-            return null;
-          }
-        };
-    Stream<SnapshotBundle> commits =
-        StreamSupport.stream(
-                Spliterators.spliteratorUnknownSize(
-                    iterator, java.util.Spliterator.ORDERED | java.util.Spliterator.NONNULL),
-                false)
-            .onClose(
-                () -> {
-                  try {
-                    files.close();
-                  } catch (java.io.IOException e) {
-                    throw new RuntimeException("Failed to close Delta log enumeration", e);
-                  }
-                });
-    return Stream.concat(baseline, commits);
+    return bundles.stream();
   }
 
-  private SnapshotBundle buildSnapshotBundle(long version, long timestamp, Metadata metadata) {
-    String schemaJson = schemaJson(metadata);
-    PartitionSpecInfo.Builder partition =
-        PartitionSpecInfo.newBuilder().setSpecId(0).setSpecName("delta");
-    int fieldId = 0;
-    var partitionColumns = metadata.getPartitionColumns();
-    var elements = partitionColumns == null ? null : partitionColumns.getElements();
-    if (elements != null) {
-      for (int i = 0; i < partitionColumns.getSize(); i++) {
-        if (!elements.isNullAt(i)) {
-          partition.addFields(
-              ai.floedb.floecat.catalog.rpc.PartitionField.newBuilder()
-                  .setFieldId(++fieldId)
-                  .setName(elements.getString(i))
-                  .setTransform("identity")
-                  .build());
-        }
-      }
+  protected DeltaHistorySource historySource(String storageLocation, Table table) {
+    return new DeltaLogHistorySource(storageLocation, storageLocation, table, engine);
+  }
+
+  private record MapPersistedIdentityLookup(
+      NavigableMap<Long, ColumnIdentityMap> maps, long highWaterMark)
+      implements PersistedIdentityLookup {
+    private MapPersistedIdentityLookup {
+      maps = new TreeMap<>(maps);
     }
-    return new SnapshotBundle(
-        version,
-        version > 0L ? version - 1L : -1L,
-        timestamp,
-        schemaJson,
-        fieldId == 0 ? null : partition.build(),
-        0L,
-        null,
-        Map.of(),
-        0,
-        null);
+
+    @Override
+    public Optional<ColumnIdentityMap> exact(long version) {
+      return Optional.ofNullable(maps.get(version));
+    }
+
+    @Override
+    public Optional<Map.Entry<Long, ColumnIdentityMap>> floor(long version) {
+      return Optional.ofNullable(maps.floorEntry(version));
+    }
+
+    @Override
+    public Optional<Map.Entry<Long, ColumnIdentityMap>> ceiling(long version) {
+      return Optional.ofNullable(maps.ceilingEntry(version));
+    }
+
+    @Override
+    public Optional<ColumnIdentityMap> tableMap() {
+      return Optional.empty();
+    }
   }
 
   @Override
@@ -456,7 +363,8 @@ abstract class DeltaConnector implements FloecatConnector {
       long snapshotId,
       Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds,
-      ColumnSelectorPolicy columnSelectorPolicy) {
+      ColumnSelectorPolicy columnSelectorPolicy,
+      ColumnIdentityMap columnIdentityMap) {
     if (snapshotId < 0) {
       return Optional.empty();
     }
@@ -477,7 +385,7 @@ abstract class DeltaConnector implements FloecatConnector {
     }
 
     final StructType kernelSchema = snapshot.getSchema();
-    final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaStatsTypeMap(kernelSchema);
+    final Map<String, LogicalType> nameToType = DeltaSchemaMapper.deltaStatsTypeMap(kernelSchema);
     final Set<String> includeNames =
         FloecatConnector.resolveIncludedColumns(
             List.copyOf(nameToType.keySet()), includeColumns, columnSelectorPolicy);
@@ -584,7 +492,8 @@ abstract class DeltaConnector implements FloecatConnector {
       Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy) {
+      ColumnSelectorPolicy columnSelectorPolicy,
+      ColumnIdentityMap columnIdentityMap) {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
       return FileGroupCaptureResult.empty();
     }
@@ -613,7 +522,7 @@ abstract class DeltaConnector implements FloecatConnector {
     List<String> realizedStatsSelectors =
         requestedKinds.contains(StatsTargetKind.COLUMN)
             ? FloecatConnector.resolveIncludedColumns(
-                    List.copyOf(DeltaTypeMapper.deltaStatsTypeMap(snapshot.getSchema()).keySet()),
+                    List.copyOf(DeltaSchemaMapper.deltaStatsTypeMap(snapshot.getSchema()).keySet()),
                     includeColumns,
                     columnSelectorPolicy)
                 .stream()
@@ -649,7 +558,8 @@ abstract class DeltaConnector implements FloecatConnector {
       ColumnSelectorPolicy columnSelectorPolicy,
       Set<String> plannedFilePaths,
       List<ParquetPageIndexEntry> entries,
-      List<ParquetRowGroup> rowGroups) {
+      List<ParquetRowGroup> rowGroups,
+      ColumnIdentityMap columnIdentityMap) {
     Snapshot snapshot =
         loadTable(storageLocation(namespaceFq, tableName))
             .getSnapshotAsOfVersion(engine, snapshotId);
@@ -1531,9 +1441,6 @@ abstract class DeltaConnector implements FloecatConnector {
     }
     List<Long> versions = new ArrayList<>(candidates.size());
     for (long version : candidates) {
-      if (!fullRescan && knownSnapshotIds.contains(version)) {
-        continue;
-      }
       if (targetSnapshotIds != null
           && !targetSnapshotIds.isEmpty()
           && !targetSnapshotIds.contains(version)) {
@@ -1543,117 +1450,6 @@ abstract class DeltaConnector implements FloecatConnector {
     }
     return List.copyOf(versions);
   }
-
-  private SnapshotLoadResult loadSnapshotAsOfVersion(
-      Table table, long version, String storageLocation, long currentEarliestAvailableVersion) {
-    try {
-      return SnapshotLoadResult.snapshot(table.getSnapshotAsOfVersion(engine, version));
-    } catch (KernelException e) {
-      OptionalLongMatch earliest = parseEarliestAvailableVersion(e);
-      if (earliest.present() && version < earliest.value()) {
-        LOG.debugf(
-            "Skipping Delta snapshot version %d for %s because retained history starts at %d",
-            Long.valueOf(version), storageLocation, Long.valueOf(earliest.value()));
-        return SnapshotLoadResult.skipUntil(earliest.value());
-      }
-      if (version < currentEarliestAvailableVersion) {
-        return SnapshotLoadResult.skipUntil(currentEarliestAvailableVersion);
-      }
-      throw e;
-    }
-  }
-
-  SnapshotBaseline loadSnapshotBaseline(
-      Table table, long startVersion, long latestVersion, String storageLocation) {
-    long candidateVersion = startVersion;
-    while (candidateVersion <= latestVersion) {
-      SnapshotLoadResult result =
-          loadSnapshotAsOfVersion(table, candidateVersion, storageLocation, candidateVersion);
-      if (result.snapshot() != null) {
-        return new SnapshotBaseline(candidateVersion, result.snapshot());
-      }
-      long nextVersion = result.earliestAvailableVersion();
-      if (nextVersion <= candidateVersion) {
-        throw new IllegalStateException(
-            "Delta snapshot version "
-                + candidateVersion
-                + " is unavailable while establishing the retained-history baseline");
-      }
-      candidateVersion = nextVersion;
-    }
-    return null;
-  }
-
-  static OptionalLongMatch parseEarliestAvailableVersion(Throwable error) {
-    if (error == null || error.getMessage() == null) {
-      return OptionalLongMatch.empty();
-    }
-    Matcher matcher = EARLIEST_AVAILABLE_VERSION_PATTERN.matcher(error.getMessage());
-    if (!matcher.find()) {
-      return OptionalLongMatch.empty();
-    }
-    try {
-      return OptionalLongMatch.of(Long.parseLong(matcher.group(1)));
-    } catch (NumberFormatException ignored) {
-      return OptionalLongMatch.empty();
-    }
-  }
-
-  static final class OptionalLongMatch {
-    private static final OptionalLongMatch EMPTY = new OptionalLongMatch(false, 0L);
-
-    private final boolean present;
-    private final long value;
-
-    private OptionalLongMatch(boolean present, long value) {
-      this.present = present;
-      this.value = value;
-    }
-
-    static OptionalLongMatch empty() {
-      return EMPTY;
-    }
-
-    static OptionalLongMatch of(long value) {
-      return new OptionalLongMatch(true, value);
-    }
-
-    boolean present() {
-      return present;
-    }
-
-    long value() {
-      return value;
-    }
-  }
-
-  static final class SnapshotLoadResult {
-    private final Snapshot snapshot;
-    private final long earliestAvailableVersion;
-
-    private SnapshotLoadResult(Snapshot snapshot, long earliestAvailableVersion) {
-      this.snapshot = snapshot;
-      this.earliestAvailableVersion = earliestAvailableVersion;
-    }
-
-    static SnapshotLoadResult snapshot(Snapshot snapshot) {
-      return new SnapshotLoadResult(snapshot, 0L);
-    }
-
-    static SnapshotLoadResult skipUntil(long earliestAvailableVersion) {
-      return new SnapshotLoadResult(null, earliestAvailableVersion);
-    }
-
-    Snapshot snapshot() {
-      return snapshot;
-    }
-
-    long earliestAvailableVersion() {
-      return earliestAvailableVersion;
-    }
-  }
-
-  record SnapshotBaseline(long version, Snapshot snapshot) {}
 
   static List<ConstraintDefinition> mapDeltaConstraints(StructType schema, String schemaJson) {
     return mapDeltaConstraints(schema, Map.of(), schemaJson);
@@ -1674,7 +1470,10 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   private SnapshotBundle buildSnapshotBundle(
-      String storageLocation, long version, Snapshot snapshot) {
+      String storageLocation,
+      long version,
+      Snapshot snapshot,
+      ColumnIdentityMap columnIdentityMap) {
     final long createdMs = snapshot.getTimestamp(engine);
     final long parent = version > 0L ? version - 1L : -1L;
 
@@ -1682,7 +1481,17 @@ abstract class DeltaConnector implements FloecatConnector {
     final String schemaJson = snapshotSchemaJson(snapshot);
     final PartitionSpecInfo partitionSpec = toPartitionSpecInfo(snapshot);
     return new SnapshotBundle(
-        version, parent, createdMs, schemaJson, partitionSpec, 0L, null, Map.of(), 0, null);
+        version,
+        parent,
+        createdMs,
+        schemaJson,
+        partitionSpec,
+        0L,
+        null,
+        Map.of(),
+        0,
+        null,
+        columnIdentityMap);
   }
 
   private List<TargetStatsRecord> buildTargetStats(
@@ -1724,7 +1533,7 @@ abstract class DeltaConnector implements FloecatConnector {
     }
 
     final StructType kernelSchema = snapshot.getSchema();
-    final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaStatsTypeMap(kernelSchema);
+    final Map<String, LogicalType> nameToType = DeltaSchemaMapper.deltaStatsTypeMap(kernelSchema);
     final String schemaJson = snapshotSchemaJson(snapshot);
     final Set<String> includeNames =
         FloecatConnector.resolveIncludedColumns(
@@ -1834,10 +1643,7 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   protected String snapshotSchemaJson(Snapshot snapshot) {
-    if (snapshot instanceof SnapshotImpl snapshotImpl) {
-      return schemaJson(snapshotImpl.getMetadata());
-    }
-    throw new IllegalStateException("Delta snapshot metadata schema JSON is required");
+    return KernelAdapter.schemaJson(snapshot);
   }
 
   /**

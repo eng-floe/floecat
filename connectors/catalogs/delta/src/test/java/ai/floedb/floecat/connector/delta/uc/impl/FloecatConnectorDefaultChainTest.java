@@ -19,6 +19,7 @@ package ai.floedb.floecat.connector.delta.uc.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -94,7 +95,8 @@ class FloecatConnectorDefaultChainTest {
         Set<String> indexColumns,
         Set<StatsTargetKind> includeTargetKinds,
         boolean captureIndexes,
-        ColumnSelectorPolicy columnSelectorPolicy) {
+        ColumnSelectorPolicy columnSelectorPolicy,
+        ColumnIdentityMap columnIdentityMap) {
       return FileGroupCaptureResult.empty();
     }
 

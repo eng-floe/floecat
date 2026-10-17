@@ -14,17 +14,12 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.connector.delta.uc.impl;
+package ai.floedb.floecat.delta.identity;
 
-import ai.floedb.floecat.connector.delta.identity.ColumnMappingMode;
-import ai.floedb.floecat.connector.delta.identity.DeltaResolvedSchema;
-import ai.floedb.floecat.connector.delta.identity.DeltaSchemaResolver;
+import ai.floedb.floecat.schema.identity.NodeKind;
 import ai.floedb.floecat.schema.identity.SchemaNode;
 import io.delta.kernel.Snapshot;
 import io.delta.kernel.expressions.Column;
-import io.delta.kernel.internal.SnapshotImpl;
-import io.delta.kernel.internal.actions.Protocol;
-import io.delta.kernel.internal.tablefeatures.TableFeatures;
 import io.delta.kernel.types.FieldMetadata;
 import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
@@ -45,28 +40,96 @@ import java.util.Set;
  * <p>Everything here is a thin Kernel adapter. The decisions themselves live in {@link
  * ColumnMappingMode} and {@link DeltaResolvedSchema}, which are Kernel-free and directly testable.
  */
-final class DeltaColumnMapping {
+public final class DeltaColumnMapping {
+
+  public static final String ICEBERG_COMPAT_V2_ENABLED = "delta.enableIcebergCompatV2";
+  public static final String MAX_COLUMN_ID = "delta.columnMapping.maxColumnId";
 
   private DeltaColumnMapping() {}
 
   /** Resolves a snapshot's schema together with the mapping mode its readers may trust. */
-  static DeltaResolvedSchema resolveSchema(Snapshot snapshot) {
+  public static DeltaResolvedSchema resolveSchema(Snapshot snapshot) {
     Objects.requireNonNull(snapshot, "snapshot");
-    return DeltaSchemaResolver.resolve(snapshot.getSchema(), effectiveMode(snapshot));
+    DeltaResolvedSchema resolved =
+        DeltaSchemaResolver.resolve(snapshot.getSchema(), effectiveMode(snapshot));
+    validateNestedIds(snapshot, resolved);
+    validateMaxColumnId(snapshot, resolved);
+    return resolved;
   }
 
   /**
    * The mapping mode a reader may act on, which is the configured mode only when the table protocol
    * actually supports the feature.
    */
-  static ColumnMappingMode effectiveMode(Snapshot snapshot) {
+  public static ColumnMappingMode effectiveMode(Snapshot snapshot) {
     return ColumnMappingMode.effectiveFromTableProperties(
-        snapshot.getTableProperties(), () -> supportsColumnMapping(protocolOf(snapshot)));
+        snapshot.getTableProperties(), () -> KernelAdapter.supportsColumnMapping(snapshot));
   }
 
-  static boolean supportsColumnMapping(Protocol protocol) {
-    Objects.requireNonNull(protocol, "protocol");
-    return protocol.supportsFeature(TableFeatures.COLUMN_MAPPING_RW_FEATURE);
+  /** Whether the protocol and table configuration jointly activate Iceberg compatibility V2. */
+  public static boolean icebergCompatV2Enabled(Snapshot snapshot) {
+    Objects.requireNonNull(snapshot, "snapshot");
+    return Boolean.parseBoolean(
+            snapshot.getTableProperties().getOrDefault(ICEBERG_COMPAT_V2_ENABLED, "false"))
+        && KernelAdapter.supportsIcebergCompatV2(snapshot);
+  }
+
+  /** Delta's monotonic high-water mark for regular and collection-interior field IDs. */
+  public static long maxColumnId(Snapshot snapshot) {
+    Objects.requireNonNull(snapshot, "snapshot");
+    String value = snapshot.getTableProperties().get(MAX_COLUMN_ID);
+    if (value == null) {
+      throw new IllegalArgumentException(
+          "Column-mapped Delta table is missing required property " + MAX_COLUMN_ID);
+    }
+    try {
+      long parsed = Long.parseLong(value);
+      if (parsed < 0 || parsed > Integer.MAX_VALUE) {
+        throw new IllegalArgumentException();
+      }
+      return parsed;
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid Delta table property " + MAX_COLUMN_ID + "=" + value, e);
+    }
+  }
+
+  private static void validateNestedIds(Snapshot snapshot, DeltaResolvedSchema resolved) {
+    if (!resolved.effectiveMappingMode().isEnabled() || !icebergCompatV2Enabled(snapshot)) {
+      return;
+    }
+    resolved.schema().nodes().stream()
+        .filter(node -> node.kind() != NodeKind.FIELD)
+        .filter(node -> node.nativeFieldId().isEmpty() || node.nativeFieldId().getAsInt() <= 0)
+        .findFirst()
+        .ifPresent(
+            node -> {
+              throw new IllegalArgumentException(
+                  "IcebergCompatV2 requires a nested field ID for " + node.path().display());
+            });
+  }
+
+  private static void validateMaxColumnId(Snapshot snapshot, DeltaResolvedSchema resolved) {
+    if (!resolved.effectiveMappingMode().isEnabled()) {
+      return;
+    }
+    long highWaterMark = maxColumnId(snapshot);
+    resolved.schema().nodes().stream()
+        .filter(node -> node.nativeFieldId().isPresent())
+        .filter(node -> node.nativeFieldId().getAsInt() > highWaterMark)
+        .findFirst()
+        .ifPresent(
+            node -> {
+              throw new IllegalArgumentException(
+                  "Column-mapped Delta table declares "
+                      + MAX_COLUMN_ID
+                      + "="
+                      + highWaterMark
+                      + " is below field ID "
+                      + node.nativeFieldId().getAsInt()
+                      + " for "
+                      + node.path().display());
+            });
   }
 
   /**
@@ -76,12 +139,13 @@ final class DeltaColumnMapping {
    * mapped snapshot that cannot produce its physical schema is an error rather than a silent
    * fallback.
    */
-  static StructType statsDataSchema(Snapshot snapshot, DeltaResolvedSchema resolvedSchema) {
+  public static StructType statsDataSchema(Snapshot snapshot, DeltaResolvedSchema resolvedSchema) {
     if (!resolvedSchema.effectiveMappingMode().isEnabled()) {
       return snapshot.getSchema();
     }
-    if (snapshot instanceof SnapshotImpl snapshotImpl && snapshotImpl.getMetadata() != null) {
-      return snapshotImpl.getMetadata().getPhysicalSchema();
+    StructType physicalSchema = KernelAdapter.physicalSchema(snapshot);
+    if (physicalSchema != null) {
+      return physicalSchema;
     }
     throw new IllegalArgumentException(
         "A column-mapped Delta snapshot must expose its physical schema");
@@ -96,7 +160,7 @@ final class DeltaColumnMapping {
    * struct rather than the whole schema, so an empty selection cannot widen into reading every
    * column's statistics.
    */
-  static StructType projectedStatsDataSchema(StructType schema, Set<String> includeColumns) {
+  public static StructType projectedStatsDataSchema(StructType schema, Set<String> includeColumns) {
     if (schema == null || includeColumns == null) {
       return schema;
     }
@@ -127,7 +191,7 @@ final class DeltaColumnMapping {
    * Maps a column named by Delta log statistics back to the logical key the planner reports, or
    * {@code null} when it resolves to no column the caller asked for.
    */
-  static String logicalNameForStats(
+  public static String logicalNameForStats(
       Column statsColumn, DeltaResolvedSchema schema, Set<String> columnSet) {
     String[] names = statsColumn == null ? null : statsColumn.getNames();
     if (names == null || names.length == 0) {
@@ -140,7 +204,7 @@ final class DeltaColumnMapping {
    * Maps a Parquet footer column back to the logical key the planner reports, or {@code null} when
    * it resolves to no column the caller asked for.
    */
-  static String logicalNameForFooter(
+  public static String logicalNameForFooter(
       List<String> parquetPath,
       Integer fieldId,
       DeltaResolvedSchema schema,
@@ -155,21 +219,13 @@ final class DeltaColumnMapping {
   }
 
   /** The key Delta stores a field's physical name under. */
-  static final String PHYSICAL_NAME_KEY = DeltaSchemaResolver.PHYSICAL_NAME;
+  public static final String PHYSICAL_NAME_KEY = DeltaSchemaResolver.PHYSICAL_NAME;
 
   /**
    * Reads a field's physical name from its Kernel metadata, or {@code null} when the field carries
    * none. Absence is normal for an unmapped table, where logical and physical names coincide.
    */
-  static String physicalName(FieldMetadata metadata) {
+  public static String physicalName(FieldMetadata metadata) {
     return metadata == null ? null : metadata.getString(PHYSICAL_NAME_KEY);
-  }
-
-  private static Protocol protocolOf(Snapshot snapshot) {
-    if (snapshot instanceof SnapshotImpl snapshotImpl) {
-      return snapshotImpl.getProtocol();
-    }
-    throw new IllegalArgumentException(
-        "A Delta snapshot with column mapping configured must expose its protocol");
   }
 }
