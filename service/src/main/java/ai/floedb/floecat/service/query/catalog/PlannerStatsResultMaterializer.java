@@ -52,6 +52,7 @@ final class PlannerStatsResultMaterializer {
     return TargetStatsResult.newBuilder()
         .setTableId(stats.getTableId())
         .setSnapshotId(stats.getSnapshotId())
+        .setColumnIdentityFingerprint(stats.getColumnIdentityFingerprint())
         .setTarget(stats.getTarget())
         .setStatus(materialized.status())
         .addAllReturnedStats(returnedStats)

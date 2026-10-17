@@ -955,6 +955,7 @@ class GrpcReconcilerBackendTest {
     backend.connectorOpener = cfg -> source;
 
     ReconcileContext ctx = reconcileContext();
+    stubSnapshot(backend, tableId, 44L);
 
     Optional<FloecatConnector.SnapshotFilePlan> result =
         backend.fetchSnapshotFilePlan(ctx, tableId, 44L);
@@ -1018,6 +1019,7 @@ class GrpcReconcilerBackendTest {
 
     FloecatConnector source = mock(FloecatConnector.class);
     backend.connectorOpener = cfg -> source;
+    stubSnapshot(backend, tableId, 44L);
 
     backend.fetchSnapshotFilePlan(reconcileContext(), tableId, 44L);
 
@@ -1114,6 +1116,7 @@ class GrpcReconcilerBackendTest {
           }
         };
     backend.captureEngineRegistry = new CaptureEngineRegistry(List.of(captureEngine));
+    stubSnapshot(backend, tableId, 44L);
 
     CaptureEngineResult result =
         backend.capturePlannedFileGroup(
@@ -1453,6 +1456,17 @@ class GrpcReconcilerBackendTest {
         "svc",
         Instant.now(),
         Optional.empty());
+  }
+
+  private static void stubSnapshot(
+      GrpcReconcilerBackend backend, ResourceId tableId, long snapshotId) {
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    when(backend.snapshot.getSnapshot(any()))
+        .thenReturn(
+            ai.floedb.floecat.catalog.rpc.GetSnapshotResponse.newBuilder()
+                .setSnapshot(Snapshot.newBuilder().setTableId(tableId).setSnapshotId(snapshotId))
+                .build());
   }
 
   @SuppressWarnings("unchecked")

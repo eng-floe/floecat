@@ -328,7 +328,7 @@ class UnityDeltaConnectorTest {
     assertThat(descriptors.getFirst().name()).isEqualTo("revenue");
     assertThat(descriptors.getFirst().sql()).isEqualTo("SELECT amount FROM sales");
     assertThat(descriptors.getFirst().searchPath()).containsExactly("nested", "schema");
-    assertThat(descriptors.getFirst().schemaJson()).contains("amount", "DOUBLE");
+    assertThat(descriptors.getFirst().schemaJson()).contains("amount", "double");
     verify(catalog).listTables("cat", "nested.schema");
   }
 
@@ -351,10 +351,24 @@ class UnityDeltaConnectorTest {
   }
 
   @Test
-  void describeEmitsAnEmptyTypeWhenEveryTypeSpellingIsAbsent() {
-    // An empty string rather than a literal null: DeltaSchemaMapper reads the field with asText(),
-    // which reads a JSON null back as the string "null".
+  void describeRejectsAColumnWhenEveryTypeSpellingIsAbsent() {
     var column = new UnityCatalogTable.Column("mystery", null, null, null, true);
+    var table =
+        new UnityCatalogTable(
+            "orders", "id", "EXTERNAL", "DELTA", null, null, List.of(column), Map.of());
+    when(catalog.getTableWithLenientColumns("cat.schema.orders")).thenReturn(Optional.of(table));
+    when(catalog.getTable("cat.schema.orders")).thenReturn(Optional.of(table));
+
+    assertThatThrownBy(() -> connector.describe("cat.schema", "orders"))
+        .isInstanceOf(SourceCatalogAccessException.class)
+        .hasMessageContaining("column=mystery");
+  }
+
+  @Test
+  void describeNormalizesNestedTypeTextWhenTypeJsonIsAbsent() {
+    var column =
+        new UnityCatalogTable.Column(
+            "payload", "STRUCT", "struct<id:bigint,tags:array<varchar(20)>>", null, true);
     var table =
         new UnityCatalogTable(
             "orders", "id", "EXTERNAL", "DELTA", null, null, List.of(column), Map.of());
@@ -363,10 +377,9 @@ class UnityDeltaConnectorTest {
 
     var descriptor = connector.describe("cat.schema", "orders");
 
-    assertThat(descriptor.schemaJson()).contains("\"type\":\"\"");
-    // Not a literal JSON null, which asText() reads back as "null". Checks the type field
-    // specifically, since "nullable" contains the substring.
-    assertThat(descriptor.schemaJson()).doesNotContain("\"type\":null");
+    assertThat(descriptor.schemaJson())
+        .contains("\"type\":\"struct\"", "\"name\":\"id\"", "\"type\":\"long\"")
+        .contains("\"name\":\"tags\"", "\"elementType\":\"string\"");
   }
 
   @Test

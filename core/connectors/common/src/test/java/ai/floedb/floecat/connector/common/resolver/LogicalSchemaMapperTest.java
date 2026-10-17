@@ -26,7 +26,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
-import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class LogicalSchemaMapperTest {
@@ -194,19 +193,19 @@ class LogicalSchemaMapperTest {
   // DELTA schema
   // -------------------------------------------------------------------------
   @Test
-  void deltaSchemaParsesStructs() {
+  void deltaSchemaRequiresCanonicalIdentityMap() {
     String deltaJson =
         """
-        {
+        {"type":"struct",
           "fields":[
             {"name":"id","type":"long","nullable":false},
             {"name":"location","type":{
                  "type":"struct",
                  "fields":[
-                   {"name":"lat","type":"double"},
-                   {"name":"lon","type":"double"}
+                   {"name":"lat","type":"double","nullable":true},
+                   {"name":"lon","type":"double","nullable":true}
                  ]
-              }}
+              },"nullable":true}
           ]
         }
         """;
@@ -214,49 +213,13 @@ class LogicalSchemaMapperTest {
     UpstreamRef upstream =
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_DELTA)
-            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_PATH_ORDINAL)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_CANONICAL_MAP)
             .build();
 
     Table t = baseTable(deltaJson, upstream);
-
-    SchemaDescriptor desc = mapper.map(t, deltaJson);
-
-    // All columns should have deterministic, non-zero ids for CID_PATH_ORDINAL
-    for (var c : desc.getColumnsList()) {
-      assertNotEquals(0L, c.getId(), "expected non-zero id for " + c.getPhysicalPath());
-    }
-
-    assertEquals(4, desc.getColumnsCount()); // id, location, location.lat, location.lon
-
-    SchemaColumn id = desc.getColumns(0);
-    assertEquals("id", id.getName());
-    assertEquals(0, id.getFieldId());
-    assertTrue(id.getLeaf());
-    assertEquals(1, id.getOrdinal());
-    assertEquals("id", id.getPhysicalPath());
-
-    SchemaColumn location = desc.getColumns(1);
-    assertEquals("location", location.getName());
-    assertEquals("location", location.getPhysicalPath());
-    assertFalse(location.getLeaf());
-    assertEquals(2, location.getOrdinal());
-
-    SchemaColumn lat = desc.getColumns(2);
-    assertEquals("lat", lat.getName());
-    assertEquals("location.lat", lat.getPhysicalPath());
-    assertEquals(0, lat.getFieldId());
-    // Ordinals are 1-based within the parent (matching Iceberg semantics).
-    assertEquals(1, lat.getOrdinal());
-    assertTrue(lat.getLeaf());
-
-    SchemaColumn lon = desc.getColumns(3);
-    assertEquals("lon", lon.getName());
-    assertEquals("location.lon", lon.getPhysicalPath());
-    assertEquals(0, lon.getFieldId());
-    assertEquals(2, lon.getOrdinal());
-    assertTrue(lon.getLeaf());
-
-    assertNotEquals(lat.getId(), lon.getId());
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> mapper.map(t, deltaJson));
+    assertEquals("Canonical column identity map is required", error.getMessage());
   }
 
   // -------------------------------------------------------------------------
@@ -397,33 +360,6 @@ class LogicalSchemaMapperTest {
       assertEquals(a.getOrdinal(), b.getOrdinal());
       assertEquals(a.getId(), b.getId(), "id must be deterministic");
     }
-  }
-
-  @Test
-  void buildColumnOrdinalsUsesPhysicalPathsForNestedFields() {
-    String deltaJson =
-        """
-        {"fields":[
-          {"name":"id","type":"long","nullable":false},
-          {"name":"location","type":{
-            "type":"struct",
-            "fields":[
-              {"name":"lat","type":"double","nullable":true},
-              {"name":"lon","type":"double","nullable":true}
-            ]
-          },"nullable":true}
-        ]}
-        """;
-
-    Map<String, Integer> ordinals =
-        LogicalSchemaMapper.buildColumnOrdinals(
-            ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, deltaJson);
-
-    assertEquals(1, ordinals.get("id"));
-    assertEquals(2, ordinals.get("location"));
-    // Nested ordinals are 1-based within the parent (matching Iceberg semantics).
-    assertEquals(1, ordinals.get("location.lat"));
-    assertEquals(2, ordinals.get("location.lon"));
   }
 
   @Test

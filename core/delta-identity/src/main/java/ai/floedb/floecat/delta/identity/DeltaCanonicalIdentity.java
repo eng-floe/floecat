@@ -207,6 +207,13 @@ public final class DeltaCanonicalIdentity {
     return new LinkedHashMap<>(index.values());
   }
 
+  public static java.util.Map<ColumnPath, Long> canonicalIdsByPath(ColumnIdentityMap identityMap) {
+    SchemaIdentityState state = fromProto(identityMap);
+    java.util.Map<ColumnPath, Long> result = new LinkedHashMap<>();
+    state.entries().forEach(entry -> result.put(entry.path(), entry.canonicalId()));
+    return java.util.Map.copyOf(result);
+  }
+
   /** Returns source ordinals keyed by the same unambiguous logical names as stats. */
   public static java.util.Map<String, Integer> ordinalsByStatsKey(Snapshot snapshot) {
     LegacyDottedKeyIndex<Integer> index = LegacyDottedKeyIndex.create();

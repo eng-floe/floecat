@@ -107,7 +107,10 @@ public final class StatsProtoEmitter {
       }
 
       String key = ColumnIdComputer.canonicalizePath(p);
-      long id = ColumnIdComputer.compute(algo, c);
+      if (algo == ColumnIdAlgorithm.CID_CANONICAL_MAP && c.getId() <= 0L) {
+        throw new IllegalArgumentException("Canonical column ID is required for " + c.getName());
+      }
+      long id = c.getId() > 0L ? c.getId() : ColumnIdComputer.compute(algo, c);
       if (id != 0L) {
         out.put(key, id);
       }
@@ -125,6 +128,14 @@ public final class StatsProtoEmitter {
       ColumnIdAlgorithm algo, Map<String, Long> idByPath, FloecatConnector.ColumnRef ref) {
 
     if (ref == null) return 0L;
+
+    if (ref.canonicalId() > 0L) {
+      return ref.canonicalId();
+    }
+    if (algo == ColumnIdAlgorithm.CID_CANONICAL_MAP) {
+      LOG.warn("Skipping column without an unambiguous canonical ID: " + ref.name());
+      return 0L;
+    }
 
     // FIELD_ID policy: use field_id only; do NOT look at path/name/ordinal
     if (algo == ColumnIdAlgorithm.CID_FIELD_ID) {
@@ -164,6 +175,34 @@ public final class StatsProtoEmitter {
             + ref.name()
             + ")");
     return 0L;
+  }
+
+  /**
+   * Resolve a column's stable ID from a connector-supplied view, with no schema descriptor to
+   * consult.
+   *
+   * <p>An authoritative canonical ID always wins: it is the only identity {@link
+   * ColumnIdAlgorithm#CID_CANONICAL_MAP} recognises, and {@link ColumnIdComputer#compute} cannot
+   * derive one because the mapping lives in the snapshot, not in the ref. Every other algorithm
+   * keeps deriving its ID from the ref exactly as before.
+   *
+   * <p>Returns 0L to skip the column, which is the correct outcome for a canonical-map column whose
+   * identity is ambiguous (see {@code LegacyDottedKeyIndex}): dropping its statistics costs
+   * planning precision, whereas emitting it under a wrong or absent ID would corrupt them.
+   */
+  private static long resolveViewId(ColumnIdAlgorithm algo, FloecatConnector.ColumnRef ref) {
+    if (ref == null) {
+      return 0L;
+    }
+    if (ref.canonicalId() > 0L) {
+      return ref.canonicalId();
+    }
+    if (algo == ColumnIdAlgorithm.CID_CANONICAL_MAP) {
+      LOG.warn("Skipping column without an unambiguous canonical ID: " + ref.name());
+      return 0L;
+    }
+    return ColumnIdComputer.compute(
+        algo, ref.name(), ref.physicalPath(), ref.ordinal(), ref.fieldId());
   }
 
   public static List<TargetStatsRecord> toTargetColumnStats(
@@ -337,13 +376,7 @@ public final class StatsProtoEmitter {
       if (view == null || view.ref() == null) {
         continue;
       }
-      long columnId =
-          ColumnIdComputer.compute(
-              algo,
-              view.ref().name(),
-              view.ref().physicalPath(),
-              view.ref().ordinal(),
-              view.ref().fieldId());
+      long columnId = resolveViewId(algo, view.ref());
       if (columnId <= 0L) {
         continue;
       }
@@ -390,13 +423,7 @@ public final class StatsProtoEmitter {
           if (columnView == null || columnView.ref() == null) {
             continue;
           }
-          long columnId =
-              ColumnIdComputer.compute(
-                  algo,
-                  columnView.ref().name(),
-                  columnView.ref().physicalPath(),
-                  columnView.ref().ordinal(),
-                  columnView.ref().fieldId());
+          long columnId = resolveViewId(algo, columnView.ref());
           if (columnId <= 0L) {
             continue;
           }

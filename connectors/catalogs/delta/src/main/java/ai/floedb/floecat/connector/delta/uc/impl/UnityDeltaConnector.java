@@ -21,6 +21,7 @@ import ai.floedb.floecat.client.unity.TemporaryTableCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogException;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
+import ai.floedb.floecat.client.unity.UnityCatalogTypeText;
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.LogSafeText;
@@ -164,7 +165,7 @@ public final class UnityDeltaConnector extends DeltaConnector {
         table.storageLocation(),
         schemaJson,
         List.of(),
-        ColumnIdAlgorithm.CID_PATH_ORDINAL,
+        ColumnIdAlgorithm.CID_CANONICAL_MAP,
         descriptorProperties);
   }
 
@@ -644,10 +645,17 @@ public final class UnityDeltaConnector extends DeltaConnector {
       field.put("name", column.name());
       JsonNode type = typeFromTypeJson(column.typeJson());
       if (type == null) {
-        // Both spellings can be absent; an empty string keeps the schema JSON well-formed for
-        // DeltaSchemaMapper, which a literal null field value would not be.
         String declared = column.typeText() != null ? column.typeText() : column.typeName();
-        field.put("type", declared == null ? "" : declared);
+        try {
+          field.set("type", UnityCatalogTypeText.toDeltaType(declared));
+        } catch (IllegalArgumentException failure) {
+          throw new SourceCatalogAccessException(
+              SourceCatalogAccessException.Denial.UNSUPPORTED,
+              "Unity Catalog column type is not representable: table="
+                  + LogSafeText.bounded(table.name(), MAX_LOGGED_NAME_CHARS)
+                  + " column="
+                  + LogSafeText.bounded(column.name(), MAX_LOGGED_NAME_CHARS));
+        }
       } else {
         field.set("type", type);
       }
