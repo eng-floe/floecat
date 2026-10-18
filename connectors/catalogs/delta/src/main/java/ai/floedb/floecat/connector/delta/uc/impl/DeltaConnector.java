@@ -52,6 +52,9 @@ import ai.floedb.floecat.delta.identity.DeltaSchemaMapper;
 import ai.floedb.floecat.delta.identity.IdentityResult;
 import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.delta.identity.PersistedIdentityLookup;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.schema.identity.ColumnPath;
+import ai.floedb.floecat.schema.identity.SchemaIdentityState;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.delta.kernel.Snapshot;
@@ -88,6 +91,7 @@ import io.delta.kernel.utils.CloseableIterator;
 import io.delta.kernel.utils.FileStatus;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -586,6 +590,7 @@ abstract class DeltaConnector implements FloecatConnector {
                 columnIdentityMap);
     Map<Long, ai.floedb.floecat.query.rpc.SchemaColumn> columnsById = new LinkedHashMap<>();
     Map<String, ai.floedb.floecat.query.rpc.SchemaColumn> columnsByPath = new LinkedHashMap<>();
+    Set<String> ambiguousPaths = new HashSet<>();
     Map<String, List<ai.floedb.floecat.query.rpc.SchemaColumn>> columnsByName =
         new LinkedHashMap<>();
     for (var column : schemaDescriptor.getColumnsList()) {
@@ -593,25 +598,37 @@ abstract class DeltaConnector implements FloecatConnector {
         continue;
       }
       columnsById.put(column.getId(), column);
-      columnsByPath.put(column.getPhysicalPath(), column);
+      if (columnsByPath.putIfAbsent(column.getPhysicalPath(), column) != null) {
+        ambiguousPaths.add(column.getPhysicalPath());
+      }
       columnsByName.computeIfAbsent(column.getName(), ignored -> new ArrayList<>()).add(column);
     }
-    Map<String, SyntheticPageIndexColumn> syntheticColumnsByPath =
-        deltaSyntheticPageIndexColumns(snapshot.getSchema());
-    Map<Long, SyntheticPageIndexColumn> syntheticColumnsById = new LinkedHashMap<>();
+    // Dotted paths are not unique: a literal field `a.b` and a nested `a` -> `b` share one. Such a
+    // path names no column, and a Parquet path shared that way cannot attribute a footer column, so
+    // those columns get no page index rather than another column's (or a synthetic all-null) one.
+    columnsByPath.keySet().removeAll(ambiguousPaths);
+    Map<Long, SyntheticPageIndexColumn> syntheticColumnsById =
+        deltaSyntheticPageIndexColumns(
+            snapshot.getSchema(), ColumnIdentityMaps.restore(columnIdentityMap));
+    Set<String> ambiguousParquetPaths = new HashSet<>();
     Map<String, ai.floedb.floecat.query.rpc.SchemaColumn> columnsByParquetPath =
         new LinkedHashMap<>();
-    columnsById
-        .values()
-        .forEach(
-            column -> {
-              SyntheticPageIndexColumn synthetic =
-                  syntheticColumnsByPath.get(column.getPhysicalPath());
-              if (synthetic != null) {
-                syntheticColumnsById.put(column.getId(), synthetic);
-                columnsByParquetPath.put(synthetic.parquetPath(), column);
-              }
-            });
+    syntheticColumnsById.forEach(
+        (columnId, synthetic) -> {
+          if (columnsByParquetPath.putIfAbsent(synthetic.parquetPath(), columnsById.get(columnId))
+              != null) {
+            ambiguousParquetPaths.add(synthetic.parquetPath());
+          }
+        });
+    columnsByParquetPath.keySet().removeAll(ambiguousParquetPaths);
+    Set<Long> unattributableColumnIds = new HashSet<>();
+    syntheticColumnsById.forEach(
+        (columnId, synthetic) -> {
+          if (ambiguousParquetPaths.contains(synthetic.parquetPath())) {
+            unattributableColumnIds.add(columnId);
+          }
+        });
+    syntheticColumnsById.keySet().removeAll(unattributableColumnIds);
     Map<Integer, ai.floedb.floecat.query.rpc.SchemaColumn> columnsByFormatFieldId =
         new LinkedHashMap<>();
     columnsById.values().stream()
@@ -650,6 +667,9 @@ abstract class DeltaConnector implements FloecatConnector {
         }
         selected = columnsById.get(columnId);
       } else {
+        if (ambiguousPaths.contains(normalized)) {
+          continue;
+        }
         selected = columnsByPath.get(normalized);
         if (selected == null) {
           List<ai.floedb.floecat.query.rpc.SchemaColumn> named =
@@ -660,10 +680,15 @@ abstract class DeltaConnector implements FloecatConnector {
       if (selected == null) {
         throw new IllegalArgumentException("Unknown Delta column selector: " + normalized);
       }
+      if (unattributableColumnIds.contains(selected.getId())) {
+        continue;
+      }
       LinkedHashSet<String> aliases =
           aliasesByColumnId.computeIfAbsent(selected.getId(), ignored -> new LinkedHashSet<>());
       aliases.add("#" + selected.getId());
-      aliases.add(selected.getPhysicalPath());
+      if (!ambiguousPaths.contains(selected.getPhysicalPath())) {
+        aliases.add(selected.getPhysicalPath());
+      }
       aliases.add(normalized);
     }
 
@@ -826,22 +851,22 @@ abstract class DeltaConnector implements FloecatConnector {
     return List.copyOf(synthetic);
   }
 
-  private static Map<String, SyntheticPageIndexColumn> deltaSyntheticPageIndexColumns(
-      StructType schema) {
-    Map<String, SyntheticPageIndexColumn> columns = new LinkedHashMap<>();
-    collectDeltaSyntheticPageIndexColumns(schema, "", "", 0, columns);
-    return Map.copyOf(columns);
+  private static Map<Long, SyntheticPageIndexColumn> deltaSyntheticPageIndexColumns(
+      StructType schema, SchemaIdentityState identity) {
+    Map<Long, SyntheticPageIndexColumn> columns = new LinkedHashMap<>();
+    collectDeltaSyntheticPageIndexColumns(schema, ColumnPath.ROOT, "", 0, identity, columns);
+    return columns;
   }
 
   private static void collectDeltaSyntheticPageIndexColumns(
       StructType schema,
-      String logicalPrefix,
+      ColumnPath prefix,
       String parquetPrefix,
       int inheritedDefinitionLevel,
-      Map<String, SyntheticPageIndexColumn> columns) {
+      SchemaIdentityState identity,
+      Map<Long, SyntheticPageIndexColumn> columns) {
     for (StructField field : schema.fields()) {
-      String logicalPath =
-          logicalPrefix.isEmpty() ? field.getName() : logicalPrefix + "." + field.getName();
+      ColumnPath path = prefix.field(field.getName());
       String physicalName = DeltaColumnMapping.physicalName(field.getMetadata());
       if (physicalName == null || physicalName.isBlank()) {
         physicalName = field.getName();
@@ -852,12 +877,12 @@ abstract class DeltaConnector implements FloecatConnector {
       DataType dataType = field.getDataType();
       if (dataType instanceof StructType structType) {
         collectDeltaSyntheticPageIndexColumns(
-            structType, logicalPath, parquetPath, definitionLevel, columns);
+            structType, path, parquetPath, definitionLevel, identity, columns);
       } else if (!(dataType instanceof ArrayType) && !(dataType instanceof MapType)) {
         SyntheticPageIndexColumn column =
             syntheticDeltaPrimitive(parquetPath, definitionLevel, dataType);
         if (column != null) {
-          columns.put(logicalPath, column);
+          identity.byPath(path).ifPresent(entry -> columns.put(entry.canonicalId(), column));
         }
       }
     }

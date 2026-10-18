@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -149,7 +150,7 @@ class ObjectCacheTest {
   }
 
   @Test
-  void resolvedCanonicalSnapshotWithoutIdentityMapHasNoQueryableSchema() {
+  void resolvedCanonicalSnapshotWithoutIdentityMapFailsFast() {
     ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
     UserTableNode table =
         table(
@@ -164,11 +165,13 @@ class ObjectCacheTest {
             new CatalogGraphView.SchemaResolution(
                 table, "{}", ColumnIdentityMap.getDefaultInstance()));
 
-    SchemaDescriptor schema =
-        cache.resolvedSnapshotSchema(
-            "correlation", pin(table.id(), "definition", "constraints", "schema"), graphView);
-
-    assertThat(schema).isEqualTo(SchemaDescriptor.getDefaultInstance());
+    assertThatThrownBy(
+            () ->
+                cache.resolvedSnapshotSchema(
+                    "correlation",
+                    pin(table.id(), "definition", "constraints", "schema"),
+                    graphView))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test

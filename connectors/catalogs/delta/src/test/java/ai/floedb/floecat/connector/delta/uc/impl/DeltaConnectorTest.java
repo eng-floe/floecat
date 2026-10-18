@@ -1293,6 +1293,81 @@ class DeltaConnectorTest {
   }
 
   @Test
+  void pageIndexSelectionPrefersFooterFieldIdOverPath() {
+    Snapshot latest = snapshot(9L, 9000L, new StructType().add("logical_id", LongType.LONG, true));
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(9L, latest)));
+    connector.setSnapshotSchemaJson(
+        """
+        {"type":"struct","fields":[
+          {"name":"logical_id","type":"long","nullable":true,"metadata":{}}]}
+        """);
+    var footerEntry =
+        pageIndexEntry("s3://bucket/mapped.parquet", "renamed").withParquetFieldId(17);
+
+    var selected =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                9L,
+                Set.of("logical_id"),
+                FloecatConnector.ColumnSelectorPolicy.defaults(),
+                List.of(footerEntry),
+                nativeIdentityMap(Map.of("logical_id", 17)))
+            .orElseThrow();
+
+    assertEquals(1, selected.size());
+    assertEquals("renamed", selected.getFirst().columnName());
+    assertEquals(16L, selected.getFirst().pageHeaderOffset());
+  }
+
+  @Test
+  void pageIndexSelectionNeverAttributesADottedPathSharedByTwoColumns() {
+    String schemaJson =
+        """
+        {"type":"struct","fields":[
+          {"name":"a.b","type":"long","nullable":true,"metadata":{}},
+          {"name":"a","type":{"type":"struct","fields":[
+            {"name":"b","type":"long","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}}
+        ]}
+        """;
+    Snapshot latest =
+        snapshot(
+            7L,
+            7000L,
+            new StructType()
+                .add("a.b", LongType.LONG, true)
+                .add("a", new StructType().add("b", LongType.LONG, true), true));
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(7L, latest)));
+    connector.setSnapshotSchemaJson(schemaJson);
+    ColumnIdentityMap identityMap = freshIdentity(latest);
+    var identity = ColumnIdentityMaps.restore(identityMap);
+    long literalId = identity.byPath(ColumnPath.ROOT.field("a.b")).orElseThrow().canonicalId();
+    long nestedId =
+        identity.byPath(ColumnPath.ROOT.field("a").field("b")).orElseThrow().canonicalId();
+    var entry = pageIndexEntry("s3://bucket/file.parquet", "a.b");
+
+    for (Set<String> selectors :
+        List.of(Set.<String>of(), Set.of("a.b"), Set.of("#" + literalId, "#" + nestedId))) {
+      assertEquals(
+          List.of(),
+          connector
+              .selectPageIndexEntries(
+                  "ns",
+                  "tbl",
+                  7L,
+                  selectors,
+                  FloecatConnector.ColumnSelectorPolicy.defaults(),
+                  List.of(entry),
+                  identityMap)
+              .orElseThrow(),
+          "selectors " + selectors);
+    }
+  }
+
+  @Test
   void directStatsIncludeColumnsDefaultsToFirstThirtyTwoSchemaColumns() {
     List<String> availableColumns = new java.util.ArrayList<>();
     for (int i = 0; i < 40; i++) {

@@ -203,9 +203,6 @@ public final class ObjectCache {
 
   private SchemaDescriptor mapSchema(
       UserTableNode table, String schemaJson, ColumnIdentityMap identityMap) {
-    if (missingCanonicalIdentity(table, identityMap)) {
-      return SchemaDescriptor.getDefaultInstance();
-    }
     String effectiveSchema =
         schemaJson == null || schemaJson.isBlank() ? table.schemaJson() : schemaJson;
     return schemaMapper.map(table, effectiveSchema, identityMap);

@@ -44,14 +44,19 @@ public final class TestNodes {
   }
 
   public static UserTableNode tableNode(ResourceId tableId, String schemaJson) {
+    return tableNode(tableId, schemaJson, TableFormat.TF_ICEBERG, ColumnIdAlgorithm.CID_FIELD_ID);
+  }
+
+  public static UserTableNode tableNode(
+      ResourceId tableId, String schemaJson, TableFormat format, ColumnIdAlgorithm algorithm) {
     return new UserTableNode(
         tableId,
         "blob://test/v1",
         rid(tableId.getAccountId(), "cat-" + tableId.getId()),
         rid(tableId.getAccountId(), "ns-" + tableId.getId()),
         tableId.getId(),
-        TableFormat.TF_ICEBERG,
-        ColumnIdAlgorithm.CID_FIELD_ID,
+        format,
+        algorithm,
         schemaJson,
         Map.of(),
         List.of(),

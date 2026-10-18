@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.metagraph.snapshot;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
@@ -392,10 +393,20 @@ public class SnapshotHelper {
         snapshot == null || snapshot.getSchemaJson().isBlank()
             ? supplier.get()
             : snapshot.getSchemaJson();
+    if (snapshot != null
+        && !snapshot.hasColumnIdentityMap()
+        && tbl.columnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP) {
+      // Snapshot writes reject a canonical snapshot without its map, so this is corrupt state that
+      // an empty schema would hide.
+      throw GrpcErrors.internal(
+          cid,
+          SNAPSHOT_COLUMN_IDENTITY_MISSING,
+          Map.of(
+              "table_id", tbl.id().getId(),
+              "snapshot_id", Long.toString(snapshot.getSnapshotId())));
+    }
     ColumnIdentityMap identityMap =
-        snapshot != null && snapshot.hasColumnIdentityMap()
-            ? snapshot.getColumnIdentityMap()
-            : ColumnIdentityMap.getDefaultInstance();
+        snapshot == null ? ColumnIdentityMap.getDefaultInstance() : snapshot.getColumnIdentityMap();
 
     return new SchemaResolution(tbl, schemaJson, identityMap);
   }

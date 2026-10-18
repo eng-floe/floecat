@@ -26,9 +26,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -52,6 +54,7 @@ import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.time.Clock;
 import java.time.Duration;
@@ -241,6 +244,32 @@ class SnapshotHelperTest {
     assertThat(resolved.schemaJson()).contains("pinned");
     assertThat(resolved.columnIdentityMap()).isEqualTo(identityMap);
     assertThat(repository.liveBlobReads()).isZero();
+  }
+
+  @Test
+  void canonicalSnapshotWithoutIdentityMapFailsSchemaResolution() {
+    ResourceId tableId = tableId("tbl");
+    repository.put(
+        tableId,
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(41L)
+            .setSchemaJson("{}")
+            .setUpstreamCreatedAt(ts("2024-04-01T00:00:00Z"))
+            .build());
+
+    assertThatThrownBy(
+            () ->
+                helper.schemaFor(
+                    "corr",
+                    TestNodes.tableNode(
+                        tableId, "{}", TableFormat.TF_DELTA, ColumnIdAlgorithm.CID_CANONICAL_MAP),
+                    SnapshotRef.newBuilder().setSnapshotId(41L).build(),
+                    "s3://tbl/snap-41.pb",
+                    () -> "{}"))
+        .isInstanceOfSatisfying(
+            StatusRuntimeException.class,
+            error -> assertThat(error.getStatus().getCode()).isEqualTo(Status.Code.INTERNAL));
   }
 
   @Test
