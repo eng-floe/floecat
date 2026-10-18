@@ -29,8 +29,14 @@ import com.tngtech.archunit.lang.syntax.ArchRuleDefinition;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
-/** Keeps canonical Delta identity usable without either connector implementation. */
-class DeltaIdentityBoundaryArchTest {
+/**
+ * Keeps catalog overlays independent of the connector implementations.
+ *
+ * <p>The catalog-access and identity modules cannot reach connector code because Maven keeps it off
+ * their classpath. The service module depends on the connectors, so only this rule stops overlay
+ * code from calling into them.
+ */
+class ConnectorBoundaryArchTest {
   private static final String CONNECTOR_PACKAGE = "ai.floedb.floecat.connector.";
   private static final Set<String> KNOWN_INTEGRATION_DEBT =
       Set.of(

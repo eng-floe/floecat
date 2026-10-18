@@ -62,7 +62,7 @@ class DeltaCanonicalIdentityTest {
                     "col-nested"))
             .add(mappedField("items", new ArrayType(VariantType.VARIANT, true), 5L, "col-items"));
     Snapshot snapshot =
-        new TestSnapshot(
+        TestSnapshots.snapshot(
             9L,
             schema,
             Map.of(
@@ -136,7 +136,7 @@ class DeltaCanonicalIdentityTest {
   void enablingNativeMappingReplacesStructuredIdsWithDeltaIds() {
     StructType schema = new StructType().add("tags", new ArrayType(StringType.STRING, true), true);
     Snapshot unmapped =
-        new TestSnapshot(6L, schema, Map.of(), new Protocol(1, 2, Set.of(), Set.of()));
+        TestSnapshots.snapshot(6L, schema, Map.of(), new Protocol(1, 2, Set.of(), Set.of()));
     ColumnIdentityMap structured = freshIdentity(unmapped, 6L);
 
     ColumnIdentityMap mapped = nextGeneration(mappedSnapshot(7L, false, false), 7L, structured);
@@ -156,17 +156,17 @@ class DeltaCanonicalIdentityTest {
 
   @Test
   void mappedTableReportsMissingMaxColumnIdDistinctly() {
-    TestSnapshot source = (TestSnapshot) mappedSnapshot(7L, false, false);
+    Snapshot source = mappedSnapshot(7L, false, false);
     Snapshot missing =
-        new TestSnapshot(
-            source.version(),
-            source.schema(),
+        TestSnapshots.snapshot(
+            source.getVersion(),
+            source.getSchema(),
             Map.of(
                 ColumnMappingMode.PROPERTY,
                 "name",
                 DeltaColumnMapping.ICEBERG_COMPAT_V2_ENABLED,
                 "false"),
-            source.protocol());
+            ((KernelAdapter.ProtocolSnapshot) source).protocol());
 
     assertThatThrownBy(() -> DeltaColumnMapping.resolveSchema(missing))
         .isInstanceOf(IllegalArgumentException.class)
@@ -176,11 +176,11 @@ class DeltaCanonicalIdentityTest {
 
   @Test
   void mappedTableReportsDeclaredMaxColumnIdBelowLiveIds() {
-    TestSnapshot source = (TestSnapshot) mappedSnapshot(7L, false, false);
+    Snapshot source = mappedSnapshot(7L, false, false);
     Snapshot tooLow =
-        new TestSnapshot(
-            source.version(),
-            source.schema(),
+        TestSnapshots.snapshot(
+            source.getVersion(),
+            source.getSchema(),
             Map.of(
                 ColumnMappingMode.PROPERTY,
                 "name",
@@ -188,7 +188,7 @@ class DeltaCanonicalIdentityTest {
                 "1",
                 DeltaColumnMapping.ICEBERG_COMPAT_V2_ENABLED,
                 "false"),
-            source.protocol());
+            ((KernelAdapter.ProtocolSnapshot) source).protocol());
 
     assertThatThrownBy(() -> DeltaColumnMapping.resolveSchema(tooLow))
         .isInstanceOf(IllegalArgumentException.class)
@@ -296,7 +296,7 @@ class DeltaCanonicalIdentityTest {
     Set<String> writerFeatures =
         icebergCompatV2 ? Set.of("columnMapping", "icebergCompatV2") : Set.of("columnMapping");
     Protocol protocol = new Protocol(3, 7, Set.of("columnMapping"), writerFeatures);
-    return new TestSnapshot(version, schema, properties, protocol);
+    return TestSnapshots.snapshot(version, schema, properties, protocol);
   }
 
   private static StructField mappedField(

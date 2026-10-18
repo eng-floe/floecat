@@ -243,8 +243,7 @@ class MetaGraphTest {
             .maps()
             .get(history.headVersion());
     UserTableNode canonical =
-        canonicalTable(
-            ai.floedb.floecat.catalog.rpc.TableFormat.TF_DELTA, schemaJson, identityMap);
+        canonicalTable(ai.floedb.floecat.catalog.rpc.TableFormat.TF_DELTA, schemaJson, identityMap);
     when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
     when(user.resolve(usrTable)).thenReturn(Optional.of(canonical));
     when(user.schemaFor(eq("table-schema"), eq(usrTable), any(), eq(""), eq("")))

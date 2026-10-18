@@ -378,7 +378,7 @@ class DeltaIdentityServiceTest {
             ? new Protocol(
                 3, 7, java.util.Set.of("columnMapping"), java.util.Set.of("columnMapping"))
             : new Protocol(1, 2, java.util.Set.of(), java.util.Set.of());
-    return new TestSnapshot(
+    return TestSnapshots.snapshot(
         version, KernelAdapter.deserializeSchema(schemaJson), properties, protocol);
   }
 
@@ -523,7 +523,7 @@ class DeltaIdentityServiceTest {
           metadataVersions.stream()
               .map(snapshots::get)
               .filter(java.util.Objects::nonNull)
-              .map(snapshot -> ((TestSnapshot) snapshot).protocol())
+              .map(snapshot -> ((KernelAdapter.ProtocolSnapshot) snapshot).protocol())
               .map(
                   protocol ->
                       new HistoricalProtocol(

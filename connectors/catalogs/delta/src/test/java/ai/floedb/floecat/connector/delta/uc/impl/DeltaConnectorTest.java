@@ -547,7 +547,8 @@ class DeltaConnectorTest {
     ColumnIdentityMap version0Map = freshIdentity(version0, 0L);
     ColumnIdentityMap version3Map =
         new DeltaIdentityService()
-            .reconcileCurrent(beforeRetention, tableMapLookup(version0Map))
+            .reconcileCurrent(
+                beforeRetention, PersistedIdentityLookup.forTableMap(Optional.of(version0Map)))
             .maps()
             .get(3L);
     assertEquals(3L, ColumnIdentityMaps.restore(version3Map).sourceVersion());
@@ -566,40 +567,12 @@ class DeltaConnectorTest {
 
     ColumnIdentityMap version4Map =
         new DeltaIdentityService()
-            .reconcileCurrent(retained, tableMapLookup(version3Map))
+            .reconcileCurrent(
+                retained, PersistedIdentityLookup.forTableMap(Optional.of(version3Map)))
             .maps()
             .get(4L);
     assertEquals(version3Map.getFingerprint(), version4Map.getFingerprint());
     assertEquals(canonicalId(version3Map, "id"), canonicalId(version4Map, "id"));
-  }
-
-  private static PersistedIdentityLookup tableMapLookup(ColumnIdentityMap tableMap) {
-    return new PersistedIdentityLookup() {
-      @Override
-      public Optional<ColumnIdentityMap> exact(long version) {
-        return Optional.empty();
-      }
-
-      @Override
-      public Optional<Map.Entry<Long, ColumnIdentityMap>> floor(long version) {
-        return Optional.empty();
-      }
-
-      @Override
-      public Optional<Map.Entry<Long, ColumnIdentityMap>> ceiling(long version) {
-        return Optional.empty();
-      }
-
-      @Override
-      public Optional<ColumnIdentityMap> tableMap() {
-        return Optional.of(tableMap);
-      }
-
-      @Override
-      public long highWaterMark() {
-        return tableMap.getHighWaterMark();
-      }
-    };
   }
 
   @Test
