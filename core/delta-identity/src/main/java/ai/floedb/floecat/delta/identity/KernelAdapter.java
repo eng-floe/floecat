@@ -69,7 +69,8 @@ public final class KernelAdapter {
   }
 
   static List<Long> metadataVersions(
-      Engine engine, String tablePath, long firstVersion, long lastVersion) throws Exception {
+      Engine engine, String tablePath, long firstVersion, long lastVersion)
+      throws java.io.IOException {
     List<FileStatus> commitFiles =
         DeltaLogActionUtils.getCommitFilesForVersionRange(
             engine, new Path(tablePath), firstVersion, Optional.of(lastVersion));
@@ -105,8 +106,7 @@ public final class KernelAdapter {
       Table table, Engine engine, String tablePath, long version) {
     try {
       Table versioned = table instanceof TableImpl ? Table.forPath(engine, tablePath) : table;
-      Snapshot snapshot = versioned.getSnapshotAsOfVersion(engine, version);
-      return snapshot;
+      return versioned.getSnapshotAsOfVersion(engine, version);
     } catch (KernelException failure) {
       throw classify(failure);
     }

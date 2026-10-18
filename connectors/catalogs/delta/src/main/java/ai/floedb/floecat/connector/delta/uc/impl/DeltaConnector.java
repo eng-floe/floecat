@@ -185,18 +185,6 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     FloecatConnector.SnapshotSelectionKind selectionKind =
         options == null ? FloecatConnector.SnapshotSelectionKind.ALL : options.selectionKind();
 
-    List<Long> versions =
-        versionsToEnumerate(
-            latestVersion,
-            fullRescan,
-            knownSnapshotIds,
-            targetSnapshotIds,
-            selectionKind,
-            options == null ? Set.of() : options.selectionSnapshotIds(),
-            options == null ? 0 : options.latestN());
-    if (versions.isEmpty()) {
-      return Stream.empty();
-    }
     NavigableMap<Long, ColumnIdentityMap> persistedIdentityMaps = new TreeMap<>();
     if (options != null) {
       options
@@ -210,6 +198,20 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
                 }
               });
     }
+    List<Long> versions =
+        versionsToEnumerate(
+            latestVersion,
+            fullRescan,
+            knownSnapshotIds.stream()
+                .filter(persistedIdentityMaps::containsKey)
+                .collect(java.util.stream.Collectors.toSet()),
+            targetSnapshotIds,
+            selectionKind,
+            options == null ? Set.of() : options.selectionSnapshotIds(),
+            options == null ? 0 : options.latestN());
+    if (versions.isEmpty()) {
+      return Stream.empty();
+    }
     long highWaterMark =
         Math.max(
             options == null ? 0L : options.persistedIdentityHighWaterMark(),
@@ -218,7 +220,8 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
                 .max()
                 .orElse(0L));
     PersistedIdentityLookup lookup =
-        new MapPersistedIdentityLookup(persistedIdentityMaps, highWaterMark);
+        PersistedIdentityLookup.forSnapshots(
+            persistedIdentityMaps, Optional.empty(), highWaterMark);
     DeltaHistorySource history = historySource(storageLocation, table);
     versions.forEach(
         version ->
@@ -247,7 +250,10 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
       if (identityMap == null) {
         continue;
       }
-      Snapshot selectedSnapshot = history.snapshot(selectedVersion).orElse(null);
+      Snapshot selectedSnapshot =
+          history instanceof DeltaLogHistorySource log
+              ? log.kernelSnapshot(selectedVersion).orElse(null)
+              : KernelAdapter.loadExactSnapshot(table, engine, storageLocation, selectedVersion);
       if (selectedSnapshot != null) {
         bundles.add(
             buildSnapshotBundle(storageLocation, selectedVersion, selectedSnapshot, identityMap));
@@ -258,34 +264,6 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
 
   protected DeltaHistorySource historySource(String storageLocation, Table table) {
     return new DeltaLogHistorySource(storageLocation, storageLocation, table, engine);
-  }
-
-  private record MapPersistedIdentityLookup(
-      NavigableMap<Long, ColumnIdentityMap> maps, long highWaterMark)
-      implements PersistedIdentityLookup {
-    private MapPersistedIdentityLookup {
-      maps = new TreeMap<>(maps);
-    }
-
-    @Override
-    public Optional<ColumnIdentityMap> exact(long version) {
-      return Optional.ofNullable(maps.get(version));
-    }
-
-    @Override
-    public Optional<Map.Entry<Long, ColumnIdentityMap>> floor(long version) {
-      return Optional.ofNullable(maps.floorEntry(version));
-    }
-
-    @Override
-    public Optional<Map.Entry<Long, ColumnIdentityMap>> ceiling(long version) {
-      return Optional.ofNullable(maps.ceilingEntry(version));
-    }
-
-    @Override
-    public Optional<ColumnIdentityMap> tableMap() {
-      return Optional.empty();
-    }
   }
 
   @Override
@@ -1441,6 +1419,11 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     }
     List<Long> versions = new ArrayList<>(candidates.size());
     for (long version : candidates) {
+      if (!fullRescan
+          && knownSnapshotIds.contains(version)
+          && !targetSnapshotIds.contains(version)) {
+        continue;
+      }
       if (targetSnapshotIds != null
           && !targetSnapshotIds.isEmpty()
           && !targetSnapshotIds.contains(version)) {

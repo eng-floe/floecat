@@ -31,6 +31,7 @@ import ai.floedb.floecat.delta.identity.DeltaCanonicalIdentity;
 import ai.floedb.floecat.delta.identity.DeltaColumnMapping;
 import ai.floedb.floecat.delta.identity.DeltaHistorySource;
 import ai.floedb.floecat.delta.identity.DeltaIdentityService;
+import ai.floedb.floecat.delta.identity.DeltaIdentitySnapshot;
 import ai.floedb.floecat.delta.identity.DeltaLogHistorySource;
 import ai.floedb.floecat.delta.identity.DeltaResolvedSchema;
 import ai.floedb.floecat.delta.identity.KernelAdapter;
@@ -333,7 +334,7 @@ class DeltaConnectorTest {
             .map(FloecatConnector.SnapshotBundle::snapshotId)
             .toList();
 
-    assertEquals(List.of(0L, 1L, 2L, 3L, 4L, 5L), snapshotIds);
+    assertEquals(List.of(0L, 2L, 3L, 4L, 5L), snapshotIds);
   }
 
   @Test
@@ -491,7 +492,7 @@ class DeltaConnectorTest {
     Table table = Table.forPath(engine, location);
     DeltaLogHistorySource beforeRetention =
         new DeltaLogHistorySource(location, location, table, engine);
-    Snapshot version0 = beforeRetention.snapshot(0L).orElseThrow();
+    Snapshot version0 = beforeRetention.kernelSnapshot(0L).orElseThrow();
     ColumnIdentityMap version0Map = freshIdentity(version0, 0L);
     ColumnIdentityMap version3Map =
         new DeltaIdentityService()
@@ -749,14 +750,13 @@ class DeltaConnectorTest {
     ColumnIdentityMap map =
         ColumnIdentityMaps.toProto(
             SchemaIdentityReconciler.reconcile(
-                    resolved.schema(),
-                    version,
-                    mode,
-                    previous,
-                    highWaterMarkFloor,
-                    PreferredCanonicalIds.NONE,
-                    HistoryTier.VERSIONED_LOG)
-                .state());
+                resolved.schema(),
+                version,
+                mode,
+                previous,
+                highWaterMarkFloor,
+                PreferredCanonicalIds.NONE,
+                HistoryTier.VERSIONED_LOG));
     return nativeIds
         ? ColumnIdentityMaps.withNativeHighWaterMark(map, DeltaColumnMapping.maxColumnId(snapshot))
         : map;
@@ -1409,12 +1409,13 @@ class DeltaConnectorTest {
         }
 
         @Override
-        public Optional<Snapshot> snapshot(long version) {
+        public Optional<DeltaIdentitySnapshot> snapshot(long version) {
           if (version < earliestRecreatableVersion) {
             return Optional.empty();
           }
           return Optional.ofNullable(
-              KernelAdapter.loadExactSnapshot(table, engine, storageLocation, version));
+                  KernelAdapter.loadExactSnapshot(table, engine, storageLocation, version))
+              .map(DeltaIdentitySnapshot::from);
         }
 
         @Override
@@ -1526,8 +1527,9 @@ class DeltaConnectorTest {
         }
 
         @Override
-        public Optional<Snapshot> snapshot(long version) {
-          return Optional.ofNullable(table.getSnapshotAsOfVersion(null, version));
+        public Optional<DeltaIdentitySnapshot> snapshot(long version) {
+          return Optional.ofNullable(table.getSnapshotAsOfVersion(null, version))
+              .map(DeltaIdentitySnapshot::from);
         }
 
         @Override

@@ -56,6 +56,9 @@ class DeltaCanonicalIdentityTest {
     assertThat(columnId(identity, ColumnPath.ROOT.field("tags"))).isEqualTo(100L);
     assertThat(columnId(identity, ColumnPath.ROOT.field("tags").arrayElement()))
         .isEqualTo(DERIVED_TAG_ELEMENT);
+    var resolved = DeltaCanonicalIdentity.resolve(snapshot, identity);
+    assertThat(resolved.canonicalIdsByStatsKey()).containsEntry("tags", 100L);
+    assertThat(resolved.ordinalsByStatsKey()).containsEntry("tags", 1);
   }
 
   @Test
@@ -183,14 +186,13 @@ class DeltaCanonicalIdentityTest {
     ColumnIdentityMap map =
         ColumnIdentityMaps.toProto(
             SchemaIdentityReconciler.reconcile(
-                    resolved.schema(),
-                    version,
-                    mode,
-                    previous,
-                    highWaterMarkFloor,
-                    PreferredCanonicalIds.NONE,
-                    HistoryTier.VERSIONED_LOG)
-                .state());
+                resolved.schema(),
+                version,
+                mode,
+                previous,
+                highWaterMarkFloor,
+                PreferredCanonicalIds.NONE,
+                HistoryTier.VERSIONED_LOG));
     return nativeIds
         ? ColumnIdentityMaps.withNativeHighWaterMark(map, DeltaColumnMapping.maxColumnId(snapshot))
         : map;

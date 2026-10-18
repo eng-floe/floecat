@@ -26,7 +26,6 @@ import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
 import ai.floedb.floecat.schema.identity.SchemaIdentityEntry;
 import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
 import ai.floedb.floecat.schema.identity.SchemaIdentityState;
-import io.delta.kernel.Snapshot;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -66,7 +65,7 @@ public final class DeltaIdentityService {
       Map<Long, ColumnIdentityMap> maps,
       List<IdentityResult.Failure> failures) {
     try {
-      Optional<Snapshot> loaded = history.snapshot(version);
+      Optional<DeltaIdentitySnapshot> loaded = history.snapshot(version);
       if (loaded.isEmpty()) {
         if (history.snapshotExclusionReason(version).isPresent()) {
           return;
@@ -74,7 +73,7 @@ public final class DeltaIdentityService {
         throw new IllegalStateException(
             "Delta source did not return requested snapshot " + version);
       }
-      Snapshot snapshot = loaded.orElseThrow();
+      DeltaIdentitySnapshot snapshot = loaded.orElseThrow();
       Optional<ColumnIdentityMap> exactSnapshot = persisted.exact(version);
       Optional<ColumnIdentityMap> exact =
           exactSnapshot.isPresent() ? exactSnapshot : exactTableMap(persisted, version);
@@ -152,14 +151,14 @@ public final class DeltaIdentityService {
   private static Optional<ColumnIdentityMap> dataOnlyBackfill(
       DeltaHistorySource history,
       long version,
-      Snapshot snapshot,
+      DeltaIdentitySnapshot snapshot,
       Map.Entry<Long, ColumnIdentityMap> successor) {
     DeltaHistorySource.MetadataHistory range =
         history.metadataVersions(version + 1L, successor.getKey());
     if (!range.complete() || !range.versions().isEmpty()) {
       return Optional.empty();
     }
-    Snapshot successorSnapshot = history.snapshot(successor.getKey()).orElse(null);
+    DeltaIdentitySnapshot successorSnapshot = history.snapshot(successor.getKey()).orElse(null);
     if (successorSnapshot == null) {
       return Optional.empty();
     }
@@ -174,7 +173,7 @@ public final class DeltaIdentityService {
   private static ColumnIdentityMap reconcileFromPredecessor(
       DeltaHistorySource history,
       long version,
-      Snapshot selected,
+      DeltaIdentitySnapshot selected,
       Optional<Map.Entry<Long, ColumnIdentityMap>> predecessor,
       long highWaterMark,
       PreferredCanonicalIds preferred) {
@@ -202,7 +201,7 @@ public final class DeltaIdentityService {
 
     List<MetadataStep> steps = new ArrayList<>(metadata.versions().size());
     for (long metadataVersion : metadata.versions()) {
-      Snapshot metadataSnapshot =
+      DeltaIdentitySnapshot metadataSnapshot =
           metadataVersion == version ? selected : history.snapshot(metadataVersion).orElse(null);
       if (metadataSnapshot == null) {
         return startGeneration(
@@ -217,21 +216,19 @@ public final class DeltaIdentityService {
     long previousNativeHighWaterMark = persistedNativeHighWaterMark(current);
     boolean selectedReconciled = false;
     for (MetadataStep step : steps) {
+      SchemaIdentityState currentState = ColumnIdentityMaps.restore(current);
       long metadataVersion = step.version();
-      Snapshot metadataSnapshot = step.snapshot();
+      DeltaIdentitySnapshot metadataSnapshot = step.snapshot();
       long nextNativeHighWaterMark = nativeHighWaterMark(metadataSnapshot);
       boolean generationBoundary =
-          generationBoundary(
-              ColumnIdentityMaps.restore(current).mode(),
-              previousNativeHighWaterMark,
-              metadataSnapshot);
+          generationBoundary(currentState.mode(), previousNativeHighWaterMark, metadataSnapshot);
       current =
           generationBoundary
               ? reconcile(
                   metadataSnapshot,
                   metadataVersion,
                   null,
-                  Math.max(highWaterMark, ColumnIdentityMaps.restore(current).highWaterMark()),
+                  Math.max(highWaterMark, currentState.highWaterMark()),
                   preferredByVersion.getOrDefault(metadataVersion, PreferredCanonicalIds.NONE),
                   history.historyTier())
               : reconcile(
@@ -240,8 +237,7 @@ public final class DeltaIdentityService {
                   current,
                   highWaterMark,
                   preferredByVersion.getOrDefault(metadataVersion, PreferredCanonicalIds.NONE),
-                  weakerTier(
-                      ColumnIdentityMaps.restore(current).historyTier(), history.historyTier()));
+                  weakerTier(currentState.historyTier(), history.historyTier()));
       previousNativeHighWaterMark = nextNativeHighWaterMark;
       selectedReconciled = metadataVersion == version;
     }
@@ -258,7 +254,7 @@ public final class DeltaIdentityService {
   static Map<Long, PreferredCanonicalIds> preferredByMetadataVersion(
       List<MetadataStep> metadataSteps,
       long selectedVersion,
-      Snapshot selected,
+      DeltaIdentitySnapshot selected,
       PreferredCanonicalIds preferred) {
     if (preferred.equals(PreferredCanonicalIds.NONE) || metadataSteps.isEmpty()) {
       return Map.of();
@@ -287,7 +283,7 @@ public final class DeltaIdentityService {
   }
 
   private static PreferredCanonicalIds filterPreferred(
-      PreferredCanonicalIds preferred, Snapshot snapshot) {
+      PreferredCanonicalIds preferred, DeltaIdentitySnapshot snapshot) {
     if (preferred.equals(PreferredCanonicalIds.NONE)) {
       return preferred;
     }
@@ -303,24 +299,25 @@ public final class DeltaIdentityService {
     return PreferredCanonicalIds.byPath(retained);
   }
 
-  private static boolean generationBoundary(Snapshot current, Snapshot next) {
+  private static boolean generationBoundary(
+      DeltaIdentitySnapshot current, DeltaIdentitySnapshot next) {
     return generationBoundary(mode(current), nativeHighWaterMark(current), next);
   }
 
   private static boolean generationBoundary(
-      IdentityMode currentMode, long currentNativeHighWaterMark, Snapshot next) {
+      IdentityMode currentMode, long currentNativeHighWaterMark, DeltaIdentitySnapshot next) {
     IdentityMode nextMode = mode(next);
     return currentMode != nextMode
         || (nextMode == IdentityMode.NATIVE_FIELD_ID
             && nativeHighWaterMark(next) < currentNativeHighWaterMark);
   }
 
-  record MetadataStep(long version, Snapshot snapshot) {}
+  record MetadataStep(long version, DeltaIdentitySnapshot snapshot) {}
 
   private static ColumnIdentityMap reconcileWithoutOrderedHistory(
       DeltaHistorySource history,
       long version,
-      Snapshot selected,
+      DeltaIdentitySnapshot selected,
       ColumnIdentityMap previous,
       long highWaterMark,
       PreferredCanonicalIds preferred) {
@@ -328,6 +325,14 @@ public final class DeltaIdentityService {
     IdentityMode selectedMode = mode(selected);
     HistoryTier provenance = weakerTier(state.historyTier(), history.historyTier());
     boolean generationBoundary = state.mode() != selectedMode;
+    if (!generationBoundary && !sameIdentityShape(selected, state)) {
+      DeltaHistorySource.MetadataHistory observed =
+          history.metadataVersions(state.sourceVersion() + 1L, version);
+      generationBoundary =
+          history.historyTier() == HistoryTier.NONE
+              || !observed.complete()
+              || !observed.versions().isEmpty();
+    }
 
     if (!generationBoundary && history.historyTier() == HistoryTier.UNORDERED_QUERY_HISTORY) {
       DeltaHistorySource.UnorderedHistory unordered = history.unorderedHistory();
@@ -361,17 +366,31 @@ public final class DeltaIdentityService {
   }
 
   private static boolean reusesUnownedNativeId(
-      Snapshot snapshot, SchemaIdentityState previous, long previousNativeHighWaterMark) {
+      DeltaIdentitySnapshot snapshot,
+      SchemaIdentityState previous,
+      long previousNativeHighWaterMark) {
     Set<Integer> previousNativeIds = new LinkedHashSet<>();
     previous.entries().stream()
         .filter(entry -> isField(entry.path()))
         .forEach(entry -> entry.nativeFieldId().ifPresent(previousNativeIds::add));
-    return DeltaColumnMapping.resolveSchema(snapshot).schema().nodes().stream()
+    return snapshot.resolved().schema().nodes().stream()
         .filter(node -> node.kind() == NodeKind.FIELD)
         .map(node -> node.nativeFieldId().orElseThrow())
         .anyMatch(
             nativeId ->
                 nativeId <= previousNativeHighWaterMark && !previousNativeIds.contains(nativeId));
+  }
+
+  private static boolean sameIdentityShape(
+      DeltaIdentitySnapshot snapshot, SchemaIdentityState previous) {
+    return snapshot.resolved().schema().nodes().size() == previous.entries().size()
+        && snapshot.resolved().schema().nodes().stream()
+            .allMatch(
+                node ->
+                    previous
+                        .byPath(node.path())
+                        .map(entry -> entry.nativeFieldId().equals(node.nativeFieldId()))
+                        .orElse(false));
   }
 
   private static HistoryTier weakerTier(HistoryTier previous, HistoryTier current) {
@@ -393,59 +412,51 @@ public final class DeltaIdentityService {
   }
 
   private static ColumnIdentityMap reconcile(
-      Snapshot snapshot,
+      DeltaIdentitySnapshot snapshot,
       long version,
       ColumnIdentityMap previous,
       long highWaterMark,
       PreferredCanonicalIds preferred,
       HistoryTier historyTier) {
-    DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
+    DeltaResolvedSchema resolved = snapshot.resolved();
     IdentityMode mode = DeltaCanonicalIdentity.identityMode(resolved);
     Optional<SchemaIdentityState> previousState =
         previous == null ? Optional.empty() : Optional.of(ColumnIdentityMaps.restore(previous));
     long floor =
         mode == IdentityMode.NATIVE_FIELD_ID
-            ? Math.max(highWaterMark, DeltaColumnMapping.maxColumnId(snapshot))
+            ? Math.max(highWaterMark, snapshot.nativeHighWaterMark())
             : highWaterMark;
-    SchemaIdentityReconciler.Result identity =
+    SchemaIdentityState identity =
         SchemaIdentityReconciler.reconcile(
             resolved.schema(), version, mode, previousState, floor, preferred, historyTier);
-    return withNativeHighWaterMark(ColumnIdentityMaps.toProto(identity.state()), snapshot);
+    return withNativeHighWaterMark(ColumnIdentityMaps.toProto(identity), snapshot);
   }
 
   private static ColumnIdentityMap startGeneration(
-      Snapshot snapshot,
+      DeltaIdentitySnapshot snapshot,
       long version,
       ColumnIdentityMap previous,
       long highWaterMark,
       PreferredCanonicalIds preferred,
       HistoryTier historyTier) {
-    DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
-    IdentityMode mode = DeltaCanonicalIdentity.identityMode(resolved);
     long floor =
         Math.max(
             highWaterMark,
             previous == null ? 0L : ColumnIdentityMaps.restore(previous).highWaterMark());
-    if (mode == IdentityMode.NATIVE_FIELD_ID) {
-      floor = Math.max(floor, DeltaColumnMapping.maxColumnId(snapshot));
-    }
-    SchemaIdentityReconciler.Result identity =
-        SchemaIdentityReconciler.reconcile(
-            resolved.schema(), version, mode, Optional.empty(), floor, preferred, historyTier);
-    return withNativeHighWaterMark(ColumnIdentityMaps.toProto(identity.state()), snapshot);
+    return reconcile(snapshot, version, null, floor, preferred, historyTier);
   }
 
   private static PreferredCanonicalIds preferredSuccessorIds(
       DeltaHistorySource history,
       long version,
-      Snapshot selected,
+      DeltaIdentitySnapshot selected,
       Map.Entry<Long, ColumnIdentityMap> successor) {
     DeltaHistorySource.MetadataHistory range =
         history.metadataVersions(version + 1L, successor.getKey());
     if (!range.complete()) {
       return PreferredCanonicalIds.NONE;
     }
-    Snapshot successorSnapshot = history.snapshot(successor.getKey()).orElse(null);
+    DeltaIdentitySnapshot successorSnapshot = history.snapshot(successor.getKey()).orElse(null);
     if (successorSnapshot == null) {
       return PreferredCanonicalIds.NONE;
     }
@@ -473,7 +484,7 @@ public final class DeltaIdentityService {
     }
     versions.sort(Comparator.naturalOrder());
     for (long futureVersion : versions) {
-      Snapshot future = history.snapshot(futureVersion).orElse(null);
+      DeltaIdentitySnapshot future = history.snapshot(futureVersion).orElse(null);
       if (future == null || generationBoundary(selectedMode, previousNativeHighWaterMark, future)) {
         return PreferredCanonicalIds.NONE;
       }
@@ -507,30 +518,21 @@ public final class DeltaIdentityService {
     return path.elements().getLast().kind() == NodeKind.FIELD;
   }
 
-  private static FieldIdentities fieldIdentities(Snapshot snapshot) {
-    Set<ColumnPath> paths = new LinkedHashSet<>();
-    Set<Integer> nativeIds = new LinkedHashSet<>();
-    DeltaColumnMapping.resolveSchema(snapshot).schema().nodes().stream()
-        .filter(node -> node.kind() == NodeKind.FIELD)
-        .forEach(
-            node -> {
-              paths.add(node.path());
-              node.nativeFieldId().ifPresent(nativeIds::add);
-            });
-    return new FieldIdentities(Set.copyOf(paths), Set.copyOf(nativeIds));
+  private static FieldIdentities fieldIdentities(DeltaIdentitySnapshot snapshot) {
+    return new FieldIdentities(snapshot.fieldPaths(), snapshot.nativeIds());
   }
 
   private record FieldIdentities(Set<ColumnPath> paths, Set<Integer> nativeIds) {}
 
-  private static IdentityMode mode(Snapshot snapshot) {
-    return DeltaCanonicalIdentity.identityMode(DeltaColumnMapping.resolveSchema(snapshot));
+  private static IdentityMode mode(DeltaIdentitySnapshot snapshot) {
+    return snapshot.mode();
   }
 
-  private static long nativeHighWaterMark(Snapshot snapshot) {
+  private static long nativeHighWaterMark(DeltaIdentitySnapshot snapshot) {
     if (snapshot == null || mode(snapshot) != IdentityMode.NATIVE_FIELD_ID) {
       return 0L;
     }
-    return DeltaColumnMapping.maxColumnId(snapshot);
+    return snapshot.nativeHighWaterMark();
   }
 
   private static long persistedNativeHighWaterMark(ColumnIdentityMap map) {
@@ -545,7 +547,10 @@ public final class DeltaIdentityService {
   }
 
   private static ColumnIdentityMap carryForward(
-      ColumnIdentityMap map, Snapshot snapshot, long version, HistoryTier historyTier) {
+      ColumnIdentityMap map,
+      DeltaIdentitySnapshot snapshot,
+      long version,
+      HistoryTier historyTier) {
     SchemaIdentityState rebound =
         SchemaIdentityReconciler.bindSourceVersion(ColumnIdentityMaps.restore(map), version);
     ColumnIdentityMap result =
@@ -557,22 +562,20 @@ public final class DeltaIdentityService {
   }
 
   private static ColumnIdentityMap withNativeHighWaterMark(
-      ColumnIdentityMap map, Snapshot snapshot) {
+      ColumnIdentityMap map, DeltaIdentitySnapshot snapshot) {
     if (mode(snapshot) == IdentityMode.NATIVE_FIELD_ID) {
-      return ColumnIdentityMaps.withNativeHighWaterMark(
-          map, DeltaColumnMapping.maxColumnId(snapshot));
+      return ColumnIdentityMaps.withNativeHighWaterMark(map, snapshot.nativeHighWaterMark());
     }
     return map;
   }
 
   private static void validatePersisted(
-      String table, long version, Snapshot snapshot, ColumnIdentityMap map) {
+      String table, long version, DeltaIdentitySnapshot snapshot, ColumnIdentityMap map) {
     try {
-      DeltaCanonicalIdentity.validateSnapshot(snapshot, map);
-      SchemaIdentityState state = ColumnIdentityMaps.restore(map);
+      SchemaIdentityState state = DeltaCanonicalIdentity.validateSnapshot(snapshot, map);
       if (state.mode() == IdentityMode.NATIVE_FIELD_ID
           && (!map.hasNativeHighWaterMark()
-              || map.getNativeHighWaterMark() != DeltaColumnMapping.maxColumnId(snapshot))) {
+              || map.getNativeHighWaterMark() != snapshot.nativeHighWaterMark())) {
         throw new IllegalArgumentException(
             "Snapshot native high-water mark does not match its column identity map");
       }

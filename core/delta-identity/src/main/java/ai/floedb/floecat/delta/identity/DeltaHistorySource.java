@@ -17,7 +17,6 @@
 package ai.floedb.floecat.delta.identity;
 
 import ai.floedb.floecat.schema.identity.HistoryTier;
-import io.delta.kernel.Snapshot;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -38,7 +37,7 @@ public interface DeltaHistorySource {
     return true;
   }
 
-  Optional<Snapshot> snapshot(long version);
+  Optional<DeltaIdentitySnapshot> snapshot(long version);
 
   /** Structural reason a historical snapshot cannot be loaded, if the source can prove one. */
   default Optional<String> snapshotExclusionReason(long version) {

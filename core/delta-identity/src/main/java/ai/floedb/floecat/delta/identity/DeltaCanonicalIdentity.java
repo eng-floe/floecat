@@ -25,7 +25,6 @@ import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
 import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
 import ai.floedb.floecat.schema.identity.SchemaIdentityState;
 import io.delta.kernel.Snapshot;
-import java.util.LinkedHashMap;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -48,15 +47,20 @@ public final class DeltaCanonicalIdentity {
   }
 
   public static void validateSnapshot(Snapshot snapshot, ColumnIdentityMap identityMap) {
+    validateSnapshot(DeltaIdentitySnapshot.from(snapshot), identityMap);
+  }
+
+  public static SchemaIdentityState validateSnapshot(
+      DeltaIdentitySnapshot snapshot, ColumnIdentityMap identityMap) {
     SchemaIdentityState state = ColumnIdentityMaps.restore(identityMap);
-    if (state.sourceVersion() != snapshot.getVersion()) {
+    if (state.sourceVersion() != snapshot.version()) {
       throw new IllegalArgumentException(
           "Column identity map version "
               + state.sourceVersion()
               + " does not match Delta snapshot "
-              + snapshot.getVersion());
+              + snapshot.version());
     }
-    DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
+    DeltaResolvedSchema resolved = snapshot.resolved();
     if ((state.mode() == IdentityMode.NATIVE_FIELD_ID)
         != resolved.effectiveMappingMode().isEnabled()) {
       throw new IllegalArgumentException("Snapshot and column identity map use different modes");
@@ -71,14 +75,13 @@ public final class DeltaCanonicalIdentity {
     if (state.mode() == IdentityMode.NATIVE_FIELD_ID) {
       SchemaIdentityState expected =
           SchemaIdentityReconciler.reconcile(
-                  resolved.schema(),
-                  snapshot.getVersion() + 1L,
-                  IdentityMode.NATIVE_FIELD_ID,
-                  Optional.of(state),
-                  state.highWaterMark(),
-                  PreferredCanonicalIds.NONE,
-                  state.historyTier())
-              .state();
+              resolved.schema(),
+              snapshot.version() + 1L,
+              IdentityMode.NATIVE_FIELD_ID,
+              Optional.of(state),
+              state.highWaterMark(),
+              PreferredCanonicalIds.NONE,
+              state.historyTier());
       resolved
           .schema()
           .nodes()
@@ -93,30 +96,34 @@ public final class DeltaCanonicalIdentity {
                 }
               });
     }
+    return state;
   }
 
-  /** Returns canonical IDs keyed by the unambiguous logical names used by the stats engine. */
-  public static java.util.Map<String, Long> canonicalIdsByStatsKey(
-      Snapshot snapshot, ColumnIdentityMap identityMap) {
-    validateSnapshot(snapshot, identityMap);
-    SchemaIdentityState state = ColumnIdentityMaps.restore(identityMap);
-    DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
-    LegacyDottedKeyIndex<Long> index = LegacyDottedKeyIndex.create();
-    resolved
+  /** Resolves and validates once for all schema and statistics consumers. */
+  public static ValidatedIdentity resolve(Snapshot snapshot, ColumnIdentityMap identityMap) {
+    DeltaIdentitySnapshot source = DeltaIdentitySnapshot.from(snapshot);
+    SchemaIdentityState state = validateSnapshot(source, identityMap);
+    LegacyDottedKeyIndex<Long> ids = LegacyDottedKeyIndex.create();
+    LegacyDottedKeyIndex<Integer> ordinals = LegacyDottedKeyIndex.create();
+    source
+        .resolved()
         .schema()
         .nodes()
         .forEach(
-            node -> index.add(node.path(), state.byPath(node.path()).orElseThrow().canonicalId()));
-    return new LinkedHashMap<>(index.values());
+            node -> {
+              ids.add(node.path(), state.byPath(node.path()).orElseThrow().canonicalId());
+              ordinals.add(node.path(), node.ordinal());
+            });
+    return new ValidatedIdentity(
+        source.resolved(),
+        state,
+        java.util.Map.copyOf(ids.values()),
+        java.util.Map.copyOf(ordinals.values()));
   }
 
-  /** Returns source ordinals keyed by the same unambiguous logical names as stats. */
-  public static java.util.Map<String, Integer> ordinalsByStatsKey(Snapshot snapshot) {
-    LegacyDottedKeyIndex<Integer> index = LegacyDottedKeyIndex.create();
-    DeltaColumnMapping.resolveSchema(snapshot)
-        .schema()
-        .nodes()
-        .forEach(node -> index.add(node.path(), node.ordinal()));
-    return new LinkedHashMap<>(index.values());
-  }
+  public record ValidatedIdentity(
+      DeltaResolvedSchema schema,
+      SchemaIdentityState state,
+      java.util.Map<String, Long> canonicalIdsByStatsKey,
+      java.util.Map<String, Integer> ordinalsByStatsKey) {}
 }

@@ -33,6 +33,7 @@ public final class DeltaLogHistorySource implements DeltaHistorySource {
   private final long headVersion;
   private final long earliestRecreatableVersion;
   private final Map<Long, Optional<Snapshot>> snapshots = new ConcurrentHashMap<>();
+  private final Map<Long, Optional<DeltaIdentitySnapshot>> identities = new ConcurrentHashMap<>();
 
   public DeltaLogHistorySource(String tableName, String tablePath, Table table, Engine engine) {
     this.tableName = tableName;
@@ -61,7 +62,12 @@ public final class DeltaLogHistorySource implements DeltaHistorySource {
   }
 
   @Override
-  public Optional<Snapshot> snapshot(long version) {
+  public Optional<DeltaIdentitySnapshot> snapshot(long version) {
+    return identities.computeIfAbsent(
+        version, requested -> kernelSnapshot(requested).map(DeltaIdentitySnapshot::from));
+  }
+
+  public Optional<Snapshot> kernelSnapshot(long version) {
     if (version < earliestRecreatableVersion) {
       return Optional.empty();
     }
@@ -95,14 +101,7 @@ public final class DeltaLogHistorySource implements DeltaHistorySource {
     try {
       return MetadataHistory.complete(
           KernelAdapter.metadataVersions(engine, tablePath, firstVersion, lastVersion));
-    } catch (RuntimeException failure) {
-      // Do not turn a missing commit at the checkpoint boundary into a history gap. Delta Kernel
-      // 4.2.0 cannot construct the latest snapshot after that commit is removed, even when the
-      // matching checkpoint remains. If cleanup races this walk, the next source construction
-      // fails for the same invalid log. Propagating the source error avoids silently resetting
-      // identity for a table Kernel itself can no longer read.
-      throw failure;
-    } catch (Exception failure) {
+    } catch (java.io.IOException failure) {
       throw new IllegalStateException(
           "Failed to read Delta metadata history " + firstVersion + ".." + lastVersion, failure);
     }

@@ -561,107 +561,76 @@ public interface FloecatConnector extends Closeable {
       }
     }
 
-    public static SnapshotEnumerationOptions full(boolean fullRescan) {
-      return new SnapshotEnumerationOptions(
-          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.ALL, Set.of(), 0, Map.of(), 0L);
-    }
-
-    public static SnapshotEnumerationOptions full(boolean fullRescan, Set<Long> targetSnapshotIds) {
-      return new SnapshotEnumerationOptions(
+    private SnapshotEnumerationOptions(
+        boolean fullRescan,
+        Set<Long> knownSnapshotIds,
+        Set<Long> targetSnapshotIds,
+        SnapshotSelectionKind selectionKind,
+        Set<Long> selectionSnapshotIds,
+        int latestN) {
+      this(
           fullRescan,
-          Set.of(),
+          knownSnapshotIds,
           targetSnapshotIds,
-          SnapshotSelectionKind.ALL,
-          Set.of(),
-          0,
+          selectionKind,
+          selectionSnapshotIds,
+          latestN,
           Map.of(),
           0L);
     }
 
+    public static SnapshotEnumerationOptions full(boolean fullRescan) {
+      return new SnapshotEnumerationOptions(
+          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.ALL, Set.of(), 0);
+    }
+
+    public static SnapshotEnumerationOptions full(boolean fullRescan, Set<Long> targetSnapshotIds) {
+      return new SnapshotEnumerationOptions(
+          fullRescan, Set.of(), targetSnapshotIds, SnapshotSelectionKind.ALL, Set.of(), 0);
+    }
+
     public static SnapshotEnumerationOptions incremental(Set<Long> knownSnapshotIds) {
       return new SnapshotEnumerationOptions(
-          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.ALL, Set.of(), 0, Map.of(), 0L);
+          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.ALL, Set.of(), 0);
     }
 
     public static SnapshotEnumerationOptions incremental(
         Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
       return new SnapshotEnumerationOptions(
-          false,
-          knownSnapshotIds,
-          targetSnapshotIds,
-          SnapshotSelectionKind.ALL,
-          Set.of(),
-          0,
-          Map.of(),
-          0L);
+          false, knownSnapshotIds, targetSnapshotIds, SnapshotSelectionKind.ALL, Set.of(), 0);
     }
 
     public static SnapshotEnumerationOptions fullCurrent(boolean fullRescan) {
       return new SnapshotEnumerationOptions(
-          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.CURRENT, Set.of(), 0, Map.of(), 0L);
+          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.CURRENT, Set.of(), 0);
     }
 
     public static SnapshotEnumerationOptions incrementalCurrent(Set<Long> knownSnapshotIds) {
       return new SnapshotEnumerationOptions(
-          false,
-          knownSnapshotIds,
-          Set.of(),
-          SnapshotSelectionKind.CURRENT,
-          Set.of(),
-          0,
-          Map.of(),
-          0L);
+          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.CURRENT, Set.of(), 0);
     }
 
     public static SnapshotEnumerationOptions fullLatestN(boolean fullRescan, int latestN) {
       return new SnapshotEnumerationOptions(
-          fullRescan,
-          Set.of(),
-          Set.of(),
-          SnapshotSelectionKind.LATEST_N,
-          Set.of(),
-          latestN,
-          Map.of(),
-          0L);
+          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.LATEST_N, Set.of(), latestN);
     }
 
     public static SnapshotEnumerationOptions incrementalLatestN(
         Set<Long> knownSnapshotIds, int latestN) {
       return new SnapshotEnumerationOptions(
-          false,
-          knownSnapshotIds,
-          Set.of(),
-          SnapshotSelectionKind.LATEST_N,
-          Set.of(),
-          latestN,
-          Map.of(),
-          0L);
+          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.LATEST_N, Set.of(), latestN);
     }
 
     public static SnapshotEnumerationOptions fullExplicit(
         boolean fullRescan, Set<Long> snapshotIds) {
       return new SnapshotEnumerationOptions(
-          fullRescan,
-          Set.of(),
-          Set.of(),
-          SnapshotSelectionKind.EXPLICIT,
-          snapshotIds,
-          0,
-          Map.of(),
-          0L);
+          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.EXPLICIT, snapshotIds, 0);
     }
 
     public static SnapshotEnumerationOptions incrementalExplicit(
         Set<Long> knownSnapshotIds, Set<Long> snapshotIds) {
       return new SnapshotEnumerationOptions(
-          false,
-          knownSnapshotIds,
-          Set.of(),
-          SnapshotSelectionKind.EXPLICIT,
-          snapshotIds,
-          0,
-          Map.of(),
-          0L);
+          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.EXPLICIT, snapshotIds, 0);
     }
   }
 
