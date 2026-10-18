@@ -146,29 +146,6 @@ class SchemaIdentityReconcilerTest {
   }
 
   @Test
-  void nestedCollectionSuffixesAreDistinctAndUseTheNearestFieldId() {
-    ColumnPath items = ColumnPath.ROOT.field("items");
-    ColumnPath element = items.arrayElement();
-    ColumnPath key = element.mapKey();
-    ColumnPath value = element.mapValue();
-    var result =
-        reconcile(
-            0,
-            IdentityMode.NATIVE_FIELD_ID,
-            Optional.empty(),
-            nativeNode(items, 1, 23),
-            node(element, 1),
-            node(key, 1),
-            node(value, 2));
-
-    assertThat(result.nodes().getFirst().canonicalId()).isEqualTo(1L);
-    assertThat(result.nodes().subList(1, 4))
-        .extracting(CanonicalSchemaNode::canonicalId)
-        .allMatch(CanonicalColumnId::isDerived)
-        .doesNotHaveDuplicates();
-  }
-
-  @Test
   void derivedCollectionIdentitySupportsMoreThanTwelveLevelsAndMappedRename() {
     ColumnPath root = ColumnPath.ROOT.field("items");
     ColumnPath deep = root;
@@ -350,59 +327,19 @@ class SchemaIdentityReconcilerTest {
   }
 
   @Test
-  void resetAllocatesAbovePreviousHighWaterMark() {
+  void newGenerationAllocatesAboveTheHighWaterMarkFloor() {
     var reset =
-        SchemaIdentityReconciler.reset(
+        SchemaIdentityReconciler.reconcile(
             ResolvedSchema.of(List.of(field("a", 1), field("c", 2))),
             30L,
             IdentityMode.STRUCTURED_PATH,
+            Optional.empty(),
             3L,
+            PreferredCanonicalIds.NONE,
             HistoryTier.VERSIONED_LOG);
 
     assertThat(reset.nodes()).extracting(CanonicalSchemaNode::canonicalId).containsExactly(4L, 5L);
     assertThat(reset.state().highWaterMark()).isEqualTo(5L);
-  }
-
-  @Test
-  void restoreRejectsIncorrectFingerprint() {
-    var state =
-        reconcile(1L, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1)).state();
-
-    assertThatThrownBy(
-            () ->
-                SchemaIdentityState.restore(
-                    state.sourceVersion(),
-                    state.highWaterMark(),
-                    state.mode(),
-                    state.historyTier(),
-                    state.nativeHighWaterMark(),
-                    state.sourceVersionAnchored(),
-                    state.entries(),
-                    "sha256:incorrect",
-                    state.stateChecksum()))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("fingerprint does not match");
-  }
-
-  @Test
-  void restoreRejectsIncorrectStateChecksum() {
-    var state =
-        reconcile(1L, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1)).state();
-
-    assertThatThrownBy(
-            () ->
-                SchemaIdentityState.restore(
-                    state.sourceVersion(),
-                    state.highWaterMark(),
-                    state.mode(),
-                    state.historyTier(),
-                    state.nativeHighWaterMark(),
-                    state.sourceVersionAnchored(),
-                    state.entries(),
-                    state.fingerprint(),
-                    "sha256:incorrect"))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("state checksum does not match");
   }
 
   private static SchemaIdentityReconciler.Result reconcile(

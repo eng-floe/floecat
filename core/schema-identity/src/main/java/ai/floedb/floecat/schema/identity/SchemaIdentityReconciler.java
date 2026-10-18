@@ -35,7 +35,8 @@ import java.util.Set;
 /**
  * Assigns canonical IDs by reconciling one source schema against its predecessor. Path identity
  * requires complete metadata history. Native identity additionally requires that both states are in
- * the same mapping generation; callers represent a generation boundary as a reset.
+ * the same mapping generation; callers start a new generation by reconciling with no predecessor
+ * above the previous high-water mark.
  */
 public final class SchemaIdentityReconciler {
   private SchemaIdentityReconciler() {}
@@ -67,24 +68,6 @@ public final class SchemaIdentityReconciler {
         Math.max(highWaterMarkFloor, previous.map(SchemaIdentityState::highWaterMark).orElse(0L));
     return reconcileInternal(
         schema, sourceVersion, mode, previous, retainedHighWaterMark, preferredIds, historyTier);
-  }
-
-  /** Starts a new identity generation without allowing the canonical ID counter to regress. */
-  public static Result reset(
-      ResolvedSchema schema,
-      long sourceVersion,
-      IdentityMode mode,
-      long previousHighWaterMark,
-      HistoryTier historyTier) {
-    CanonicalColumnId.checkAllocatedRange(previousHighWaterMark);
-    return reconcileInternal(
-        schema,
-        sourceVersion,
-        mode,
-        Optional.empty(),
-        previousHighWaterMark,
-        PreferredCanonicalIds.NONE,
-        historyTier);
   }
 
   /** Binds current-schema identity to a source version after the caller validates that schema. */
