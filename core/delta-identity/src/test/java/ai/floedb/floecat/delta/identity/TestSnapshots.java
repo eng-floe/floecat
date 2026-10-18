@@ -19,24 +19,24 @@ package ai.floedb.floecat.delta.identity;
 import io.delta.kernel.Snapshot;
 import io.delta.kernel.internal.actions.Protocol;
 import io.delta.kernel.types.StructType;
-import java.util.List;
 import java.util.Map;
 
-/** Builds protocol-bearing snapshots through the production current-schema path. */
+/** Supplies the Kernel read facts used by adapter tests. */
 final class TestSnapshots {
   private TestSnapshots() {}
 
   static Snapshot snapshot(
       long version, StructType schema, Map<String, String> properties, Protocol protocol) {
-    return KernelAdapter.currentSchemaSnapshot(
-        "s3://bucket/table",
-        version,
-        schema.toJson(),
-        properties,
-        List.of(),
-        protocol.getMinReaderVersion(),
-        protocol.getMinWriterVersion(),
-        protocol.getReaderFeatures(),
-        protocol.getWriterFeatures());
+    Snapshot snapshot =
+        org.mockito.Mockito.mock(
+            Snapshot.class,
+            org.mockito.Mockito.withSettings()
+                .extraInterfaces(KernelAdapter.ProtocolSnapshot.class));
+    org.mockito.Mockito.when(snapshot.getVersion()).thenReturn(version);
+    org.mockito.Mockito.when(snapshot.getSchema()).thenReturn(schema);
+    org.mockito.Mockito.when(snapshot.getTableProperties()).thenReturn(properties);
+    org.mockito.Mockito.when(((KernelAdapter.ProtocolSnapshot) snapshot).protocol())
+        .thenReturn(protocol);
+    return snapshot;
   }
 }

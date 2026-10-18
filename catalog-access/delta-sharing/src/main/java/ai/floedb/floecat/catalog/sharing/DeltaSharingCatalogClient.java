@@ -28,6 +28,7 @@ import ai.floedb.floecat.catalog.access.StorageLocations;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
 import ai.floedb.floecat.catalog.delta.DeltaIdentityHistoryProvider;
 import ai.floedb.floecat.catalog.delta.DeltaLogStorageProbe;
+import ai.floedb.floecat.catalog.delta.DeltaSourceVersion;
 import ai.floedb.floecat.client.sharing.DeltaSharingClient;
 import ai.floedb.floecat.client.sharing.DeltaSharingException;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.AccessMode;
@@ -194,7 +195,10 @@ public final class DeltaSharingCatalogClient
     ExternalObjectIdentity identity = identityOf(listed);
 
     Map<String, String> properties = new HashMap<>(described.metadata().configuration());
-    described.version().ifPresent(v -> properties.put("delta.sharing.version", Long.toString(v)));
+    properties.remove(DeltaSourceVersion.SHARING_VERSION);
+    described
+        .version()
+        .ifPresent(v -> properties.put(DeltaSourceVersion.SHARING_VERSION, Long.toString(v)));
     properties.put("delta.sharing.file-format", described.metadata().format());
     List<AccessMode> modes = statedModes(listed, described);
     properties.put(
@@ -243,7 +247,19 @@ public final class DeltaSharingCatalogClient
   public Optional<DeltaHistorySource> deltaIdentityHistory(
       CatalogTable table, OptionalLong predecessorVersion) {
     Schema addressed = requireSchema(table.name().namespace());
-    long headVersion = sharedVersion(table);
+    DeltaSourceVersion version;
+    try {
+      version = DeltaSourceVersion.fromProperties(table.properties());
+    } catch (IllegalArgumentException invalid) {
+      throw new CatalogAccessException(
+          CatalogAccessException.Code.INTERNAL,
+          "Invalid Delta source version for table " + table.name(),
+          invalid);
+    }
+    if (!version.anchored()) {
+      return Optional.empty();
+    }
+    long headVersion = version.value();
     long baseVersion = predecessorVersion.orElse(Math.max(0L, headVersion - 1L));
     if (baseVersion > headVersion) {
       baseVersion = headVersion;
@@ -281,6 +297,9 @@ public final class DeltaSharingCatalogClient
                   table.name().name(),
                   baseVersion + 1L,
                   headVersion);
+      if (!confirmsHead(headVersion, head, changes, qualified)) {
+        return Optional.empty();
+      }
       return Optional.of(
           new DeltaSharingHistorySource(qualified, baseVersion, base, headVersion, head, changes));
     } catch (DeltaSharingException unavailable) {
@@ -299,6 +318,9 @@ public final class DeltaSharingCatalogClient
               addressed.share(), addressed.name(), table.name().name(), startVersion, headVersion);
       TableDescription current =
           client.describeTable(addressed.share(), addressed.name(), table.name().name());
+      if (!confirmsHead(headVersion, current, queryHistory, qualified)) {
+        return Optional.empty();
+      }
       return Optional.of(
           new DeltaSharingQueryHistorySource(qualified, headVersion, current, queryHistory));
     } catch (DeltaSharingException unavailable) {
@@ -312,26 +334,27 @@ public final class DeltaSharingCatalogClient
     }
   }
 
+  private static boolean confirmsHead(
+      long version, TableDescription head, TableHistory history, String qualified) {
+    if (head.version().isEmpty()) {
+      return false;
+    }
+    if (head.version().orElseThrow() != version
+        || (history.currentVersion().isPresent()
+            && history.currentVersion().orElseThrow() != version)) {
+      throw new DeltaSharingException(
+          DeltaSharingException.Failure.INVALID_RESPONSE,
+          200,
+          "Delta Sharing head changed while reading history for " + qualified);
+    }
+    return true;
+  }
+
   private static boolean historyEndpointUnavailable(DeltaSharingException failure) {
     return failure.failure() == DeltaSharingException.Failure.NOT_FOUND
         || failure.failure() == DeltaSharingException.Failure.INVALID_REQUEST
         || (failure.failure() == DeltaSharingException.Failure.PERMISSION_DENIED
             && failure.statusCode() == 403);
-  }
-
-  private static long sharedVersion(CatalogTable table) {
-    String raw = table.properties().get("delta.sharing.version");
-    if (raw == null || raw.isBlank()) {
-      return 0L;
-    }
-    try {
-      return Long.parseLong(raw);
-    } catch (NumberFormatException invalid) {
-      throw new CatalogAccessException(
-          CatalogAccessException.Code.INTERNAL,
-          "Delta Sharing table " + table.name() + " reported an invalid version " + raw,
-          invalid);
-    }
   }
 
   @Override

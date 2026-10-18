@@ -29,6 +29,7 @@ import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.delta.DeltaIdentityHistoryProvider;
 import ai.floedb.floecat.catalog.delta.DeltaLogEngineFactory;
+import ai.floedb.floecat.catalog.delta.DeltaSourceVersion;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Namespace;
@@ -45,11 +46,11 @@ import ai.floedb.floecat.delta.identity.CurrentSchemaDeltaHistorySource;
 import ai.floedb.floecat.delta.identity.DeltaIdentityService;
 import ai.floedb.floecat.delta.identity.DeltaLogHistorySource;
 import ai.floedb.floecat.delta.identity.IdentityResult;
+import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.delta.identity.PersistedIdentityLookup;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
-import ai.floedb.floecat.schema.identity.HistoryTier;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
@@ -984,57 +985,51 @@ public class CatalogOverlayReconciler {
   private ColumnIdentityMap reconcileDeltaIdentity(
       CatalogTable source, Table current, CatalogClient client) {
     try {
-      return reconcileDeltaIdentityUnchecked(source, current, client);
-    } catch (CancellationException cancelled) {
-      throw cancelled;
-    } catch (TableIdentityException failure) {
+      Optional<ColumnIdentityMap> tableMap =
+          current != null && current.hasColumnIdentityMap()
+              ? Optional.of(current.getColumnIdentityMap())
+              : Optional.empty();
+      PersistedIdentityLookup persisted = PersistedIdentityLookup.forTableMap(tableMap);
+      Optional<String> tablePath = source.storageLocation();
+      Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials> credentials =
+          tablePath.isEmpty()
+              ? Optional.empty()
+              : cancellableCall(() -> client.vendStorageCredentials(source.name()));
+      if (tablePath.isPresent() && credentials.isPresent()) {
+        try (var opened = DeltaLogEngineFactory.open(credentials.orElseThrow())) {
+          var deltaTable = io.delta.kernel.Table.forPath(opened.engine(), tablePath.orElseThrow());
+          var history =
+              new DeltaLogHistorySource(
+                  source.name().toString(), tablePath.orElseThrow(), deltaTable, opened.engine());
+          return reconciledHeadMap(history, persisted);
+        }
+      } else {
+        OptionalLong predecessorVersion =
+            tableMap.isEmpty()
+                ? OptionalLong.empty()
+                : OptionalLong.of(
+                    ColumnIdentityMaps.restore(tableMap.orElseThrow()).sourceVersion());
+        var history =
+            client instanceof DeltaIdentityHistoryProvider provider
+                ? provider
+                    .deltaIdentityHistory(source, predecessorVersion)
+                    .orElseGet(() -> currentSchemaHistory(source))
+                : currentSchemaHistory(source);
+        return reconciledHeadMap(history, persisted);
+      }
+    } catch (CancellationException | TableIdentityException failure) {
       throw failure;
-    } catch (RuntimeException failure) {
+    } catch (Exception failure) {
       throw new TableIdentityException(
           "SOURCE_ERROR for table " + source.name() + ": " + failure.getMessage(), failure);
     }
   }
 
-  private ColumnIdentityMap reconcileDeltaIdentityUnchecked(
-      CatalogTable source, Table current, CatalogClient client) {
-    Optional<ColumnIdentityMap> tableMap =
-        current != null && current.hasColumnIdentityMap()
-            ? Optional.of(current.getColumnIdentityMap())
-            : Optional.empty();
-    PersistedIdentityLookup persisted = PersistedIdentityLookup.forTableMap(tableMap);
-    IdentityResult result;
-    long headVersion;
-    Optional<String> tablePath = source.storageLocation();
-    Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials> credentials =
-        tablePath.isEmpty()
-            ? Optional.empty()
-            : cancellableCall(() -> client.vendStorageCredentials(source.name()));
-    if (tablePath.isPresent() && credentials.isPresent()) {
-      try (var opened = DeltaLogEngineFactory.open(credentials.orElseThrow())) {
-        var deltaTable = io.delta.kernel.Table.forPath(opened.engine(), tablePath.orElseThrow());
-        var history =
-            new DeltaLogHistorySource(
-                source.name().toString(), tablePath.orElseThrow(), deltaTable, opened.engine());
-        headVersion = history.headVersion();
-        result = DELTA_IDENTITY.reconcileCurrent(history, persisted);
-      } catch (Exception failure) {
-        throw new TableIdentityException(
-            "SOURCE_ERROR for table " + source.name() + ": " + failure.getMessage(), failure);
-      }
-    } else {
-      OptionalLong predecessorVersion =
-          tableMap.isEmpty()
-              ? OptionalLong.empty()
-              : OptionalLong.of(ColumnIdentityMaps.restore(tableMap.orElseThrow()).sourceVersion());
-      var history =
-          client instanceof DeltaIdentityHistoryProvider provider
-              ? provider
-                  .deltaIdentityHistory(source, predecessorVersion)
-                  .orElseGet(() -> currentSchemaHistory(source, tablePath))
-              : currentSchemaHistory(source, tablePath);
-      headVersion = history.headVersion();
-      result = DELTA_IDENTITY.reconcileCurrent(history, persisted);
-    }
+  private static ColumnIdentityMap reconciledHeadMap(
+      ai.floedb.floecat.delta.identity.DeltaHistorySource history,
+      PersistedIdentityLookup persisted) {
+    long headVersion = history.headVersion();
+    IdentityResult result = DELTA_IDENTITY.reconcileCurrent(history, persisted);
     if (!result.failures().isEmpty()) {
       IdentityResult.Failure failure = result.failures().getFirst();
       throw new TableIdentityException(
@@ -1050,7 +1045,7 @@ public class CatalogOverlayReconciler {
     if (headMap == null) {
       throw new TableIdentityException(
           "SOURCE_ERROR for table "
-              + source.name()
+              + history.tableName()
               + " snapshot "
               + headVersion
               + ": identity reconciliation returned no head map");
@@ -1058,35 +1053,14 @@ public class CatalogOverlayReconciler {
     return headMap;
   }
 
-  private static CurrentSchemaDeltaHistorySource currentSchemaHistory(
-      CatalogTable source, Optional<String> tablePath) {
-    SourceVersion sourceVersion = sourceVersion(source);
+  private static CurrentSchemaDeltaHistorySource currentSchemaHistory(CatalogTable source) {
+    DeltaSourceVersion version = DeltaSourceVersion.fromProperties(source.properties());
     return new CurrentSchemaDeltaHistorySource(
         source.name().toString(),
-        tablePath.orElse(""),
-        sourceVersion.value(),
-        sourceVersion.anchored(),
-        source.schemaJson(),
-        source.properties(),
-        source.partitionKeys(),
-        HistoryTier.NONE);
+        KernelAdapter.currentSchemaIdentity(
+            version.value(), source.schemaJson(), source.properties()),
+        version.anchored());
   }
-
-  private static SourceVersion sourceVersion(CatalogTable source) {
-    String raw = source.properties().get("delta.sharing.version");
-    if (raw == null || raw.isBlank()) {
-      return new SourceVersion(0L, false);
-    }
-    try {
-      return new SourceVersion(Long.parseLong(raw), true);
-    } catch (NumberFormatException invalid) {
-      throw new TableIdentityException(
-          "SOURCE_ERROR for table " + source.name() + ": invalid Delta source version " + raw,
-          invalid);
-    }
-  }
-
-  private record SourceVersion(long value, boolean anchored) {}
 
   private View viewFor(
       CatalogOverlay overlay,

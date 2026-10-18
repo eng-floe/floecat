@@ -864,33 +864,8 @@ public final class HttpDeltaSharingClient implements DeltaSharingClient {
   private static Protocol parseProtocol(JsonNode node, String target) {
     JsonNode delta = node.path("deltaProtocol");
     JsonNode source = delta.isObject() ? delta : node;
-    // The fifth array field in this parser and the only one that was not held to the rule, because
-    // nothing reads what it produces: the Protocol record is written and never consulted. That is
-    // what made it easy to leave out, and what would make a feature-negotiation reader added later
-    // treat an unsupported feature as absent -- the same silence a scalar read as empty produces
-    // everywhere else here.
-    requireArrayWhereStated(source, "readerFeatures", target);
-    requireArrayWhereStated(source, "writerFeatures", target);
-    List<String> features = new ArrayList<>();
-    for (JsonNode feature : source.path("readerFeatures")) {
-      if (!feature.isTextual() || feature.asText().isBlank()) {
-        throw new DeltaSharingException(
-            Failure.INVALID_RESPONSE,
-            200,
-            "Delta Sharing stated a readerFeatures entry that is not a feature name for " + target);
-      }
-      features.add(feature.asText());
-    }
-    List<String> writerFeatures = new ArrayList<>();
-    for (JsonNode feature : source.path("writerFeatures")) {
-      if (!feature.isTextual() || feature.asText().isBlank()) {
-        throw new DeltaSharingException(
-            Failure.INVALID_RESPONSE,
-            200,
-            "Delta Sharing stated a writerFeatures entry that is not a feature name for " + target);
-      }
-      writerFeatures.add(feature.asText());
-    }
+    List<String> features = parseFeatures(source, "readerFeatures", target);
+    List<String> writerFeatures = parseFeatures(source, "writerFeatures", target);
     // Numbers and numeric strings both, since a server sending "2" is stating a version and
     // refusing it would fail a working share over a field no consumer reads. Anything that is not
     // a version at all is refused, rather than defaulting silently to 1.
@@ -911,6 +886,21 @@ public final class HttpDeltaSharingClient implements DeltaSharingClient {
           "Delta Sharing stated a minWriterVersion that is not a version for " + target);
     }
     return new Protocol(version.asInt(1), writerVersion.asInt(2), features, writerFeatures);
+  }
+
+  private static List<String> parseFeatures(JsonNode source, String key, String target) {
+    requireArrayWhereStated(source, key, target);
+    List<String> features = new ArrayList<>();
+    for (JsonNode feature : source.path(key)) {
+      if (!feature.isTextual() || feature.asText().isBlank()) {
+        throw new DeltaSharingException(
+            Failure.INVALID_RESPONSE,
+            200,
+            "Delta Sharing stated a " + key + " entry that is not a feature name for " + target);
+      }
+      features.add(feature.asText());
+    }
+    return List.copyOf(features);
   }
 
   /** Whether a node states an integer, as a number or as a string holding one. */

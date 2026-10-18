@@ -162,6 +162,21 @@ class DeltaIdentityServiceTest {
   }
 
   @Test
+  void schemaOnlyReplacementOfAnchoredVersionZeroRemainsUnanchored() {
+    var first =
+        reconcile(
+            new TestHistorySource(
+                0L,
+                HistoryTier.VERSIONED_LOG,
+                Map.of(0L, snapshot(0L, UNMAPPED_A, Map.of())),
+                List.of()),
+            Optional.empty());
+    var replaced = reconcile(source(0L, UNMAPPED_AB, Map.of()), Optional.of(first));
+    assertThat(columnId(replaced, "a")).isGreaterThan(first.getHighWaterMark());
+    assertThat(replaced.getSourceVersionAnchored()).isFalse();
+  }
+
+  @Test
   void aMissingHeadIsASourceFailure() {
     DeltaHistorySource missing =
         new TestHistorySource(7L, HistoryTier.VERSIONED_LOG, Map.of(), List.of());

@@ -20,9 +20,9 @@ import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableDescription;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableHistory;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableMetadata;
 import ai.floedb.floecat.delta.identity.DeltaHistorySource;
+import ai.floedb.floecat.delta.identity.DeltaIdentitySnapshot;
 import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.schema.identity.HistoryTier;
-import io.delta.kernel.Snapshot;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -36,7 +36,7 @@ import java.util.TreeMap;
 final class DeltaSharingHistorySource implements DeltaHistorySource {
   private final String tableName;
   private final long headVersion;
-  private final NavigableMap<Long, Snapshot> snapshots;
+  private final NavigableMap<Long, DeltaIdentitySnapshot> snapshots;
   private final List<Long> metadataVersions;
 
   DeltaSharingHistorySource(
@@ -115,13 +115,11 @@ final class DeltaSharingHistorySource implements DeltaHistorySource {
     return List.copyOf(retained);
   }
 
-  private Snapshot snapshot(long version, TableMetadata metadata, Protocol protocol) {
-    return KernelAdapter.currentSchemaSnapshot(
-        "",
+  static DeltaIdentitySnapshot snapshot(long version, TableMetadata metadata, Protocol protocol) {
+    return KernelAdapter.currentSchemaIdentity(
         version,
         metadata.schemaJson(),
         metadata.configuration(),
-        metadata.partitionColumns(),
         protocol.minReaderVersion(),
         protocol.minWriterVersion(),
         Set.copyOf(protocol.readerFeatures()),
@@ -144,7 +142,7 @@ final class DeltaSharingHistorySource implements DeltaHistorySource {
   }
 
   @Override
-  public Optional<Snapshot> snapshot(long version) {
+  public Optional<DeltaIdentitySnapshot> snapshot(long version) {
     return Optional.ofNullable(snapshots.get(version));
   }
 

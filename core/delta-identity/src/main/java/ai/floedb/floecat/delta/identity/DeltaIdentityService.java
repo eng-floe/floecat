@@ -91,13 +91,15 @@ public final class DeltaIdentityService {
           // corrupt persisted state, so allocate a new generation above the old high-water mark.
           maps.put(
               version,
-              startGeneration(
-                  snapshot,
-                  version,
-                  exact.orElseThrow(),
-                  persisted.highWaterMark(),
-                  PreferredCanonicalIds.NONE,
-                  history.historyTier()));
+              bindSourceAnchor(
+                  startGeneration(
+                      snapshot,
+                      version,
+                      exact.orElseThrow(),
+                      persisted.highWaterMark(),
+                      PreferredCanonicalIds.NONE,
+                      history.historyTier()),
+                  history));
           return;
         }
       }

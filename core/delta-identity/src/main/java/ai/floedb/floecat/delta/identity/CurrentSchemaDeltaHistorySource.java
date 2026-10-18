@@ -17,43 +17,20 @@
 package ai.floedb.floecat.delta.identity;
 
 import ai.floedb.floecat.schema.identity.HistoryTier;
-import io.delta.kernel.Snapshot;
-import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
-/** A Delta source for catalogs that expose a current schema but no ordered transaction history. */
+/** Current catalog schema without evidence of ordered Delta transaction history. */
 public final class CurrentSchemaDeltaHistorySource implements DeltaHistorySource {
   private final String tableName;
-  private final HistoryTier historyTier;
-  private final long sourceVersion;
+  private final DeltaIdentitySnapshot snapshot;
   private final boolean sourceVersionAnchored;
-  private final Snapshot snapshot;
 
   public CurrentSchemaDeltaHistorySource(
-      String tableName,
-      String tablePath,
-      long sourceVersion,
-      boolean sourceVersionAnchored,
-      String schemaJson,
-      Map<String, String> properties,
-      List<String> partitionColumns,
-      HistoryTier historyTier) {
+      String tableName, DeltaIdentitySnapshot snapshot, boolean sourceVersionAnchored) {
     this.tableName = Objects.requireNonNull(tableName, "tableName");
-    if (Objects.requireNonNull(historyTier, "historyTier").provesContinuity()) {
-      throw new IllegalArgumentException("Current-schema sources cannot prove ordered history");
-    }
-    this.historyTier = historyTier;
-    this.sourceVersion = sourceVersion;
+    this.snapshot = Objects.requireNonNull(snapshot, "snapshot");
     this.sourceVersionAnchored = sourceVersionAnchored;
-    this.snapshot =
-        KernelAdapter.currentSchemaSnapshot(
-            Objects.requireNonNullElse(tablePath, ""),
-            sourceVersion,
-            Objects.requireNonNull(schemaJson, "schemaJson"),
-            Objects.requireNonNull(properties, "properties"),
-            Objects.requireNonNull(partitionColumns, "partitionColumns"));
   }
 
   @Override
@@ -63,12 +40,12 @@ public final class CurrentSchemaDeltaHistorySource implements DeltaHistorySource
 
   @Override
   public long headVersion() {
-    return sourceVersion;
+    return snapshot.version();
   }
 
   @Override
   public HistoryTier historyTier() {
-    return historyTier;
+    return HistoryTier.NONE;
   }
 
   @Override
@@ -77,8 +54,8 @@ public final class CurrentSchemaDeltaHistorySource implements DeltaHistorySource
   }
 
   @Override
-  public Optional<Snapshot> snapshot(long version) {
-    return version == sourceVersion ? Optional.of(snapshot) : Optional.empty();
+  public Optional<DeltaIdentitySnapshot> snapshot(long version) {
+    return version == snapshot.version() ? Optional.of(snapshot) : Optional.empty();
   }
 
   @Override

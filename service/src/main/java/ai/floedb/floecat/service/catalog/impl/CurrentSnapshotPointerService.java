@@ -150,6 +150,9 @@ public class CurrentSnapshotPointerService {
       String corr,
       GenerationReconcile generationReconcile,
       boolean generationOwnsRepairMarker) {
+    if (!candidate.hasColumnIdentityMap()) {
+      tableRepo.getById(tableId).ifPresent(table -> requireCanonicalIdentity(table, candidate));
+    }
     long pointerStartedNanos = System.nanoTime();
     var result = snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate);
     long pointerNanos = System.nanoTime() - pointerStartedNanos;
@@ -195,9 +198,6 @@ public class CurrentSnapshotPointerService {
   }
 
   private void synchronizeCurrentIdentityMap(ResourceId tableId, Snapshot candidate) {
-    if (!candidate.hasColumnIdentityMap()) {
-      return;
-    }
     boolean candidateIsCurrent =
         snapshotRepo
             .getCommittedCurrentSnapshotPointer(tableId)
@@ -214,16 +214,30 @@ public class CurrentSnapshotPointerService {
                     new BaseResourceRepository.AbortRetryableException(
                         "table disappeared while publishing current column identity for "
                             + tableId.getId()));
-    if (table.hasColumnIdentityMap()
+    requireCanonicalIdentity(table, candidate);
+    if (table.hasColumnIdentityMap() == candidate.hasColumnIdentityMap()
         && table.getColumnIdentityMap().equals(candidate.getColumnIdentityMap())) {
       return;
     }
+    var updated = table.toBuilder();
+    if (candidate.hasColumnIdentityMap()) {
+      updated.setColumnIdentityMap(candidate.getColumnIdentityMap());
+    } else {
+      updated.clearColumnIdentityMap();
+    }
     long pointerVersion = tableRepo.metaFor(tableId).getPointerVersion();
-    if (!tableRepo.update(
-        table.toBuilder().setColumnIdentityMap(candidate.getColumnIdentityMap()).build(),
-        pointerVersion)) {
+    if (!tableRepo.update(updated.build(), pointerVersion)) {
       throw new BaseResourceRepository.AbortRetryableException(
           "table changed while publishing current column identity for " + tableId.getId());
+    }
+  }
+
+  private static void requireCanonicalIdentity(Table table, Snapshot candidate) {
+    if (table.getUpstream().getFormat() == ai.floedb.floecat.catalog.rpc.TableFormat.TF_DELTA
+        && table.getUpstream().getColumnIdAlgorithm()
+            == ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP
+        && !candidate.hasColumnIdentityMap()) {
+      throw new IllegalArgumentException("Canonical Delta snapshot requires a column identity map");
     }
   }
 }

@@ -18,9 +18,8 @@ package ai.floedb.floecat.catalog.sharing;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableDescription;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableHistory;
 import ai.floedb.floecat.delta.identity.DeltaHistorySource;
-import ai.floedb.floecat.delta.identity.KernelAdapter;
+import ai.floedb.floecat.delta.identity.DeltaIdentitySnapshot;
 import ai.floedb.floecat.schema.identity.HistoryTier;
-import io.delta.kernel.Snapshot;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -29,7 +28,7 @@ import java.util.Set;
 final class DeltaSharingQueryHistorySource implements DeltaHistorySource {
   private final String tableName;
   private final long headVersion;
-  private final Snapshot head;
+  private final DeltaIdentitySnapshot head;
   private final boolean metadataChanged;
   private final UnorderedHistory unorderedHistory;
 
@@ -56,16 +55,7 @@ final class DeltaSharingQueryHistorySource implements DeltaHistorySource {
                             Set.copyOf(protocol.writerFeatures())))
                 .toList());
     this.head =
-        KernelAdapter.currentSchemaSnapshot(
-            "",
-            headVersion,
-            current.metadata().schemaJson(),
-            current.metadata().configuration(),
-            current.metadata().partitionColumns(),
-            current.protocol().minReaderVersion(),
-            current.protocol().minWriterVersion(),
-            Set.copyOf(current.protocol().readerFeatures()),
-            Set.copyOf(current.protocol().writerFeatures()));
+        DeltaSharingHistorySource.snapshot(headVersion, current.metadata(), current.protocol());
   }
 
   @Override
@@ -84,7 +74,7 @@ final class DeltaSharingQueryHistorySource implements DeltaHistorySource {
   }
 
   @Override
-  public Optional<Snapshot> snapshot(long version) {
+  public Optional<DeltaIdentitySnapshot> snapshot(long version) {
     return version == headVersion ? Optional.of(head) : Optional.empty();
   }
 

@@ -26,7 +26,6 @@ import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableMetadata;
 import ai.floedb.floecat.delta.identity.CurrentSchemaDeltaHistorySource;
 import ai.floedb.floecat.delta.identity.DeltaIdentityService;
 import ai.floedb.floecat.delta.identity.PersistedIdentityLookup;
-import ai.floedb.floecat.schema.identity.HistoryTier;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -41,46 +40,49 @@ class DeltaSharingQueryHistorySourceTest {
       Map.of("delta.columnMapping.mode", "name", "delta.columnMapping.maxColumnId", "1");
 
   @Test
-  void historicalMappingDisablementResetsTheGeneration() {
-    DeltaIdentityService service = new DeltaIdentityService();
-    var predecessorSource =
-        new CurrentSchemaDeltaHistorySource(
-            "table",
-            "",
-            10L,
-            true,
-            MAPPED_SCHEMA,
-            MAPPED_PROPERTIES,
-            List.of(),
-            HistoryTier.UNORDERED_QUERY_HISTORY);
-    ColumnIdentityMap predecessor =
-        service
-            .reconcileCurrent(
-                predecessorSource, PersistedIdentityLookup.forTableMap(Optional.empty()))
-            .maps()
-            .get(10L);
+  void unorderedDropAndReaddResetsIdentityWithMappingOnOrOff() {
+    for (boolean mapped : List.of(false, true)) {
+      Map<String, String> properties = mapped ? MAPPED_PROPERTIES : Map.of();
+      DeltaIdentityService service = new DeltaIdentityService();
+      var predecessorSource =
+          new CurrentSchemaDeltaHistorySource(
+              "table",
+              ai.floedb.floecat.delta.identity.KernelAdapter.currentSchemaIdentity(
+                  10L, MAPPED_SCHEMA, properties),
+              true);
+      ColumnIdentityMap predecessor =
+          service
+              .reconcileCurrent(
+                  predecessorSource, PersistedIdentityLookup.forTableMap(Optional.empty()))
+              .maps()
+              .get(10L);
 
-    TableDescription current =
-        new TableDescription(
-            new Protocol(3, 7, List.of("columnMapping"), List.of("columnMapping")),
-            metadata(MAPPED_SCHEMA, MAPPED_PROPERTIES),
-            Optional.of(30L));
-    TableHistory unorderedHistory =
-        new TableHistory(
-            List.of(
-                new HistoricalProtocol(new Protocol(1, 2, List.of(), List.of()), Optional.empty())),
-            List.of(metadata("{\"type\":\"struct\",\"fields\":[]}", Map.of())),
-            Optional.of(30L));
-    var source = new DeltaSharingQueryHistorySource("table", 30L, current, unorderedHistory);
+      TableDescription current =
+          new TableDescription(
+              mapped
+                  ? new Protocol(3, 7, List.of("columnMapping"), List.of("columnMapping"))
+                  : new Protocol(1, 2, List.of(), List.of()),
+              metadata(MAPPED_SCHEMA, properties),
+              Optional.of(30L));
+      TableHistory unorderedHistory =
+          new TableHistory(
+              List.of(
+                  new HistoricalProtocol(
+                      new Protocol(1, 2, List.of(), List.of()), Optional.empty())),
+              List.of(metadata("{\"type\":\"struct\",\"fields\":[]}", Map.of())),
+              Optional.of(30L));
+      var source = new DeltaSharingQueryHistorySource("table", 30L, current, unorderedHistory);
 
-    ColumnIdentityMap reconciled =
-        service
-            .reconcileCurrent(source, PersistedIdentityLookup.forTableMap(Optional.of(predecessor)))
-            .maps()
-            .get(30L);
+      ColumnIdentityMap reconciled =
+          service
+              .reconcileCurrent(
+                  source, PersistedIdentityLookup.forTableMap(Optional.of(predecessor)))
+              .maps()
+              .get(30L);
 
-    assertThat(reconciled.getEntries(0).getColumnId())
-        .isGreaterThan(predecessor.getHighWaterMark());
+      assertThat(reconciled.getEntries(0).getColumnId())
+          .isGreaterThan(predecessor.getHighWaterMark());
+    }
   }
 
   private static TableMetadata metadata(String schema, Map<String, String> properties) {

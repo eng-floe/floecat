@@ -227,13 +227,9 @@ class MetaGraphTest {
     var history =
         new ai.floedb.floecat.delta.identity.CurrentSchemaDeltaHistorySource(
             "table",
-            "",
-            0L,
-            false,
-            schemaJson,
-            Map.of(),
-            List.of(),
-            ai.floedb.floecat.schema.identity.HistoryTier.NONE);
+            ai.floedb.floecat.delta.identity.KernelAdapter.currentSchemaIdentity(
+                0L, schemaJson, Map.of()),
+            false);
     var identityMap =
         new ai.floedb.floecat.delta.identity.DeltaIdentityService()
             .reconcileCurrent(

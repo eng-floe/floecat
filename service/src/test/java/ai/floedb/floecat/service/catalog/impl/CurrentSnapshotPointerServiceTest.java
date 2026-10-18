@@ -147,6 +147,48 @@ class CurrentSnapshotPointerServiceTest {
   }
 
   @Test
+  void canonicalDeltaSnapshotWithoutIdentityIsRejectedBeforePointerAdvancement() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    var table =
+        Table.newBuilder()
+            .setUpstream(
+                ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                    .setFormat(ai.floedb.floecat.catalog.rpc.TableFormat.TF_DELTA)
+                    .setColumnIdAlgorithm(
+                        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP))
+            .build();
+    when(service.tableRepo.getById(tableId)).thenReturn(Optional.of(table));
+
+    assertThrows(
+        IllegalArgumentException.class, () -> service.maybeAdvance(tableId, candidate, "corr"));
+    verify(service.snapshotRepo, never()).maybeAdvanceCurrentSnapshotPointer(any(), any());
+  }
+
+  @Test
+  void noncanonicalCurrentSnapshotClearsThePreviousTableIdentityMap() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    var table =
+        Table.newBuilder()
+            .setColumnIdentityMap(ColumnIdentityMap.newBuilder().setHighWaterMark(9L))
+            .build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.tableRepo.getById(tableId)).thenReturn(Optional.of(table));
+    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
+        .thenReturn(CurrentSnapshotPointerUpdateResult.UPDATED);
+    when(service.snapshotRepo.getCommittedCurrentSnapshotPointer(tableId))
+        .thenReturn(Optional.of(CurrentSnapshotPointer.newBuilder().setSnapshotId(7L).build()));
+    when(service.tableRepo.metaFor(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(3L).build());
+    when(service.tableRepo.update(any(), anyLong())).thenReturn(true);
+
+    service.maybeAdvance(tableId, candidate, "corr");
+    verify(service.tableRepo)
+        .update(
+            argThat(updated -> !updated.hasColumnIdentityMap()),
+            org.mockito.ArgumentMatchers.eq(3L));
+  }
+
+  @Test
   void currentSnapshotAdvancesTheTableIdentitySourceCursor() {
     ColumnIdentityMap tableIdentity =
         ColumnIdentityMap.newBuilder()

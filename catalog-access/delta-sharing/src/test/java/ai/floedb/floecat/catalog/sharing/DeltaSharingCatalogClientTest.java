@@ -799,6 +799,36 @@ class DeltaSharingCatalogClientTest {
   }
 
   @Test
+  void unversionedTablesDoNotFabricateHistoryVersionZero() {
+    FakeSharingClient fake = new FakeSharingClient();
+    fake.accessModes = List.of(AccessMode.URL);
+    fake.describedVersion = Optional.empty();
+    fake.metadataConfiguration = Map.of("delta.sharing.version", "99");
+    try (DeltaSharingCatalogClient client = client(fake)) {
+      assertThat(client.deltaIdentityHistory(client.loadTable(events()), OptionalLong.empty()))
+          .isEmpty();
+    }
+    assertThat(fake.changeFeedCalls).isZero();
+    assertThat(fake.queryHistoryCalls).isZero();
+  }
+
+  @Test
+  void historyCannotBindMetadataFromADifferentHeadVersion() {
+    for (boolean versioned : List.of(false, true)) {
+      FakeSharingClient fake = new FakeSharingClient();
+      fake.accessModes = List.of(AccessMode.URL);
+      fake.changeFeedFailure = versioned ? null : DeltaSharingException.Failure.INVALID_REQUEST;
+      try (DeltaSharingCatalogClient client = client(fake)) {
+        CatalogTable table = client.loadTable(events());
+        fake.describedVersion = Optional.of(13L);
+        assertThatThrownBy(() -> client.deltaIdentityHistory(table, OptionalLong.of(10L)))
+            .isInstanceOf(CatalogAccessException.class)
+            .hasMessageContaining("head changed");
+      }
+    }
+  }
+
+  @Test
   void urlOnlyIdentityFallsBackToUnorderedQueryHistory() {
     FakeSharingClient fake = new FakeSharingClient();
     fake.accessModes = List.of(AccessMode.URL);
@@ -1529,6 +1559,8 @@ class DeltaSharingCatalogClientTest {
     private DeltaSharingException.Failure queryHistoryFailure;
     private int changeFeedStatus = 404;
     private int queryHistoryStatus = 404;
+    private Map<String, String> metadataConfiguration = Map.of();
+    private Optional<Long> describedVersion = Optional.of(12L);
     private int changeFeedCalls;
     private int queryHistoryCalls;
     private List<HistoricalProtocol> queryHistoryProtocols = List.of();
@@ -1577,12 +1609,12 @@ class DeltaSharingCatalogClientTest {
               "parquet",
               "{\"type\":\"struct\",\"fields\":[]}",
               List.of("day"),
-              Map.of(),
-              Optional.of(12L),
+              metadataConfiguration,
+              describedVersion,
               metadataLocation,
               auxiliaryLocations,
               metadataAccessModes == null ? accessModes : metadataAccessModes),
-          Optional.of(12L));
+          describedVersion);
     }
 
     @Override
