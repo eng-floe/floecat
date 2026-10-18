@@ -211,25 +211,7 @@ class MetaGraphTest {
 
   @Test
   void canonicalTableWithoutCurrentSnapshotHasNoQueryableSchema() {
-    UserTableNode base = TestNodes.tableNode(usrTable, "{}");
-    UserTableNode canonical =
-        new UserTableNode(
-            base.id(),
-            base.blobUri(),
-            base.catalogId(),
-            base.namespaceId(),
-            base.displayName(),
-            base.format(),
-            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
-            base.schemaJson(),
-            base.properties(),
-            base.partitionKeys(),
-            base.currentSnapshot(),
-            base.previousSnapshot(),
-            base.resolvedSnapshots(),
-            base.dependentViews(),
-            base.engineHints(),
-            base.columnHints());
+    UserTableNode canonical = canonicalTable();
     when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
     when(user.resolve(usrTable)).thenReturn(Optional.of(canonical));
     when(user.schemaFor(eq("table-schema"), eq(usrTable), any(), eq(""), eq("")))
@@ -240,25 +222,7 @@ class MetaGraphTest {
 
   @Test
   void canonicalCurrentSnapshotWithoutIdentityMapHasNoQueryableSchema() {
-    UserTableNode base = TestNodes.tableNode(usrTable, "{}");
-    UserTableNode canonical =
-        new UserTableNode(
-            base.id(),
-            base.blobUri(),
-            base.catalogId(),
-            base.namespaceId(),
-            base.displayName(),
-            base.format(),
-            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
-            base.schemaJson(),
-            base.properties(),
-            base.partitionKeys(),
-            base.currentSnapshot(),
-            base.previousSnapshot(),
-            base.resolvedSnapshots(),
-            base.dependentViews(),
-            base.engineHints(),
-            base.columnHints());
+    UserTableNode canonical = canonicalTable();
     when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
     when(user.resolve(usrTable)).thenReturn(Optional.of(canonical));
     when(user.schemaFor(eq("table-schema"), eq(usrTable), any(), eq(""), eq("")))
@@ -903,5 +867,27 @@ class MetaGraphTest {
     Optional<ResourceId> out = metaNoEngine.resolveTable("c", ref, CatalogContext.empty());
 
     assertThat(out).contains(usrTable);
+  }
+
+  /** The plain test table, switched to canonical column identity. */
+  private UserTableNode canonicalTable() {
+    UserTableNode base = TestNodes.tableNode(usrTable, "{}");
+    return new UserTableNode(
+        base.id(),
+        base.blobUri(),
+        base.catalogId(),
+        base.namespaceId(),
+        base.displayName(),
+        base.format(),
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
+        base.schemaJson(),
+        base.properties(),
+        base.partitionKeys(),
+        base.currentSnapshot(),
+        base.previousSnapshot(),
+        base.resolvedSnapshots(),
+        base.dependentViews(),
+        base.engineHints(),
+        base.columnHints());
   }
 }

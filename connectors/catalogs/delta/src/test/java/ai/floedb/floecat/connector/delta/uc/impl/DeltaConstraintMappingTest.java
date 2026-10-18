@@ -175,7 +175,7 @@ class DeltaConstraintMappingTest {
     StructType schema =
         new StructType().add("a", LongType.LONG, false).add("b", LongType.LONG, false);
     ColumnIdentityMap structured = identityMap("a", "b");
-    ColumnIdentityMap mapped = nativeIdentityMap(Map.of("a", 2, "b", 1));
+    ColumnIdentityMap mapped = DeltaConnectorTest.nativeIdentityMap(Map.of("a", 2, "b", 1));
 
     List<ConstraintDefinition> before =
         DeltaConnector.mapDeltaConstraints(schema, Map.of(), structured);
@@ -211,7 +211,7 @@ class DeltaConstraintMappingTest {
 
   /** Builds a valid structured-path identity map for the test schema paths. */
   private static ColumnIdentityMap identityMap(String... dottedPaths) {
-    List<SchemaNode> nodes =
+    return identityMap(
         java.util.Arrays.stream(dottedPaths)
             .map(
                 dotted -> {
@@ -219,19 +219,9 @@ class DeltaConstraintMappingTest {
                   for (String name : dotted.split("\\.")) {
                     path = path.field(name);
                   }
-                  return new SchemaNode(path, 1, true, OptionalInt.empty(), Optional.empty());
+                  return path;
                 })
-            .toList();
-    return ColumnIdentityMaps.toProto(
-        SchemaIdentityReconciler.reconcile(
-                ResolvedSchema.of(nodes),
-                0L,
-                IdentityMode.STRUCTURED_PATH,
-                Optional.empty(),
-                0L,
-                PreferredCanonicalIds.NONE,
-                HistoryTier.VERSIONED_LOG)
-            .state());
+            .toList());
   }
 
   private static ColumnIdentityMap identityMap(List<ColumnPath> paths) {
@@ -247,29 +237,6 @@ class DeltaConstraintMappingTest {
                 Optional.empty(),
                 0L,
                 PreferredCanonicalIds.NONE,
-                HistoryTier.VERSIONED_LOG)
-            .state());
-  }
-
-  private static ColumnIdentityMap nativeIdentityMap(Map<String, Integer> nativeIds) {
-    List<SchemaNode> nodes =
-        nativeIds.entrySet().stream()
-            .sorted(Map.Entry.comparingByKey())
-            .map(
-                entry ->
-                    new SchemaNode(
-                        ColumnPath.ROOT.field(entry.getKey()),
-                        1,
-                        true,
-                        OptionalInt.of(entry.getValue()),
-                        Optional.empty()))
-            .toList();
-    return ColumnIdentityMaps.toProto(
-        SchemaIdentityReconciler.reset(
-                ResolvedSchema.of(nodes),
-                1L,
-                IdentityMode.NATIVE_FIELD_ID,
-                2L,
                 HistoryTier.VERSIONED_LOG)
             .state());
   }

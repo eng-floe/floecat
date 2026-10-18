@@ -219,7 +219,7 @@ class DeltaConnectorTest {
                     FloecatConnector.SnapshotSelectionKind.CURRENT,
                     Set.of(),
                     0,
-                    Map.of(100L, identityMap(v100)),
+                    Map.of(100L, freshIdentity(v100)),
                     0L))
             .toList();
 
@@ -252,7 +252,7 @@ class DeltaConnectorTest {
                     FloecatConnector.SnapshotSelectionKind.CURRENT,
                     Set.of(),
                     0,
-                    Map.of(100L, identityMap(v100)),
+                    Map.of(100L, freshIdentity(v100)),
                     0L))
             .toList();
 
@@ -370,7 +370,7 @@ class DeltaConnectorTest {
                     FloecatConnector.SnapshotSelectionKind.ALL,
                     Set.of(),
                     0,
-                    Map.of(1L, identityMap(versionOne)),
+                    Map.of(1L, freshIdentity(versionOne)),
                     0L))
             .toList();
 
@@ -811,6 +811,10 @@ class DeltaConnectorTest {
   }
 
   /** A first-generation map for {@code snapshot}, as identity reconciliation persists it. */
+  private static ColumnIdentityMap freshIdentity(Snapshot snapshot) {
+    return freshIdentity(snapshot, snapshot.getVersion());
+  }
+
   private static ColumnIdentityMap freshIdentity(Snapshot snapshot, long version) {
     return canonicalIdentity(snapshot, version, Optional.empty(), 0L);
   }
@@ -1096,7 +1100,7 @@ class DeltaConnectorTest {
     Snapshot latest = snapshot(7L, 7000L, new StructType().add("id", LongType.LONG, false));
     TestDeltaConnector connector =
         new TestDeltaConnector(new StubTable(latest, Map.of(7L, latest)));
-    ColumnIdentityMap identityMap = identityMap(latest);
+    ColumnIdentityMap identityMap = freshIdentity(latest);
     long stableColumnId =
         DeltaCanonicalIdentity.canonicalIdsByStatsKey(latest, identityMap).get("id");
     var entry = pageIndexEntry("s3://bucket/file.parquet", "id");
@@ -1149,7 +1153,7 @@ class DeltaConnectorTest {
     TestDeltaConnector connector =
         new TestDeltaConnector(new StubTable(latest, Map.of(7L, latest)));
     connector.setSnapshotSchemaJson(schemaJson);
-    ColumnIdentityMap structured = identityMap(latest);
+    ColumnIdentityMap structured = freshIdentity(latest);
     ColumnIdentityMap mapped = nativeIdentityMap(Map.of("a", 2, "b", 1));
     List<FloecatConnector.ParquetPageIndexEntry> entries =
         List.of(
@@ -1204,7 +1208,7 @@ class DeltaConnectorTest {
     TestDeltaConnector connector =
         new TestDeltaConnector(new StubTable(latest, Map.of(8L, latest)));
     connector.setSnapshotSchemaJson(evolvedSchemaJson);
-    ColumnIdentityMap identityMap = identityMap(latest);
+    ColumnIdentityMap identityMap = freshIdentity(latest);
     long addedColumnId =
         DeltaCanonicalIdentity.canonicalIdsByStatsKey(latest, identityMap).get("added");
     String oldFile = "s3://bucket/old.parquet";
@@ -1307,7 +1311,7 @@ class DeltaConnectorTest {
     TestDeltaConnector connector =
         new TestDeltaConnector(new StubTable(latest, Map.of(9L, latest)));
     connector.setSnapshotSchemaJson(mappedSchemaJson);
-    ColumnIdentityMap identityMap = identityMap(latest);
+    ColumnIdentityMap identityMap = freshIdentity(latest);
     var physicalEntry = pageIndexEntry("s3://bucket/mapped.parquet", "col-123");
 
     var selected =
@@ -1465,23 +1469,13 @@ class DeltaConnectorTest {
   private static FloecatConnector.SnapshotBundle snapshotBundle(
       long snapshotId, String schemaJson) {
     ColumnIdentityMap identityMap =
-        identityMap(snapshot(snapshotId, 0L, new StructType().add("id", LongType.LONG, false)));
+        freshIdentity(snapshot(snapshotId, 0L, new StructType().add("id", LongType.LONG, false)));
     return new FloecatConnector.SnapshotBundle(
         snapshotId, 0L, 0L, schemaJson, null, 0L, null, Map.of(), 0, null, identityMap);
   }
 
-  private static ColumnIdentityMap identityMap(Snapshot snapshot) {
-    return reconcileIdentity(
-            snapshot,
-            snapshot.getVersion(),
-            ColumnIdentityMap.getDefaultInstance(),
-            0L,
-            PreferredCanonicalIds.NONE,
-            HistoryTier.VERSIONED_LOG)
-        .identityMap();
-  }
-
-  private static ColumnIdentityMap nativeIdentityMap(Map<String, Integer> nativeIds) {
+  /** A native-ID map for top-level fields, shared with {@link DeltaConstraintMappingTest}. */
+  static ColumnIdentityMap nativeIdentityMap(Map<String, Integer> nativeIds) {
     List<SchemaNode> nodes =
         nativeIds.entrySet().stream()
             .sorted(Map.Entry.comparingByKey())
@@ -1495,11 +1489,13 @@ class DeltaConnectorTest {
                         Optional.empty()))
             .toList();
     return ColumnIdentityMaps.toProto(
-        SchemaIdentityReconciler.reset(
+        SchemaIdentityReconciler.reconcile(
                 ResolvedSchema.of(nodes),
                 7L,
                 IdentityMode.NATIVE_FIELD_ID,
+                Optional.empty(),
                 2L,
+                PreferredCanonicalIds.NONE,
                 HistoryTier.VERSIONED_LOG)
             .state());
   }

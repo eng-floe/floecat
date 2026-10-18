@@ -37,8 +37,6 @@ import io.delta.kernel.types.StringType;
 import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
 import io.delta.kernel.types.VariantType;
-import java.io.IOException;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -76,8 +74,7 @@ class DeltaCanonicalIdentityTest {
                 "false"),
             new Protocol(3, 7, Set.of("columnMapping"), Set.of("columnMapping")));
 
-    ColumnIdentityMap identity =
-        freshIdentity(snapshot, 9L);
+    ColumnIdentityMap identity = freshIdentity(snapshot, 9L);
     DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
 
     assertThat(identity.getHighWaterMark()).isEqualTo(9L);
@@ -313,5 +310,4 @@ class DeltaCanonicalIdentityTest {
             .putString(DeltaSchemaResolver.PHYSICAL_NAME, physicalName)
             .build());
   }
-
 }
