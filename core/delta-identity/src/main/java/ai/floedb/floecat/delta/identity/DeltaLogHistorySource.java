@@ -23,6 +23,7 @@ import io.delta.kernel.engine.Engine;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongFunction;
 
 /** Delta transaction-log implementation of {@link DeltaHistorySource}. */
 public final class DeltaLogHistorySource implements DeltaHistorySource {
@@ -32,10 +33,21 @@ public final class DeltaLogHistorySource implements DeltaHistorySource {
   private final Engine engine;
   private final long headVersion;
   private final long earliestRecreatableVersion;
-  private final Map<Long, Optional<Snapshot>> snapshots = new ConcurrentHashMap<>();
+  private final LongFunction<Optional<Snapshot>> kernelSnapshots;
   private final Map<Long, Optional<DeltaIdentitySnapshot>> identities = new ConcurrentHashMap<>();
 
   public DeltaLogHistorySource(String tableName, String tablePath, Table table, Engine engine) {
+    this(tableName, tablePath, table, engine, memoizedLoader(table, engine, tablePath));
+  }
+
+  /** Uses {@code kernelSnapshots} so a caller can share loaded snapshots with this source. */
+  public DeltaLogHistorySource(
+      String tableName,
+      String tablePath,
+      Table table,
+      Engine engine,
+      LongFunction<Optional<Snapshot>> kernelSnapshots) {
+    this.kernelSnapshots = kernelSnapshots;
     this.tableName = tableName;
     this.tablePath = tablePath;
     this.table = table;
@@ -67,15 +79,23 @@ public final class DeltaLogHistorySource implements DeltaHistorySource {
         version, requested -> kernelSnapshot(requested).map(DeltaIdentitySnapshot::from));
   }
 
-  public Optional<Snapshot> kernelSnapshot(long version) {
+  private Optional<Snapshot> kernelSnapshot(long version) {
     if (version < earliestRecreatableVersion) {
       return Optional.empty();
     }
-    return snapshots.computeIfAbsent(
-        version,
-        requested ->
-            Optional.ofNullable(
-                KernelAdapter.loadExactSnapshot(table, engine, tablePath, requested)));
+    return kernelSnapshots.apply(version);
+  }
+
+  /** Loads each exact Kernel snapshot at most once. */
+  public static LongFunction<Optional<Snapshot>> memoizedLoader(
+      Table table, Engine engine, String tablePath) {
+    Map<Long, Optional<Snapshot>> loaded = new ConcurrentHashMap<>();
+    return version ->
+        loaded.computeIfAbsent(
+            version,
+            requested ->
+                Optional.ofNullable(
+                    KernelAdapter.loadExactSnapshot(table, engine, tablePath, requested)));
   }
 
   @Override

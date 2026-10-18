@@ -325,14 +325,6 @@ public final class DeltaIdentityService {
     IdentityMode selectedMode = mode(selected);
     HistoryTier provenance = weakerTier(state.historyTier(), history.historyTier());
     boolean generationBoundary = state.mode() != selectedMode;
-    if (!generationBoundary && !sameIdentityShape(selected, state)) {
-      DeltaHistorySource.MetadataHistory observed =
-          history.metadataVersions(state.sourceVersion() + 1L, version);
-      generationBoundary =
-          history.historyTier() == HistoryTier.NONE
-              || !observed.complete()
-              || !observed.versions().isEmpty();
-    }
 
     if (!generationBoundary && history.historyTier() == HistoryTier.UNORDERED_QUERY_HISTORY) {
       DeltaHistorySource.UnorderedHistory unordered = history.unorderedHistory();
@@ -379,18 +371,6 @@ public final class DeltaIdentityService {
         .anyMatch(
             nativeId ->
                 nativeId <= previousNativeHighWaterMark && !previousNativeIds.contains(nativeId));
-  }
-
-  private static boolean sameIdentityShape(
-      DeltaIdentitySnapshot snapshot, SchemaIdentityState previous) {
-    return snapshot.resolved().schema().nodes().size() == previous.entries().size()
-        && snapshot.resolved().schema().nodes().stream()
-            .allMatch(
-                node ->
-                    previous
-                        .byPath(node.path())
-                        .map(entry -> entry.nativeFieldId().equals(node.nativeFieldId()))
-                        .orElse(false));
   }
 
   private static HistoryTier weakerTier(HistoryTier previous, HistoryTier current) {

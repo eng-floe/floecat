@@ -492,7 +492,7 @@ class DeltaConnectorTest {
     Table table = Table.forPath(engine, location);
     DeltaLogHistorySource beforeRetention =
         new DeltaLogHistorySource(location, location, table, engine);
-    Snapshot version0 = beforeRetention.kernelSnapshot(0L).orElseThrow();
+    Snapshot version0 = KernelAdapter.loadExactSnapshot(table, engine, location, 0L);
     ColumnIdentityMap version0Map = freshIdentity(version0, 0L);
     ColumnIdentityMap version3Map =
         new DeltaIdentityService()
@@ -854,7 +854,8 @@ class DeltaConnectorTest {
 
     DeltaHistorySource.MetadataHistory history =
         connector
-            .historySource("ignored", new StubTable(latest, Map.of(1L, latest)))
+            .historySource(
+                "ignored", new StubTable(latest, Map.of(1L, latest)), version -> Optional.empty())
             .metadataVersions(0L, DeltaHistorySource.MAX_IDENTITY_HISTORY_COMMITS);
 
     assertFalse(history.complete());
@@ -1390,7 +1391,10 @@ class DeltaConnectorTest {
     }
 
     @Override
-    protected DeltaHistorySource historySource(String storageLocation, Table ignored) {
+    protected DeltaHistorySource historySource(
+        String storageLocation,
+        Table ignored,
+        java.util.function.LongFunction<Optional<Snapshot>> kernelSnapshots) {
       return new DeltaHistorySource() {
         @Override
         public String tableName() {
@@ -1413,9 +1417,7 @@ class DeltaConnectorTest {
           if (version < earliestRecreatableVersion) {
             return Optional.empty();
           }
-          return Optional.ofNullable(
-                  KernelAdapter.loadExactSnapshot(table, engine, storageLocation, version))
-              .map(DeltaIdentitySnapshot::from);
+          return kernelSnapshots.apply(version).map(DeltaIdentitySnapshot::from);
         }
 
         @Override
@@ -1509,7 +1511,10 @@ class DeltaConnectorTest {
     }
 
     @Override
-    protected DeltaHistorySource historySource(String storageLocation, Table ignored) {
+    protected DeltaHistorySource historySource(
+        String storageLocation,
+        Table ignored,
+        java.util.function.LongFunction<Optional<Snapshot>> kernelSnapshots) {
       return new DeltaHistorySource() {
         @Override
         public String tableName() {
@@ -1528,8 +1533,7 @@ class DeltaConnectorTest {
 
         @Override
         public Optional<DeltaIdentitySnapshot> snapshot(long version) {
-          return Optional.ofNullable(table.getSnapshotAsOfVersion(null, version))
-              .map(DeltaIdentitySnapshot::from);
+          return kernelSnapshots.apply(version).map(DeltaIdentitySnapshot::from);
         }
 
         @Override

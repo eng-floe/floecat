@@ -104,6 +104,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
+import java.util.function.LongFunction;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.apache.parquet.io.InputFile;
@@ -222,7 +223,9 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     PersistedIdentityLookup lookup =
         PersistedIdentityLookup.forSnapshots(
             persistedIdentityMaps, Optional.empty(), highWaterMark);
-    DeltaHistorySource history = historySource(storageLocation, table);
+    LongFunction<Optional<Snapshot>> kernelSnapshots =
+        DeltaLogHistorySource.memoizedLoader(table, engine, storageLocation);
+    DeltaHistorySource history = historySource(storageLocation, table, kernelSnapshots);
     versions.forEach(
         version ->
             history
@@ -250,10 +253,7 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
       if (identityMap == null) {
         continue;
       }
-      Snapshot selectedSnapshot =
-          history instanceof DeltaLogHistorySource log
-              ? log.kernelSnapshot(selectedVersion).orElse(null)
-              : KernelAdapter.loadExactSnapshot(table, engine, storageLocation, selectedVersion);
+      Snapshot selectedSnapshot = kernelSnapshots.apply(selectedVersion).orElse(null);
       if (selectedSnapshot != null) {
         bundles.add(
             buildSnapshotBundle(storageLocation, selectedVersion, selectedSnapshot, identityMap));
@@ -262,8 +262,10 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     return bundles.stream();
   }
 
-  protected DeltaHistorySource historySource(String storageLocation, Table table) {
-    return new DeltaLogHistorySource(storageLocation, storageLocation, table, engine);
+  protected DeltaHistorySource historySource(
+      String storageLocation, Table table, LongFunction<Optional<Snapshot>> kernelSnapshots) {
+    return new DeltaLogHistorySource(
+        storageLocation, storageLocation, table, engine, kernelSnapshots);
   }
 
   @Override

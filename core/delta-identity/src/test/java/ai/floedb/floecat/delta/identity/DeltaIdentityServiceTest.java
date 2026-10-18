@@ -38,19 +38,19 @@ class DeltaIdentityServiceTest {
   private final DeltaIdentityService service = new DeltaIdentityService();
 
   @Test
-  void noHistoryUnmappedSchemaChangesStartNewGenerations() {
+  void noHistoryUnmappedAdditionAndRemovalReconcileByPath() {
     ColumnIdentityMap first = reconcile(source(1L, UNMAPPED_A, Map.of()), Optional.empty());
     ColumnIdentityMap added = reconcile(source(2L, UNMAPPED_AB, Map.of()), Optional.of(first));
     ColumnIdentityMap removed = reconcile(source(3L, UNMAPPED_A, Map.of()), Optional.of(added));
 
-    assertThat(columnId(added, "a")).isGreaterThan(first.getHighWaterMark());
+    assertThat(columnId(added, "a")).isEqualTo(columnId(first, "a"));
     assertThat(columnId(added, "b")).isGreaterThan(first.getHighWaterMark());
     assertThat(removed.getEntriesList()).hasSize(1);
-    assertThat(columnId(removed, "a")).isGreaterThan(added.getHighWaterMark());
+    assertThat(columnId(removed, "a")).isEqualTo(columnId(first, "a"));
   }
 
   @Test
-  void noHistoryMappedSchemaChangesStartNewGenerations() {
+  void noHistoryMappedAdditionDropAndRenameReconcileByNativeId() {
     ColumnIdentityMap first =
         reconcile(
             source(1L, mappedSchema(field("a", "long", 1)), mappedProperties(5)), Optional.empty());
@@ -70,9 +70,9 @@ class DeltaIdentityServiceTest {
             source(4L, mappedSchema(field("renamed", "string", 6)), mappedProperties(6)),
             Optional.of(dropped));
 
-    assertThat(columnId(added, "a")).isGreaterThan(first.getHighWaterMark());
-    assertThat(columnId(dropped, "b")).isGreaterThan(added.getHighWaterMark());
-    assertThat(columnId(renamed, "renamed")).isGreaterThan(dropped.getHighWaterMark());
+    assertThat(columnId(added, "a")).isEqualTo(columnId(first, "a"));
+    assertThat(columnId(dropped, "b")).isEqualTo(columnId(added, "b"));
+    assertThat(columnId(renamed, "renamed")).isEqualTo(columnId(added, "b"));
   }
 
   @Test
@@ -157,7 +157,7 @@ class DeltaIdentityServiceTest {
 
     ColumnIdentityMap added = reconcile(source(0L, UNMAPPED_AB, Map.of()), Optional.of(first));
 
-    assertThat(columnId(added, "a")).isGreaterThan(first.getHighWaterMark());
+    assertThat(columnId(added, "a")).isEqualTo(columnId(first, "a"));
     assertThat(columnId(added, "b")).isGreaterThan(first.getHighWaterMark());
   }
 
