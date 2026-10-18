@@ -67,15 +67,21 @@ public final class SchemaIdentityState {
     this.stateChecksum = Objects.requireNonNull(stateChecksum, "stateChecksum");
     this.byPath = new LinkedHashMap<>();
     Set<Long> canonicalIds = new HashSet<>();
+    Set<Integer> nativeIds = new HashSet<>();
     for (SchemaIdentityEntry entry : this.entries) {
       SchemaIdentityEntry duplicate = byPath.putIfAbsent(entry.path(), entry);
       if (duplicate != null) {
         throw new IllegalArgumentException("Duplicate identity path " + entry.path().display());
       }
-      if (CanonicalColumnId.isDerived(entry.canonicalId())
-          && !CanonicalColumnId.isWellFormedDerived(entry.canonicalId())) {
-        throw new IllegalArgumentException(
-            "Malformed derived canonical column ID " + entry.canonicalId());
+      if (mode == IdentityMode.NATIVE_FIELD_ID
+          && entry.path().elements().getLast().kind() == NodeKind.FIELD) {
+        int nativeId = entry.nativeFieldId().orElse(0);
+        if (nativeId <= 0) {
+          throw new IllegalArgumentException("Native identity field has no positive native ID");
+        }
+        if (!nativeIds.add(nativeId)) {
+          throw new IllegalArgumentException("Duplicate native field ID " + nativeId);
+        }
       }
       if (!CanonicalColumnId.isDerived(entry.canonicalId())
           && entry.canonicalId() > highWaterMark) {

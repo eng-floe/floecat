@@ -182,7 +182,7 @@ public final class ColumnIdentityMaps {
     return toProto(rebound);
   }
 
-  public static ColumnPath pathFromProto(List<ColumnIdentityPathElement> elements) {
+  private static ColumnPath pathFromProto(List<ColumnIdentityPathElement> elements) {
     ColumnPath path = ColumnPath.ROOT;
     for (ColumnIdentityPathElement element : elements) {
       path =

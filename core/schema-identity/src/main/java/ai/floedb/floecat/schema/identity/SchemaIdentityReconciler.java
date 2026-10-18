@@ -46,7 +46,7 @@ public final class SchemaIdentityReconciler {
    * Preferred IDs never lower the high-water mark or replace an identity retained from the
    * predecessor.
    */
-  public static Result reconcile(
+  public static SchemaIdentityState reconcile(
       ResolvedSchema schema,
       long sourceVersion,
       IdentityMode mode,
@@ -54,6 +54,8 @@ public final class SchemaIdentityReconciler {
       long highWaterMarkFloor,
       PreferredCanonicalIds preferredIds,
       HistoryTier historyTier) {
+    Objects.requireNonNull(schema, "schema");
+    Objects.requireNonNull(mode, "mode");
     Objects.requireNonNull(previous, "previous");
     Objects.requireNonNull(preferredIds, "preferredIds");
     Objects.requireNonNull(historyTier, "historyTier");
@@ -64,52 +66,14 @@ public final class SchemaIdentityReconciler {
           validateSourceVersion(sourceVersion, state);
           validateMode(mode, state);
         });
-    long retainedHighWaterMark =
-        Math.max(highWaterMarkFloor, previous.map(SchemaIdentityState::highWaterMark).orElse(0L));
-    return reconcileInternal(
-        schema, sourceVersion, mode, previous, retainedHighWaterMark, preferredIds, historyTier);
-  }
-
-  /** Binds current-schema identity to a source version after the caller validates that schema. */
-  public static SchemaIdentityState bindSourceVersion(
-      SchemaIdentityState state, long sourceVersion) {
-    Objects.requireNonNull(state, "state");
     if (sourceVersion < 0L) {
       throw new IllegalArgumentException("Source version must be non-negative");
     }
-    if (sourceVersion == state.sourceVersion()) {
-      return state;
-    }
-    return state.copy(
-        sourceVersion,
-        state.highWaterMark(),
-        state.historyTier(),
-        state.nativeHighWaterMark(),
-        state.sourceVersionAnchored());
-  }
-
-  private static Result reconcileInternal(
-      ResolvedSchema schema,
-      long sourceVersion,
-      IdentityMode mode,
-      Optional<SchemaIdentityState> previous,
-      long initialHighWaterMark,
-      PreferredCanonicalIds preferredIds,
-      HistoryTier historyTier) {
-    Objects.requireNonNull(schema, "schema");
-    Objects.requireNonNull(mode, "mode");
-    Objects.requireNonNull(previous, "previous");
-    CanonicalColumnId.checkAllocatedRange(initialHighWaterMark);
-    if (sourceVersion < 0L) {
-      throw new IllegalArgumentException("Source version must be non-negative");
-    }
-
     long highWaterMark =
-        Math.max(initialHighWaterMark, previous.map(SchemaIdentityState::highWaterMark).orElse(0L));
+        Math.max(highWaterMarkFloor, previous.map(SchemaIdentityState::highWaterMark).orElse(0L));
     Map<ColumnPath, SchemaIdentityEntry> previousByPath = new HashMap<>();
     Map<Integer, SchemaIdentityEntry> previousByNativeId = new HashMap<>();
-    Map<Long, ColumnPath> previousPathById = new HashMap<>();
-    Map<Long, Integer> previousNativeIdById = new HashMap<>();
+    Map<Long, SchemaIdentityEntry> previousById = new HashMap<>();
     previous.ifPresent(
         state ->
             state
@@ -118,19 +82,11 @@ public final class SchemaIdentityReconciler {
                     entry -> {
                       previousByPath.put(entry.path(), entry);
                       if (isField(entry.path()) && entry.nativeFieldId().isPresent()) {
-                        SchemaIdentityEntry duplicate =
-                            previousByNativeId.put(entry.nativeFieldId().getAsInt(), entry);
-                        if (duplicate != null) {
-                          throw new IllegalArgumentException(
-                              "Duplicate native field ID " + entry.nativeFieldId().getAsInt());
-                        }
-                        previousNativeIdById.put(
-                            entry.canonicalId(), entry.nativeFieldId().getAsInt());
+                        previousByNativeId.put(entry.nativeFieldId().getAsInt(), entry);
                       }
-                      previousPathById.put(entry.canonicalId(), entry.path());
+                      previousById.put(entry.canonicalId(), entry);
                     }));
 
-    List<CanonicalSchemaNode> nodes = new ArrayList<>(schema.nodes().size());
     List<SchemaIdentityEntry> entries = new ArrayList<>(schema.nodes().size());
     Set<Long> usedIds = new HashSet<>();
     Map<ColumnPath, Long> canonicalIdsByPath = new HashMap<>();
@@ -153,13 +109,13 @@ public final class SchemaIdentityReconciler {
               mode == IdentityMode.NATIVE_FIELD_ID
                   ? preferredIds.byNativeId().get(nativeId)
                   : preferredIds.byPath().get(node.path());
-          ColumnPath previousOwner = preferredId == null ? null : previousPathById.get(preferredId);
-          Integer previousNativeOwner =
-              preferredId == null ? null : previousNativeIdById.get(preferredId);
+          SchemaIdentityEntry previousOwner =
+              preferredId == null ? null : previousById.get(preferredId);
           boolean ownedBySameIdentity =
-              mode == IdentityMode.NATIVE_FIELD_ID
-                  ? previousNativeOwner == null || previousNativeOwner == nativeId
-                  : previousOwner == null || previousOwner.equals(node.path());
+              previousOwner == null
+                  || (mode == IdentityMode.NATIVE_FIELD_ID
+                      ? previousOwner.nativeFieldId().orElse(0) == nativeId
+                      : previousOwner.path().equals(node.path()));
           if (preferredId != null && ownedBySameIdentity && !usedIds.contains(preferredId)) {
             canonicalId = preferredId;
           } else {
@@ -176,7 +132,6 @@ public final class SchemaIdentityReconciler {
       if (!CanonicalColumnId.isDerived(canonicalId)) {
         highWaterMark = Math.max(highWaterMark, canonicalId);
       }
-      nodes.add(new CanonicalSchemaNode(node, canonicalId));
       entries.add(new SchemaIdentityEntry(node.path(), node.nativeFieldId(), canonicalId));
       canonicalIdsByPath.put(node.path(), canonicalId);
     }
@@ -191,18 +146,31 @@ public final class SchemaIdentityReconciler {
             true,
             historyTier,
             entries);
-    SchemaIdentityState state =
-        new SchemaIdentityState(
-            sourceVersion,
-            highWaterMark,
-            mode,
-            historyTier,
-            OptionalLong.empty(),
-            true,
-            entries,
-            fingerprint,
-            stateChecksum);
-    return new Result(nodes, state);
+    return new SchemaIdentityState(
+        sourceVersion,
+        highWaterMark,
+        mode,
+        historyTier,
+        OptionalLong.empty(),
+        true,
+        entries,
+        fingerprint,
+        stateChecksum);
+  }
+
+  /** Binds current-schema identity to a source version after the caller validates that schema. */
+  public static SchemaIdentityState bindSourceVersion(
+      SchemaIdentityState state, long sourceVersion) {
+    Objects.requireNonNull(state, "state");
+    if (sourceVersion < 0L) {
+      throw new IllegalArgumentException("Source version must be non-negative");
+    }
+    return state.copy(
+        sourceVersion,
+        state.highWaterMark(),
+        state.historyTier(),
+        state.nativeHighWaterMark(),
+        state.sourceVersionAnchored());
   }
 
   private static boolean isField(ColumnPath path) {
@@ -309,12 +277,5 @@ public final class SchemaIdentityReconciler {
     byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
     digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(bytes.length).array());
     digest.update(bytes);
-  }
-
-  public record Result(List<CanonicalSchemaNode> nodes, SchemaIdentityState state) {
-    public Result {
-      nodes = List.copyOf(Objects.requireNonNull(nodes, "nodes"));
-      Objects.requireNonNull(state, "state");
-    }
   }
 }

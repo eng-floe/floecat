@@ -33,25 +33,21 @@ class SchemaIdentityReconcilerTest {
             10, IdentityMode.NATIVE_FIELD_ID, Optional.empty(), nativeField("old_name", 1, 7));
     var renamed =
         reconcile(
-            11,
-            IdentityMode.NATIVE_FIELD_ID,
-            Optional.of(first.state()),
-            nativeField("new_name", 1, 7));
+            11, IdentityMode.NATIVE_FIELD_ID, Optional.of(first), nativeField("new_name", 1, 7));
 
-    assertThat(first.nodes().getFirst().canonicalId()).isEqualTo(1L);
-    assertThat(renamed.nodes().getFirst().canonicalId()).isEqualTo(1L);
+    assertThat(first.entries().getFirst().canonicalId()).isEqualTo(1L);
+    assertThat(renamed.entries().getFirst().canonicalId()).isEqualTo(1L);
   }
 
   @Test
   void unmappedRenameAllocatesNewIdentity() {
     var first = reconcile(10, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("old_name", 1));
     var renamed =
-        reconcile(
-            11, IdentityMode.STRUCTURED_PATH, Optional.of(first.state()), field("new_name", 1));
+        reconcile(11, IdentityMode.STRUCTURED_PATH, Optional.of(first), field("new_name", 1));
 
-    assertThat(first.nodes().getFirst().canonicalId()).isEqualTo(1);
-    assertThat(renamed.nodes().getFirst().canonicalId()).isEqualTo(2);
-    assertThat(renamed.state().entries())
+    assertThat(first.entries().getFirst().canonicalId()).isEqualTo(1);
+    assertThat(renamed.entries().getFirst().canonicalId()).isEqualTo(2);
+    assertThat(renamed.entries())
         .extracting(SchemaIdentityEntry::path)
         .containsExactly(ColumnPath.ROOT.field("new_name"));
   }
@@ -59,14 +55,13 @@ class SchemaIdentityReconcilerTest {
   @Test
   void unmappedDropAndLaterReaddAllocatesNewIdentity() {
     var present = reconcile(10, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("x", 1));
-    var dropped = reconcile(11, IdentityMode.STRUCTURED_PATH, Optional.of(present.state()));
-    var readded =
-        reconcile(12, IdentityMode.STRUCTURED_PATH, Optional.of(dropped.state()), field("x", 1));
+    var dropped = reconcile(11, IdentityMode.STRUCTURED_PATH, Optional.of(present));
+    var readded = reconcile(12, IdentityMode.STRUCTURED_PATH, Optional.of(dropped), field("x", 1));
 
-    assertThat(present.nodes().getFirst().canonicalId()).isEqualTo(1);
-    assertThat(dropped.state().entries()).isEmpty();
-    assertThat(dropped.state().highWaterMark()).isEqualTo(1);
-    assertThat(readded.nodes().getFirst().canonicalId()).isEqualTo(2);
+    assertThat(present.entries().getFirst().canonicalId()).isEqualTo(1);
+    assertThat(dropped.entries()).isEmpty();
+    assertThat(dropped.highWaterMark()).isEqualTo(1);
+    assertThat(readded.entries().getFirst().canonicalId()).isEqualTo(2);
   }
 
   @Test
@@ -77,16 +72,14 @@ class SchemaIdentityReconcilerTest {
         reconcile(
             21,
             IdentityMode.STRUCTURED_PATH,
-            Optional.of(first.state()),
+            Optional.of(first),
             field("b", 1),
             field("new", 2),
             field("a", 3));
 
-    assertThat(evolved.state().byPath(ColumnPath.ROOT.field("a")).orElseThrow().canonicalId())
-        .isEqualTo(1);
-    assertThat(evolved.state().byPath(ColumnPath.ROOT.field("b")).orElseThrow().canonicalId())
-        .isEqualTo(2);
-    assertThat(evolved.state().byPath(ColumnPath.ROOT.field("new")).orElseThrow().canonicalId())
+    assertThat(evolved.byPath(ColumnPath.ROOT.field("a")).orElseThrow().canonicalId()).isEqualTo(1);
+    assertThat(evolved.byPath(ColumnPath.ROOT.field("b")).orElseThrow().canonicalId()).isEqualTo(2);
+    assertThat(evolved.byPath(ColumnPath.ROOT.field("new")).orElseThrow().canonicalId())
         .isEqualTo(3);
   }
 
@@ -105,11 +98,11 @@ class SchemaIdentityReconcilerTest {
             node(map.mapKey(), 1),
             node(map.mapValue(), 2));
 
-    assertThat(result.nodes().getFirst().canonicalId()).isEqualTo(1L);
-    assertThat(result.nodes().get(2).canonicalId()).isEqualTo(2L);
-    assertThat(result.nodes())
-        .filteredOn(node -> node.source().kind() != NodeKind.FIELD)
-        .extracting(CanonicalSchemaNode::canonicalId)
+    assertThat(result.entries().getFirst().canonicalId()).isEqualTo(1L);
+    assertThat(result.entries().get(2).canonicalId()).isEqualTo(2L);
+    assertThat(result.entries())
+        .filteredOn(node -> node.path().elements().getLast().kind() != NodeKind.FIELD)
+        .extracting(SchemaIdentityEntry::canonicalId)
         .allMatch(CanonicalColumnId::isDerived)
         .doesNotHaveDuplicates();
   }
@@ -129,20 +122,21 @@ class SchemaIdentityReconcilerTest {
         reconcile(
             9,
             IdentityMode.NATIVE_FIELD_ID,
-            Optional.of(withoutNestedId.state()),
+            Optional.of(withoutNestedId),
             nativeNode(items, 1, 17),
             nativeNode(element, 1, 99));
 
-    assertThat(withoutNestedId.nodes())
-        .extracting(CanonicalSchemaNode::canonicalId)
-        .containsExactly(1L, withoutNestedId.nodes().get(1).canonicalId());
-    assertThat(CanonicalColumnId.isDerived(withoutNestedId.nodes().get(1).canonicalId())).isTrue();
-    assertThat(withoutNestedId.nodes().get(1).canonicalId()).isEqualTo(9154591074475197868L);
-    assertThat(withoutNestedId.state().highWaterMark()).isEqualTo(1L);
-    assertThat(withNestedId.nodes().get(1).canonicalId())
-        .isEqualTo(withoutNestedId.nodes().get(1).canonicalId());
-    assertThat(withNestedId.state().entries().get(1).nativeFieldId()).hasValue(99);
-    assertThat(withNestedId.state().fingerprint()).isEqualTo(withoutNestedId.state().fingerprint());
+    assertThat(withoutNestedId.entries())
+        .extracting(SchemaIdentityEntry::canonicalId)
+        .containsExactly(1L, withoutNestedId.entries().get(1).canonicalId());
+    assertThat(CanonicalColumnId.isDerived(withoutNestedId.entries().get(1).canonicalId()))
+        .isTrue();
+    assertThat(withoutNestedId.entries().get(1).canonicalId()).isEqualTo(9154591074475197868L);
+    assertThat(withoutNestedId.highWaterMark()).isEqualTo(1L);
+    assertThat(withNestedId.entries().get(1).canonicalId())
+        .isEqualTo(withoutNestedId.entries().get(1).canonicalId());
+    assertThat(withNestedId.entries().get(1).nativeFieldId()).hasValue(99);
+    assertThat(withNestedId.fingerprint()).isEqualTo(withoutNestedId.fingerprint());
   }
 
   @Test
@@ -165,21 +159,21 @@ class SchemaIdentityReconcilerTest {
         reconcile(
             1,
             IdentityMode.NATIVE_FIELD_ID,
-            Optional.of(first.state()),
+            Optional.of(first),
             nativeNode(ColumnPath.ROOT.field("renamed"), 1, 1),
             node(renamedDeep, 1));
 
-    assertThat(CanonicalColumnId.isDerived(first.nodes().get(1).canonicalId())).isTrue();
-    assertThat(renamed.nodes().get(1).canonicalId()).isEqualTo(first.nodes().get(1).canonicalId());
+    assertThat(CanonicalColumnId.isDerived(first.entries().get(1).canonicalId())).isTrue();
+    assertThat(renamed.entries().get(1).canonicalId())
+        .isEqualTo(first.entries().get(1).canonicalId());
   }
 
   @Test
   void completeMetadataHistoryAllowsSparseSourceVersions() {
     var first = reconcile(3, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("x", 1));
-    var later =
-        reconcile(50, IdentityMode.STRUCTURED_PATH, Optional.of(first.state()), field("x", 1));
+    var later = reconcile(50, IdentityMode.STRUCTURED_PATH, Optional.of(first), field("x", 1));
 
-    assertThat(later.nodes().getFirst().canonicalId()).isEqualTo(1L);
+    assertThat(later.entries().getFirst().canonicalId()).isEqualTo(1L);
   }
 
   @Test
@@ -189,10 +183,7 @@ class SchemaIdentityReconcilerTest {
     assertThatThrownBy(
             () ->
                 reconcile(
-                    4,
-                    IdentityMode.NATIVE_FIELD_ID,
-                    Optional.of(first.state()),
-                    nativeField("x", 1, 1)))
+                    4, IdentityMode.NATIVE_FIELD_ID, Optional.of(first), nativeField("x", 1, 1)))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("clean identity reset");
   }
@@ -203,25 +194,20 @@ class SchemaIdentityReconcilerTest {
         reconcile(1, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1), field("b", 2));
     var unchanged =
         reconcile(
-            2,
-            IdentityMode.STRUCTURED_PATH,
-            Optional.of(first.state()),
-            field("a", 1),
-            field("b", 2));
-    var dropped =
-        reconcile(2, IdentityMode.STRUCTURED_PATH, Optional.of(first.state()), field("a", 1));
+            2, IdentityMode.STRUCTURED_PATH, Optional.of(first), field("a", 1), field("b", 2));
+    var dropped = reconcile(2, IdentityMode.STRUCTURED_PATH, Optional.of(first), field("a", 1));
 
-    assertThat(unchanged.state().fingerprint()).isEqualTo(first.state().fingerprint());
-    assertThat(dropped.state().fingerprint()).isNotEqualTo(first.state().fingerprint());
+    assertThat(unchanged.fingerprint()).isEqualTo(first.fingerprint());
+    assertThat(dropped.fingerprint()).isNotEqualTo(first.fingerprint());
   }
 
   @Test
   void fingerprintAndChecksumHaveCrossLanguageGoldenVectors() {
     var result = reconcile(7, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a😀", 1));
 
-    assertThat(result.state().fingerprint())
+    assertThat(result.fingerprint())
         .isEqualTo("sha256:aef445f2dd509c4a33e88d9f689798896ea902a8a741667e3fc51640d8f89176");
-    assertThat(result.state().stateChecksum())
+    assertThat(result.stateChecksum())
         .isEqualTo("sha256:6e670fd6e82ed45100654f195bf2c328b7ee6a6183991e74092e9a2efd64909e");
   }
 
@@ -239,7 +225,7 @@ class SchemaIdentityReconcilerTest {
         reconcile(
             2,
             IdentityMode.NATIVE_FIELD_ID,
-            Optional.of(prior.state()),
+            Optional.of(prior),
             nativeField("a", 1, 1),
             nativeField("b", 2, 2));
     var cold =
@@ -250,11 +236,11 @@ class SchemaIdentityReconcilerTest {
             nativeField("a", 1, 1),
             nativeField("b", 2, 2));
 
-    assertThat(warm.nodes()).isEqualTo(cold.nodes());
-    assertThat(warm.state().highWaterMark()).isEqualTo(3L);
-    assertThat(cold.state().highWaterMark()).isEqualTo(2L);
-    assertThat(warm.state().fingerprint()).isEqualTo(cold.state().fingerprint());
-    assertThat(warm.state().stateChecksum()).isNotEqualTo(cold.state().stateChecksum());
+    assertThat(warm.entries()).isEqualTo(cold.entries());
+    assertThat(warm.highWaterMark()).isEqualTo(3L);
+    assertThat(cold.highWaterMark()).isEqualTo(2L);
+    assertThat(warm.fingerprint()).isEqualTo(cold.fingerprint());
+    assertThat(warm.stateChecksum()).isNotEqualTo(cold.stateChecksum());
   }
 
   @Test
@@ -269,8 +255,8 @@ class SchemaIdentityReconcilerTest {
             PreferredCanonicalIds.byNativeId(java.util.Map.of(17, 9L)),
             HistoryTier.VERSIONED_LOG);
 
-    assertThat(result.nodes().getFirst().canonicalId()).isEqualTo(9L);
-    assertThat(result.state().highWaterMark()).isEqualTo(40L);
+    assertThat(result.entries().getFirst().canonicalId()).isEqualTo(9L);
+    assertThat(result.highWaterMark()).isEqualTo(40L);
   }
 
   @Test
@@ -283,12 +269,12 @@ class SchemaIdentityReconcilerTest {
             ResolvedSchema.of(List.of(nativeField("value", 1, 17))),
             5L,
             IdentityMode.NATIVE_FIELD_ID,
-            Optional.of(previous.state()),
+            Optional.of(previous),
             40L,
             PreferredCanonicalIds.byNativeId(java.util.Map.of(17, 1L)),
             HistoryTier.VERSIONED_LOG);
 
-    assertThat(result.nodes().getFirst().canonicalId()).isEqualTo(41L);
+    assertThat(result.entries().getFirst().canonicalId()).isEqualTo(41L);
   }
 
   @Test
@@ -296,11 +282,10 @@ class SchemaIdentityReconcilerTest {
     var first =
         reconcile(1, IdentityMode.STRUCTURED_PATH, Optional.empty(), nativeField("a", 1, 7));
     var changedProvenance =
-        reconcile(
-            2, IdentityMode.STRUCTURED_PATH, Optional.of(first.state()), nativeField("a", 1, 11));
+        reconcile(2, IdentityMode.STRUCTURED_PATH, Optional.of(first), nativeField("a", 1, 11));
 
-    assertThat(changedProvenance.state().entries().getFirst().nativeFieldId()).hasValue(11);
-    assertThat(changedProvenance.state().fingerprint()).isEqualTo(first.state().fingerprint());
+    assertThat(changedProvenance.entries().getFirst().nativeFieldId()).hasValue(11);
+    assertThat(changedProvenance.fingerprint()).isEqualTo(first.fingerprint());
   }
 
   @Test
@@ -327,6 +312,31 @@ class SchemaIdentityReconcilerTest {
   }
 
   @Test
+  void restoreRejectsMissingOrDuplicateNativeFieldIds() {
+    for (OptionalInt nativeId : List.of(OptionalInt.empty(), OptionalInt.of(7))) {
+      var entries =
+          List.of(
+              new SchemaIdentityEntry(ColumnPath.ROOT.field("a"), OptionalInt.of(7), 1L),
+              new SchemaIdentityEntry(ColumnPath.ROOT.field("b"), nativeId, 2L));
+      assertThatThrownBy(
+              () ->
+                  SchemaIdentityState.restore(
+                      1L,
+                      2L,
+                      IdentityMode.NATIVE_FIELD_ID,
+                      HistoryTier.VERSIONED_LOG,
+                      OptionalLong.empty(),
+                      true,
+                      entries,
+                      "irrelevant",
+                      "irrelevant"))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining(
+              nativeId.isPresent() ? "Duplicate native field ID" : "positive native ID");
+    }
+  }
+
+  @Test
   void newGenerationAllocatesAboveTheHighWaterMarkFloor() {
     var reset =
         SchemaIdentityReconciler.reconcile(
@@ -338,11 +348,13 @@ class SchemaIdentityReconcilerTest {
             PreferredCanonicalIds.NONE,
             HistoryTier.VERSIONED_LOG);
 
-    assertThat(reset.nodes()).extracting(CanonicalSchemaNode::canonicalId).containsExactly(4L, 5L);
-    assertThat(reset.state().highWaterMark()).isEqualTo(5L);
+    assertThat(reset.entries())
+        .extracting(SchemaIdentityEntry::canonicalId)
+        .containsExactly(4L, 5L);
+    assertThat(reset.highWaterMark()).isEqualTo(5L);
   }
 
-  private static SchemaIdentityReconciler.Result reconcile(
+  private static SchemaIdentityState reconcile(
       long version,
       IdentityMode mode,
       Optional<SchemaIdentityState> previous,

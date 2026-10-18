@@ -103,8 +103,4 @@ final class CanonicalColumnId {
   static boolean isDerived(long canonicalId) {
     return (canonicalId & DERIVED_NAMESPACE_BIT) != 0L;
   }
-
-  static boolean isWellFormedDerived(long canonicalId) {
-    return canonicalId > 0L && isDerived(canonicalId);
-  }
 }

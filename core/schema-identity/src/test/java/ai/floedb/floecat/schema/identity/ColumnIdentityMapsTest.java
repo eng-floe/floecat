@@ -65,14 +65,13 @@ class ColumnIdentityMapsTest {
             Optional.of(ColumnPath.ROOT.field("value")));
     SchemaIdentityState state =
         SchemaIdentityReconciler.reconcile(
-                ResolvedSchema.of(List.of(node)),
-                9L,
-                IdentityMode.NATIVE_FIELD_ID,
-                Optional.empty(),
-                0L,
-                PreferredCanonicalIds.NONE,
-                HistoryTier.VERSIONED_LOG)
-            .state();
+            ResolvedSchema.of(List.of(node)),
+            9L,
+            IdentityMode.NATIVE_FIELD_ID,
+            Optional.empty(),
+            0L,
+            PreferredCanonicalIds.NONE,
+            HistoryTier.VERSIONED_LOG);
     var map = ColumnIdentityMaps.withNativeHighWaterMark(ColumnIdentityMaps.toProto(state), 11L);
 
     assertThat(ColumnIdentityMaps.restore(map).nativeHighWaterMark()).hasValue(11L);
@@ -140,14 +139,13 @@ class ColumnIdentityMapsTest {
 
     SchemaIdentityState reconciled =
         SchemaIdentityReconciler.reconcile(
-                ResolvedSchema.of(List.of(retained, added)),
-                0L,
-                IdentityMode.STRUCTURED_PATH,
-                Optional.of(previous),
-                previous.highWaterMark(),
-                PreferredCanonicalIds.NONE,
-                HistoryTier.NONE)
-            .state();
+            ResolvedSchema.of(List.of(retained, added)),
+            0L,
+            IdentityMode.STRUCTURED_PATH,
+            Optional.of(previous),
+            previous.highWaterMark(),
+            PreferredCanonicalIds.NONE,
+            HistoryTier.NONE);
 
     assertThat(reconciled.byPath(retained.path()).orElseThrow().canonicalId())
         .isEqualTo(previous.byPath(retained.path()).orElseThrow().canonicalId());
@@ -171,13 +169,12 @@ class ColumnIdentityMapsTest {
         new SchemaNode(
             ColumnPath.ROOT.field("value"), 1, true, OptionalInt.empty(), Optional.empty());
     return SchemaIdentityReconciler.reconcile(
-            ResolvedSchema.of(List.of(node)),
-            version,
-            IdentityMode.STRUCTURED_PATH,
-            Optional.empty(),
-            0L,
-            PreferredCanonicalIds.NONE,
-            HistoryTier.VERSIONED_LOG)
-        .state();
+        ResolvedSchema.of(List.of(node)),
+        version,
+        IdentityMode.STRUCTURED_PATH,
+        Optional.empty(),
+        0L,
+        PreferredCanonicalIds.NONE,
+        HistoryTier.VERSIONED_LOG);
   }
 }
