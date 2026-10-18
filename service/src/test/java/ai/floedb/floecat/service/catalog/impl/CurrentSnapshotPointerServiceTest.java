@@ -159,8 +159,11 @@ class CurrentSnapshotPointerServiceTest {
             .build();
     when(service.tableRepo.getById(tableId)).thenReturn(Optional.of(table));
 
-    assertThrows(
-        IllegalArgumentException.class, () -> service.maybeAdvance(tableId, candidate, "corr"));
+    var rejected =
+        assertThrows(
+            io.grpc.StatusRuntimeException.class,
+            () -> service.maybeAdvance(tableId, candidate, "corr"));
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, rejected.getStatus().getCode());
     verify(service.snapshotRepo, never()).maybeAdvanceCurrentSnapshotPointer(any(), any());
   }
 

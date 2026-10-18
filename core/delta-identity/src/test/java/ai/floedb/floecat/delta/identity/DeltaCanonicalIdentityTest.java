@@ -29,7 +29,6 @@ import ai.floedb.floecat.schema.identity.IdentityMode;
 import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
 import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
 import ai.floedb.floecat.schema.identity.SchemaIdentityState;
-import io.delta.kernel.Snapshot;
 import io.delta.kernel.internal.actions.Protocol;
 import io.delta.kernel.types.ArrayType;
 import io.delta.kernel.types.FieldMetadata;
@@ -61,8 +60,8 @@ class DeltaCanonicalIdentityTest {
                     3L,
                     "col-nested"))
             .add(mappedField("items", new ArrayType(VariantType.VARIANT, true), 5L, "col-items"));
-    Snapshot snapshot =
-        TestSnapshots.snapshot(
+    DeltaIdentitySnapshot snapshot =
+        TestSnapshots.identity(
             9L,
             schema,
             Map.of(
@@ -75,7 +74,7 @@ class DeltaCanonicalIdentityTest {
             new Protocol(3, 7, Set.of("columnMapping"), Set.of("columnMapping")));
 
     ColumnIdentityMap identity = freshIdentity(snapshot, 9L);
-    DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
+    DeltaResolvedSchema resolved = snapshot.resolved();
 
     assertThat(identity.getHighWaterMark()).isEqualTo(9L);
     assertThat(columnId(identity, ColumnPath.ROOT.field("payload"))).isEqualTo(6L);
@@ -104,7 +103,7 @@ class DeltaCanonicalIdentityTest {
 
   @Test
   void mappedCollectionsUseNativeAndDerivedIdentityWithoutIcebergCompatV2() {
-    Snapshot snapshot = mappedSnapshot(7L, false, false);
+    DeltaIdentitySnapshot snapshot = mappedSnapshot(7L, false, false);
 
     ColumnIdentityMap identity = freshIdentity(snapshot, 7L);
 
@@ -121,10 +120,11 @@ class DeltaCanonicalIdentityTest {
 
   @Test
   void mappedSchemaColumnsCarryNativeFieldIds() {
-    Snapshot snapshot = mappedSnapshot(7L, true, true);
-
     var columns =
-        DeltaSchemaMapper.map(snapshot.getSchema().toJson(), Set.of(), freshIdentity(snapshot, 7L))
+        DeltaSchemaMapper.map(
+                mappedSchema(true).toJson(),
+                Set.of(),
+                freshIdentity(mappedSnapshot(7L, true, true), 7L))
             .getColumnsList();
 
     assertThat(columns)
@@ -135,8 +135,8 @@ class DeltaCanonicalIdentityTest {
   @Test
   void enablingNativeMappingReplacesStructuredIdsWithDeltaIds() {
     StructType schema = new StructType().add("tags", new ArrayType(StringType.STRING, true), true);
-    Snapshot unmapped =
-        TestSnapshots.snapshot(6L, schema, Map.of(), new Protocol(1, 2, Set.of(), Set.of()));
+    DeltaIdentitySnapshot unmapped =
+        TestSnapshots.identity(6L, schema, Map.of(), new Protocol(1, 2, Set.of(), Set.of()));
     ColumnIdentityMap structured = freshIdentity(unmapped, 6L);
 
     ColumnIdentityMap mapped = nextGeneration(mappedSnapshot(7L, false, false), 7L, structured);
@@ -148,7 +148,7 @@ class DeltaCanonicalIdentityTest {
 
   @Test
   void activeIcebergCompatV2RequiresNestedIds() {
-    assertThatThrownBy(() -> DeltaColumnMapping.resolveSchema(mappedSnapshot(7L, true, false)))
+    assertThatThrownBy(() -> mappedSnapshot(7L, true, false))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("IcebergCompatV2 requires a nested field ID")
         .hasMessageContaining("tags[]");
@@ -156,19 +156,17 @@ class DeltaCanonicalIdentityTest {
 
   @Test
   void mappedTableReportsMissingMaxColumnIdDistinctly() {
-    Snapshot source = mappedSnapshot(7L, false, false);
-    Snapshot missing =
-        TestSnapshots.snapshot(
-            source.getVersion(),
-            source.getSchema(),
-            Map.of(
-                ColumnMappingMode.PROPERTY,
-                "name",
-                DeltaColumnMapping.ICEBERG_COMPAT_V2_ENABLED,
-                "false"),
-            ((KernelAdapter.ProtocolSnapshot) source).protocol());
-
-    assertThatThrownBy(() -> DeltaColumnMapping.resolveSchema(missing))
+    assertThatThrownBy(
+            () ->
+                TestSnapshots.identity(
+                    7L,
+                    mappedSchema(false),
+                    Map.of(
+                        ColumnMappingMode.PROPERTY,
+                        "name",
+                        DeltaColumnMapping.ICEBERG_COMPAT_V2_ENABLED,
+                        "false"),
+                    mappedProtocol(false)))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("missing required property")
         .hasMessageContaining(DeltaColumnMapping.MAX_COLUMN_ID);
@@ -176,21 +174,19 @@ class DeltaCanonicalIdentityTest {
 
   @Test
   void mappedTableReportsDeclaredMaxColumnIdBelowLiveIds() {
-    Snapshot source = mappedSnapshot(7L, false, false);
-    Snapshot tooLow =
-        TestSnapshots.snapshot(
-            source.getVersion(),
-            source.getSchema(),
-            Map.of(
-                ColumnMappingMode.PROPERTY,
-                "name",
-                DeltaColumnMapping.MAX_COLUMN_ID,
-                "1",
-                DeltaColumnMapping.ICEBERG_COMPAT_V2_ENABLED,
-                "false"),
-            ((KernelAdapter.ProtocolSnapshot) source).protocol());
-
-    assertThatThrownBy(() -> DeltaColumnMapping.resolveSchema(tooLow))
+    assertThatThrownBy(
+            () ->
+                TestSnapshots.identity(
+                    7L,
+                    mappedSchema(false),
+                    Map.of(
+                        ColumnMappingMode.PROPERTY,
+                        "name",
+                        DeltaColumnMapping.MAX_COLUMN_ID,
+                        "1",
+                        DeltaColumnMapping.ICEBERG_COMPAT_V2_ENABLED,
+                        "false"),
+                    mappedProtocol(false)))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("declares " + DeltaColumnMapping.MAX_COLUMN_ID + "=1")
         .hasMessageContaining("below field ID 2");
@@ -198,7 +194,7 @@ class DeltaCanonicalIdentityTest {
 
   @Test
   void inactiveIcebergCompatV2ToleratesNestedIdsWithoutUsingThemAsIdentity() {
-    Snapshot snapshot = mappedSnapshot(7L, false, true);
+    DeltaIdentitySnapshot snapshot = mappedSnapshot(7L, false, true);
 
     ColumnIdentityMap identity = freshIdentity(snapshot, 7L);
 
@@ -230,30 +226,32 @@ class DeltaCanonicalIdentityTest {
   }
 
   /** A first-generation map for {@code snapshot}, as identity reconciliation persists it. */
-  private static ColumnIdentityMap freshIdentity(Snapshot snapshot, long version) {
+  private static ColumnIdentityMap freshIdentity(DeltaIdentitySnapshot snapshot, long version) {
     return canonicalIdentity(snapshot, version, Optional.empty(), 0L);
   }
 
   /** A new generation for {@code snapshot}, allocated above {@code previous}. */
   private static ColumnIdentityMap nextGeneration(
-      Snapshot snapshot, long version, ColumnIdentityMap previous) {
+      DeltaIdentitySnapshot snapshot, long version, ColumnIdentityMap previous) {
     return canonicalIdentity(snapshot, version, Optional.empty(), previous.getHighWaterMark());
   }
 
   /** {@code snapshot} reconciled against {@code previous} across complete history. */
   private static ColumnIdentityMap reconcileIdentity(
-      Snapshot snapshot, long version, ColumnIdentityMap previous) {
+      DeltaIdentitySnapshot snapshot, long version, ColumnIdentityMap previous) {
     return canonicalIdentity(
         snapshot, version, Optional.of(ColumnIdentityMaps.restore(previous)), 0L);
   }
 
   private static ColumnIdentityMap canonicalIdentity(
-      Snapshot snapshot, long version, Optional<SchemaIdentityState> previous, long floor) {
-    DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
+      DeltaIdentitySnapshot snapshot,
+      long version,
+      Optional<SchemaIdentityState> previous,
+      long floor) {
+    DeltaResolvedSchema resolved = snapshot.resolved();
     IdentityMode mode = DeltaCanonicalIdentity.identityMode(resolved);
     boolean nativeIds = mode == IdentityMode.NATIVE_FIELD_ID;
-    long highWaterMarkFloor =
-        nativeIds ? Math.max(floor, DeltaColumnMapping.maxColumnId(snapshot)) : floor;
+    long highWaterMarkFloor = nativeIds ? Math.max(floor, snapshot.nativeHighWaterMark()) : floor;
     ColumnIdentityMap map =
         ColumnIdentityMaps.toProto(
             SchemaIdentityReconciler.reconcile(
@@ -265,12 +263,25 @@ class DeltaCanonicalIdentityTest {
                 PreferredCanonicalIds.NONE,
                 HistoryTier.VERSIONED_LOG));
     return nativeIds
-        ? ColumnIdentityMaps.withNativeHighWaterMark(map, DeltaColumnMapping.maxColumnId(snapshot))
+        ? ColumnIdentityMaps.withNativeHighWaterMark(map, snapshot.nativeHighWaterMark())
         : map;
   }
 
-  private static Snapshot mappedSnapshot(
+  private static DeltaIdentitySnapshot mappedSnapshot(
       long version, boolean icebergCompatV2, boolean includeNestedId) {
+    Map<String, String> properties =
+        Map.of(
+            ColumnMappingMode.PROPERTY,
+            "name",
+            DeltaColumnMapping.MAX_COLUMN_ID,
+            "99",
+            DeltaColumnMapping.ICEBERG_COMPAT_V2_ENABLED,
+            Boolean.toString(icebergCompatV2));
+    return TestSnapshots.identity(
+        version, mappedSchema(includeNestedId), properties, mappedProtocol(icebergCompatV2));
+  }
+
+  private static StructType mappedSchema(boolean includeNestedId) {
     FieldMetadata.Builder metadata =
         FieldMetadata.builder()
             .putLong(DeltaSchemaResolver.COLUMN_ID, 2L)
@@ -280,23 +291,18 @@ class DeltaCanonicalIdentityTest {
           DeltaSchemaResolver.NESTED_IDS,
           FieldMetadata.builder().putLong("col-tags.element", 77L).build());
     }
-    StructType schema =
-        new StructType()
-            .add(
-                new StructField(
-                    "tags", new ArrayType(StringType.STRING, true), true, metadata.build()));
-    Map<String, String> properties =
-        Map.of(
-            ColumnMappingMode.PROPERTY,
-            "name",
-            DeltaColumnMapping.MAX_COLUMN_ID,
-            "99",
-            DeltaColumnMapping.ICEBERG_COMPAT_V2_ENABLED,
-            Boolean.toString(icebergCompatV2));
-    Set<String> writerFeatures =
-        icebergCompatV2 ? Set.of("columnMapping", "icebergCompatV2") : Set.of("columnMapping");
-    Protocol protocol = new Protocol(3, 7, Set.of("columnMapping"), writerFeatures);
-    return TestSnapshots.snapshot(version, schema, properties, protocol);
+    return new StructType()
+        .add(
+            new StructField(
+                "tags", new ArrayType(StringType.STRING, true), true, metadata.build()));
+  }
+
+  private static Protocol mappedProtocol(boolean icebergCompatV2) {
+    return new Protocol(
+        3,
+        7,
+        Set.of("columnMapping"),
+        icebergCompatV2 ? Set.of("columnMapping", "icebergCompatV2") : Set.of("columnMapping"));
   }
 
   private static StructField mappedField(

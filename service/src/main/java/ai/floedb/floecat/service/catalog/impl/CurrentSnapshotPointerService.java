@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.catalog.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.SNAPSHOT;
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.SNAPSHOT_COLUMN_IDENTITY_INVALID;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.TABLE;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -29,6 +30,7 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Map;
+import java.util.Optional;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -150,8 +152,13 @@ public class CurrentSnapshotPointerService {
       String corr,
       GenerationReconcile generationReconcile,
       boolean generationOwnsRepairMarker) {
-    if (!candidate.hasColumnIdentityMap()) {
-      tableRepo.getById(tableId).ifPresent(table -> requireCanonicalIdentity(table, candidate));
+    // A snapshot without a map needs one table read: canonical Delta must be rejected before the
+    // pointer moves, and any other table only needs a sync if it still carries a stale map.
+    boolean syncIdentity = candidate.hasColumnIdentityMap();
+    if (!syncIdentity) {
+      Optional<Table> table = tableRepo.getById(tableId);
+      table.ifPresent(current -> requireCanonicalIdentity(current, corr));
+      syncIdentity = table.map(Table::hasColumnIdentityMap).orElse(false);
     }
     long pointerStartedNanos = System.nanoTime();
     var result = snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate);
@@ -168,7 +175,9 @@ public class CurrentSnapshotPointerService {
     }
     long entryStartedNanos = System.nanoTime();
     rootWriter.commitSnapshotEntry(tableId, candidate.getSnapshotId());
-    synchronizeCurrentIdentityMap(tableId, candidate);
+    if (syncIdentity) {
+      synchronizeCurrentIdentityMap(tableId, candidate);
+    }
     long entryNanos = System.nanoTime() - entryStartedNanos;
     if (generationReconcile == GenerationReconcile.ALWAYS_AFTER_ENTRY
         || (generationReconcile == GenerationReconcile.WHEN_POINTER_MOVES
@@ -214,7 +223,6 @@ public class CurrentSnapshotPointerService {
                     new BaseResourceRepository.AbortRetryableException(
                         "table disappeared while publishing current column identity for "
                             + tableId.getId()));
-    requireCanonicalIdentity(table, candidate);
     if (table.hasColumnIdentityMap() == candidate.hasColumnIdentityMap()
         && table.getColumnIdentityMap().equals(candidate.getColumnIdentityMap())) {
       return;
@@ -232,12 +240,14 @@ public class CurrentSnapshotPointerService {
     }
   }
 
-  private static void requireCanonicalIdentity(Table table, Snapshot candidate) {
+  private static void requireCanonicalIdentity(Table table, String corr) {
     if (table.getUpstream().getFormat() == ai.floedb.floecat.catalog.rpc.TableFormat.TF_DELTA
         && table.getUpstream().getColumnIdAlgorithm()
-            == ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP
-        && !candidate.hasColumnIdentityMap()) {
-      throw new IllegalArgumentException("Canonical Delta snapshot requires a column identity map");
+            == ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP) {
+      throw GrpcErrors.invalidArgument(
+          corr,
+          SNAPSHOT_COLUMN_IDENTITY_INVALID,
+          Map.of("reason", "Canonical Delta snapshots require a column identity map"));
     }
   }
 }

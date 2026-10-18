@@ -85,6 +85,55 @@ class DeltaSharingQueryHistorySourceTest {
     }
   }
 
+  @Test
+  void unorderedMetadataChangesWithoutADropKeepExistingIdentity() {
+    String unmappedA =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"a\",\"type\":\"long\","
+            + "\"nullable\":true,\"metadata\":{}}]}";
+    String unmappedAb =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"a\",\"type\":\"long\","
+            + "\"nullable\":true,\"metadata\":{}},{\"name\":\"b\",\"type\":\"long\","
+            + "\"nullable\":true,\"metadata\":{}}]}";
+    DeltaIdentityService service = new DeltaIdentityService();
+    ColumnIdentityMap predecessor =
+        service
+            .reconcileCurrent(
+                new CurrentSchemaDeltaHistorySource(
+                    "table",
+                    ai.floedb.floecat.delta.identity.KernelAdapter.currentSchemaIdentity(
+                        10L, unmappedA, Map.of()),
+                    true),
+                PersistedIdentityLookup.forTableMap(Optional.empty()))
+            .maps()
+            .get(10L);
+    TableHistory unorderedHistory =
+        new TableHistory(
+            List.of(),
+            List.of(
+                metadata(unmappedA, Map.of("comment", "changed")), metadata(unmappedAb, Map.of())),
+            Optional.of(30L));
+    var source =
+        new DeltaSharingQueryHistorySource(
+            "table",
+            30L,
+            new TableDescription(
+                new Protocol(1, 2, List.of(), List.of()),
+                metadata(unmappedAb, Map.of()),
+                Optional.of(30L)),
+            unorderedHistory);
+
+    ColumnIdentityMap reconciled =
+        service
+            .reconcileCurrent(source, PersistedIdentityLookup.forTableMap(Optional.of(predecessor)))
+            .maps()
+            .get(30L);
+
+    assertThat(reconciled.getEntries(0).getColumnId())
+        .isEqualTo(predecessor.getEntries(0).getColumnId());
+    assertThat(reconciled.getEntries(1).getColumnId())
+        .isGreaterThan(predecessor.getHighWaterMark());
+  }
+
   private static TableMetadata metadata(String schema, Map<String, String> properties) {
     return new TableMetadata(
         Optional.empty(),

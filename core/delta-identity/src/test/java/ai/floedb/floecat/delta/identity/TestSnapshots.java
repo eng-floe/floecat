@@ -16,27 +16,23 @@
 
 package ai.floedb.floecat.delta.identity;
 
-import io.delta.kernel.Snapshot;
 import io.delta.kernel.internal.actions.Protocol;
 import io.delta.kernel.types.StructType;
 import java.util.Map;
 
-/** Supplies the Kernel read facts used by adapter tests. */
+/** Builds identity facts through the production current-schema resolution path. */
 final class TestSnapshots {
   private TestSnapshots() {}
 
-  static Snapshot snapshot(
+  static DeltaIdentitySnapshot identity(
       long version, StructType schema, Map<String, String> properties, Protocol protocol) {
-    Snapshot snapshot =
-        org.mockito.Mockito.mock(
-            Snapshot.class,
-            org.mockito.Mockito.withSettings()
-                .extraInterfaces(KernelAdapter.ProtocolSnapshot.class));
-    org.mockito.Mockito.when(snapshot.getVersion()).thenReturn(version);
-    org.mockito.Mockito.when(snapshot.getSchema()).thenReturn(schema);
-    org.mockito.Mockito.when(snapshot.getTableProperties()).thenReturn(properties);
-    org.mockito.Mockito.when(((KernelAdapter.ProtocolSnapshot) snapshot).protocol())
-        .thenReturn(protocol);
-    return snapshot;
+    return KernelAdapter.currentSchemaIdentity(
+        version,
+        schema.toJson(),
+        properties,
+        protocol.getMinReaderVersion(),
+        protocol.getMinWriterVersion(),
+        protocol.getReaderFeatures(),
+        protocol.getWriterFeatures());
   }
 }

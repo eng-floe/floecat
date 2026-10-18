@@ -225,15 +225,7 @@ public final class KernelAdapter {
     if (snapshot instanceof SnapshotImpl snapshotImpl) {
       return snapshotImpl.getProtocol();
     }
-    if (snapshot instanceof ProtocolSnapshot protocolSnapshot) {
-      return protocolSnapshot.protocol();
-    }
     throw new IllegalArgumentException(
         "A Delta snapshot with column mapping configured must expose its protocol");
-  }
-
-  /** Test seam for protocol-bearing snapshots that are not Kernel implementations. */
-  public interface ProtocolSnapshot {
-    Protocol protocol();
   }
 }
