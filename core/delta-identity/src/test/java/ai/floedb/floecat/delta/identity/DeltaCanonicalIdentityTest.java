@@ -18,6 +18,7 @@ package ai.floedb.floecat.delta.identity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMode;
@@ -59,6 +60,19 @@ class DeltaCanonicalIdentityTest {
     var resolved = DeltaCanonicalIdentity.resolve(snapshot, identity);
     assertThat(resolved.canonicalIdsByStatsKey()).containsEntry("tags", 100L);
     assertThat(resolved.ordinalsByStatsKey()).containsEntry("tags", 1);
+  }
+
+  @Test
+  void mappedSchemaColumnsCarryNativeFieldIds() {
+    Snapshot snapshot = mappedSnapshot(7L, true, true);
+
+    var columns =
+        DeltaSchemaMapper.map(snapshot.getSchema().toJson(), Set.of(), freshIdentity(snapshot, 7L))
+            .getColumnsList();
+
+    assertThat(columns)
+        .extracting(column -> column.getPhysicalPath(), column -> column.getFieldId())
+        .containsExactly(tuple("tags", 2), tuple("tags[]", 77));
   }
 
   @Test

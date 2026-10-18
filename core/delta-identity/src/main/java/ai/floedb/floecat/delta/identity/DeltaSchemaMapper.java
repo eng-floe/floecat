@@ -22,6 +22,7 @@ import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.schema.identity.ColumnPath;
 import ai.floedb.floecat.schema.identity.LegacyDottedKeyIndex;
+import ai.floedb.floecat.schema.identity.SchemaIdentityEntry;
 import ai.floedb.floecat.schema.identity.SchemaIdentityState;
 import ai.floedb.floecat.types.LogicalField;
 import ai.floedb.floecat.types.LogicalKind;
@@ -115,17 +116,19 @@ public final class DeltaSchemaMapper {
       int ordinal,
       SchemaIdentityState identity) {
     DataType type = field.getDataType();
-    long canonicalId =
+    SchemaIdentityEntry entry =
         identity
             .byPath(path)
             .orElseThrow(
                 () ->
                     new IllegalArgumentException(
-                        "Column identity map has no ID for " + path.display()))
-            .canonicalId();
+                        "Column identity map has no ID for " + path.display()));
     descriptor.addColumns(
         SchemaColumn.newBuilder()
-            .setId(canonicalId)
+            .setId(entry.canonicalId())
+            // Parquet files of a column-mapped table carry the Delta field ID, which readers prefer
+            // over the physical path when matching file columns.
+            .setFieldId(entry.nativeFieldId().orElse(0))
             .setName(field.getName())
             .setType(LogicalTypeProtoAdapter.toProto(toLogical(type)))
             .setNullable(field.isNullable())
