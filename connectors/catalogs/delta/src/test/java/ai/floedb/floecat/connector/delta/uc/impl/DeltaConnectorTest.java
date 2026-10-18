@@ -312,14 +312,7 @@ class DeltaConnectorTest {
                 3L, snapshot(3L, 3000L),
                 4L, snapshot(4L, 4000L),
                 5L, latest));
-    ColumnIdentityMap versionOneMap =
-        resetIdentity(
-                versionOne,
-                1L,
-                ColumnIdentityMap.getDefaultInstance(),
-                0L,
-                HistoryTier.VERSIONED_LOG)
-            .identityMap();
+    ColumnIdentityMap versionOneMap = freshIdentity(versionOne, 1L);
     TestDeltaConnector connector = new TestDeltaConnector(table);
 
     List<Long> snapshotIds =
@@ -371,15 +364,7 @@ class DeltaConnectorTest {
                     FloecatConnector.SnapshotSelectionKind.CURRENT,
                     Set.of(),
                     0,
-                    Map.of(
-                        40L,
-                        resetIdentity(
-                                previous,
-                                40L,
-                                ColumnIdentityMap.getDefaultInstance(),
-                                0L,
-                                HistoryTier.VERSIONED_LOG)
-                            .identityMap()),
+                    Map.of(40L, freshIdentity(previous, 40L)),
                     0L))
             .toList();
 
@@ -507,10 +492,7 @@ class DeltaConnectorTest {
     DeltaLogHistorySource beforeRetention =
         new DeltaLogHistorySource(location, location, table, engine);
     Snapshot version0 = beforeRetention.snapshot(0L).orElseThrow();
-    ColumnIdentityMap version0Map =
-        resetIdentity(
-                version0, 0L, ColumnIdentityMap.getDefaultInstance(), 0L, HistoryTier.VERSIONED_LOG)
-            .identityMap();
+    ColumnIdentityMap version0Map = freshIdentity(version0, 0L);
     ColumnIdentityMap version3Map =
         new DeltaIdentityService()
             .reconcileCurrent(beforeRetention, tableMapLookup(version0Map))
@@ -572,10 +554,7 @@ class DeltaConnectorTest {
   void explicitBackfillOlderThanNewestPersistedMapIsEnumerated() {
     Snapshot older = snapshot(2L, 2_000L);
     Snapshot latest = snapshot(5L, 5_000L);
-    ColumnIdentityMap latestMap =
-        resetIdentity(
-                latest, 5L, ColumnIdentityMap.getDefaultInstance(), 0L, HistoryTier.VERSIONED_LOG)
-            .identityMap();
+    ColumnIdentityMap latestMap = freshIdentity(latest, 5L);
     TestDeltaConnector connector =
         new TestDeltaConnector(new StubTable(latest, Map.of(2L, older, 5L, latest)));
 
@@ -613,16 +592,8 @@ class DeltaConnectorTest {
     Snapshot original = snapshot(40L, 40_000L, originalSchema);
     Snapshot backfill = snapshot(60L, 60_000L, backfillSchema);
     Snapshot latest = snapshot(100L, 100_000L, resetSchema);
-    ColumnIdentityMap originalMap =
-        resetIdentity(
-                original,
-                40L,
-                ColumnIdentityMap.getDefaultInstance(),
-                0L,
-                HistoryTier.VERSIONED_LOG)
-            .identityMap();
-    ColumnIdentityMap latestMap =
-        resetIdentity(latest, 100L, originalMap, 0L, HistoryTier.VERSIONED_LOG).identityMap();
+    ColumnIdentityMap originalMap = freshIdentity(original, 40L);
+    ColumnIdentityMap latestMap = nextGeneration(latest, 100L, originalMap);
     TestDeltaConnector connector =
         new TestDeltaConnector(
             new StubTable(latest, Map.of(40L, original, 60L, backfill, 100L, latest)));
@@ -662,23 +633,8 @@ class DeltaConnectorTest {
     Snapshot original = snapshot(40L, 40_000L, originalSchema);
     Snapshot backfill = snapshot(60L, 60_000L, evolvedSchema);
     Snapshot latest = snapshot(100L, 100_000L, evolvedSchema);
-    ColumnIdentityMap originalMap =
-        resetIdentity(
-                original,
-                40L,
-                ColumnIdentityMap.getDefaultInstance(),
-                0L,
-                HistoryTier.VERSIONED_LOG)
-            .identityMap();
-    ColumnIdentityMap latestMap =
-        reconcileIdentity(
-                latest,
-                100L,
-                originalMap,
-                0L,
-                PreferredCanonicalIds.NONE,
-                HistoryTier.VERSIONED_LOG)
-            .identityMap();
+    ColumnIdentityMap originalMap = freshIdentity(original, 40L);
+    ColumnIdentityMap latestMap = reconcileIdentity(latest, 100L, originalMap);
     TestDeltaConnector connector =
         new TestDeltaConnector(
             new StubTable(latest, Map.of(40L, original, 60L, backfill, 100L, latest)));
@@ -722,23 +678,8 @@ class DeltaConnectorTest {
     Snapshot version60 = snapshot(60L, 60_000L, selectedSchema);
     Snapshot version80 = snapshot(80L, 80_000L, successorSchema);
     Snapshot version100 = snapshot(100L, 100_000L, successorSchema);
-    ColumnIdentityMap version40Map =
-        resetIdentity(
-                version40,
-                40L,
-                ColumnIdentityMap.getDefaultInstance(),
-                0L,
-                HistoryTier.VERSIONED_LOG)
-            .identityMap();
-    ColumnIdentityMap version100Map =
-        reconcileIdentity(
-                version100,
-                100L,
-                version40Map,
-                0L,
-                PreferredCanonicalIds.NONE,
-                HistoryTier.VERSIONED_LOG)
-            .identityMap();
+    ColumnIdentityMap version40Map = freshIdentity(version40, 40L);
+    ColumnIdentityMap version100Map = reconcileIdentity(version100, 100L, version40Map);
     TestDeltaConnector connector =
         new TestDeltaConnector(
             new StubTable(
@@ -780,61 +721,46 @@ class DeltaConnectorTest {
         .getColumnId();
   }
 
-  private static TestReconciled resetIdentity(
-      Snapshot snapshot,
-      long sourceVersion,
-      ColumnIdentityMap previous,
-      long highWaterMarkFloor,
-      HistoryTier historyTier) {
-    DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
-    IdentityMode mode = DeltaCanonicalIdentity.identityMode(resolved);
-    long floor =
-        Math.max(
-            highWaterMarkFloor,
-            previous.equals(ColumnIdentityMap.getDefaultInstance())
-                ? 0L
-                : ColumnIdentityMaps.restore(previous).highWaterMark());
-    if (mode == IdentityMode.NATIVE_FIELD_ID) {
-      floor = Math.max(floor, DeltaColumnMapping.maxColumnId(snapshot));
-    }
-    SchemaIdentityReconciler.Result result =
-        SchemaIdentityReconciler.reset(resolved.schema(), sourceVersion, mode, floor, historyTier);
-    return new TestReconciled(identityMap(result.state(), snapshot));
+  /** A first-generation map for {@code snapshot}, as identity reconciliation persists it. */
+  private static ColumnIdentityMap freshIdentity(Snapshot snapshot, long version) {
+    return canonicalIdentity(snapshot, version, Optional.empty(), 0L);
   }
 
-  private static TestReconciled reconcileIdentity(
-      Snapshot snapshot,
-      long sourceVersion,
-      ColumnIdentityMap previous,
-      long highWaterMarkFloor,
-      PreferredCanonicalIds preferred,
-      HistoryTier historyTier) {
-    DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
-    IdentityMode mode = DeltaCanonicalIdentity.identityMode(resolved);
-    long floor =
-        mode == IdentityMode.NATIVE_FIELD_ID
-            ? Math.max(highWaterMarkFloor, DeltaColumnMapping.maxColumnId(snapshot))
-            : highWaterMarkFloor;
-    SchemaIdentityReconciler.Result result =
-        SchemaIdentityReconciler.reconcile(
-            resolved.schema(),
-            sourceVersion,
-            mode,
-            Optional.of(ColumnIdentityMaps.restore(previous)),
-            floor,
-            preferred,
-            historyTier);
-    return new TestReconciled(identityMap(result.state(), snapshot));
+  /** A new generation for {@code snapshot}, allocated above {@code previous}. */
+  private static ColumnIdentityMap nextGeneration(
+      Snapshot snapshot, long version, ColumnIdentityMap previous) {
+    return canonicalIdentity(snapshot, version, Optional.empty(), previous.getHighWaterMark());
   }
 
-  private static ColumnIdentityMap identityMap(SchemaIdentityState state, Snapshot snapshot) {
-    ColumnIdentityMap map = ColumnIdentityMaps.toProto(state);
-    return state.mode() == IdentityMode.NATIVE_FIELD_ID
+  /** {@code snapshot} reconciled against {@code previous} across complete history. */
+  private static ColumnIdentityMap reconcileIdentity(
+      Snapshot snapshot, long version, ColumnIdentityMap previous) {
+    return canonicalIdentity(
+        snapshot, version, Optional.of(ColumnIdentityMaps.restore(previous)), 0L);
+  }
+
+  private static ColumnIdentityMap canonicalIdentity(
+      Snapshot snapshot, long version, Optional<SchemaIdentityState> previous, long floor) {
+    DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
+    IdentityMode mode = DeltaCanonicalIdentity.identityMode(resolved);
+    boolean nativeIds = mode == IdentityMode.NATIVE_FIELD_ID;
+    long highWaterMarkFloor =
+        nativeIds ? Math.max(floor, DeltaColumnMapping.maxColumnId(snapshot)) : floor;
+    ColumnIdentityMap map =
+        ColumnIdentityMaps.toProto(
+            SchemaIdentityReconciler.reconcile(
+                    resolved.schema(),
+                    version,
+                    mode,
+                    previous,
+                    highWaterMarkFloor,
+                    PreferredCanonicalIds.NONE,
+                    HistoryTier.VERSIONED_LOG)
+                .state());
+    return nativeIds
         ? ColumnIdentityMaps.withNativeHighWaterMark(map, DeltaColumnMapping.maxColumnId(snapshot))
         : map;
   }
-
-  private record TestReconciled(ColumnIdentityMap identityMap) {}
 
   private static void writeDeltaCommit(Path logPath, long version, String... actions)
       throws IOException {
@@ -890,14 +816,7 @@ class DeltaConnectorTest {
     StructType schema = new StructType().add("id", LongType.LONG, false);
     Snapshot previousSnapshot = snapshot(10L, 10_000L, schema);
     Snapshot latest = snapshot(100_000L, 20_000L, schema);
-    ColumnIdentityMap previous =
-        resetIdentity(
-                previousSnapshot,
-                10L,
-                ColumnIdentityMap.getDefaultInstance(),
-                0L,
-                HistoryTier.VERSIONED_LOG)
-            .identityMap();
+    ColumnIdentityMap previous = freshIdentity(previousSnapshot, 10L);
     TestDeltaConnector connector =
         new TestDeltaConnector(new StubTable(latest, Map.of(100_000L, latest)));
     connector.setMetadataHistory(DeltaHistorySource.MetadataHistory.complete(List.of()));

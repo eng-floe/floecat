@@ -1250,19 +1250,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return java.util.stream.Stream.of(
-            new SnapshotBundle(
-                42L,
-                0L,
-                Instant.now().toEpochMilli(),
-                "",
-                null,
-                0L,
-                null,
-                Map.of(),
-                0,
-                null,
-                ColumnIdentityMap.getDefaultInstance()));
+        return java.util.stream.Stream.of(emptyBundle(42L, 0L));
       }
 
       @Override
@@ -1460,19 +1448,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return java.util.stream.Stream.of(
-            new SnapshotBundle(
-                42L,
-                0L,
-                Instant.now().toEpochMilli(),
-                "",
-                null,
-                0L,
-                null,
-                Map.of(),
-                0,
-                null,
-                ColumnIdentityMap.getDefaultInstance()));
+        return java.util.stream.Stream.of(emptyBundle(42L, 0L));
       }
     }
 
@@ -1626,42 +1602,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         backend.capturedKnownSnapshotIds = options.knownSnapshotIds();
         return java.util.stream.Stream.of(
-            new SnapshotBundle(
-                42L,
-                0L,
-                Instant.now().toEpochMilli(),
-                "",
-                null,
-                0L,
-                null,
-                Map.of(),
-                0,
-                null,
-                ColumnIdentityMap.getDefaultInstance()),
-            new SnapshotBundle(
-                43L,
-                42L,
-                Instant.now().toEpochMilli(),
-                "",
-                null,
-                0L,
-                null,
-                Map.of(),
-                0,
-                null,
-                ColumnIdentityMap.getDefaultInstance()),
-            new SnapshotBundle(
-                44L,
-                43L,
-                Instant.now().toEpochMilli(),
-                "",
-                null,
-                0L,
-                null,
-                Map.of(),
-                0,
-                null,
-                ColumnIdentityMap.getDefaultInstance()));
+            emptyBundle(42L, 0L), emptyBundle(43L, 42L), emptyBundle(44L, 43L));
       }
     }
 
@@ -1800,31 +1741,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return java.util.stream.Stream.of(
-            new SnapshotBundle(
-                201L,
-                0L,
-                Instant.now().toEpochMilli(),
-                "",
-                null,
-                0L,
-                null,
-                Map.of(),
-                0,
-                null,
-                ColumnIdentityMap.getDefaultInstance()),
-            new SnapshotBundle(
-                202L,
-                0L,
-                Instant.now().toEpochMilli(),
-                "",
-                null,
-                0L,
-                null,
-                Map.of(),
-                0,
-                null,
-                ColumnIdentityMap.getDefaultInstance()));
+        return java.util.stream.Stream.of(emptyBundle(201L, 0L), emptyBundle(202L, 0L));
       }
     }
 
@@ -2260,19 +2177,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                   String tableName,
                   ResourceId destinationTableId,
                   SnapshotEnumerationOptions options) {
-                return java.util.stream.Stream.of(
-                    new SnapshotBundle(
-                        301L,
-                        0L,
-                        Instant.now().toEpochMilli(),
-                        "",
-                        null,
-                        0L,
-                        null,
-                        Map.of(),
-                        0,
-                        null,
-                        ColumnIdentityMap.getDefaultInstance()));
+                return java.util.stream.Stream.of(emptyBundle(301L, 0L));
               }
             };
 
@@ -2428,19 +2333,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                   String tableName,
                   ResourceId destinationTableId,
                   SnapshotEnumerationOptions options) {
-                return java.util.stream.Stream.of(
-                    new SnapshotBundle(
-                        401L,
-                        0L,
-                        Instant.now().toEpochMilli(),
-                        "",
-                        null,
-                        0L,
-                        null,
-                        Map.of(),
-                        0,
-                        null,
-                        ColumnIdentityMap.getDefaultInstance()));
+                return java.util.stream.Stream.of(emptyBundle(401L, 0L));
               }
             };
 
@@ -3070,19 +2963,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return java.util.stream.Stream.of(
-            new SnapshotBundle(
-                101L,
-                0L,
-                Instant.now().toEpochMilli(),
-                "",
-                null,
-                0L,
-                null,
-                Map.of(),
-                0,
-                null,
-                ColumnIdentityMap.getDefaultInstance()));
+        return java.util.stream.Stream.of(emptyBundle(101L, 0L));
       }
 
       @Override
@@ -3212,19 +3093,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return java.util.stream.Stream.of(
-            new SnapshotBundle(
-                102L,
-                0L,
-                Instant.now().toEpochMilli(),
-                "",
-                null,
-                0L,
-                null,
-                Map.of(),
-                0,
-                null,
-                ColumnIdentityMap.getDefaultInstance()));
+        return java.util.stream.Stream.of(emptyBundle(102L, 0L));
       }
 
       @Override
@@ -3358,19 +3227,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return java.util.stream.Stream.of(
-            new SnapshotBundle(
-                103L,
-                0L,
-                Instant.now().toEpochMilli(),
-                "",
-                null,
-                0L,
-                null,
-                Map.of(),
-                0,
-                null,
-                ColumnIdentityMap.getDefaultInstance()));
+        return java.util.stream.Stream.of(emptyBundle(103L, 0L));
       }
 
       @Override
@@ -3501,19 +3358,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return java.util.stream.Stream.of(
-            new SnapshotBundle(
-                104L,
-                0L,
-                Instant.now().toEpochMilli(),
-                "",
-                null,
-                0L,
-                null,
-                Map.of(),
-                0,
-                null,
-                ColumnIdentityMap.getDefaultInstance()));
+        return java.util.stream.Stream.of(emptyBundle(104L, 0L));
       }
 
       @Override
@@ -3673,5 +3518,21 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 ReconcileCapturePolicy.Output.FILE_STATS,
                 ReconcileCapturePolicy.Output.COLUMN_STATS,
                 ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+  }
+
+  /** A snapshot bundle with no schema, stats or identity, for enumeration-only tests. */
+  private static FloecatConnector.SnapshotBundle emptyBundle(long snapshotId, long parentId) {
+    return new FloecatConnector.SnapshotBundle(
+        snapshotId,
+        parentId,
+        Instant.now().toEpochMilli(),
+        "",
+        null,
+        0L,
+        null,
+        Map.of(),
+        0,
+        null,
+        ColumnIdentityMap.getDefaultInstance());
   }
 }

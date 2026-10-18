@@ -57,17 +57,20 @@ class LocalFileSystemClient implements FileIO {
 
   @Override
   public OutputFile newOutputFile(String path) {
-    throw new UnsupportedOperationException("Writing files not implemented for LocalFileIO");
+    throw new UnsupportedOperationException(
+        "Writing files not implemented for read-only LocalFileIO");
   }
 
   @Override
   public boolean delete(String path) {
-    throw new UnsupportedOperationException("Writing files not implemented for LocalFileIO");
+    throw new UnsupportedOperationException(
+        "Deleting files not implemented for read-only LocalFileIO");
   }
 
   @Override
   public void copyFileAtomically(String sourcePath, String destinationPath, boolean overwrite) {
-    throw new UnsupportedOperationException("Writing files not implemented for LocalFileIO");
+    throw new UnsupportedOperationException(
+        "Copying files not implemented for read-only LocalFileIO");
   }
 
   @Override

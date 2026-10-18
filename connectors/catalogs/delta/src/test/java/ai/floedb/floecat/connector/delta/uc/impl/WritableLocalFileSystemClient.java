@@ -38,46 +38,6 @@ final class WritableLocalFileSystemClient extends LocalFileSystemClient {
     return new LocalOutputFile(resolvePath(path), toLocalPath(path));
   }
 
-  @Override
-  public boolean delete(String path) {
-    try {
-      return Files.deleteIfExists(toLocalPath(path));
-    } catch (IOException e) {
-      throw new RuntimeException("Failed to delete " + path, e);
-    }
-  }
-
-  @Override
-  public void copyFileAtomically(String sourcePath, String destinationPath, boolean overwrite) {
-    Path destination = toLocalPath(destinationPath);
-    Path temporary = null;
-    try {
-      Files.createDirectories(destination.getParent());
-      temporary =
-          Files.createTempFile(
-              destination.getParent(), destination.getFileName().toString(), ".tmp");
-      Files.copy(toLocalPath(sourcePath), temporary, StandardCopyOption.REPLACE_EXISTING);
-      Files.move(
-          temporary,
-          destination,
-          overwrite
-              ? new StandardCopyOption[] {
-                StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING
-              }
-              : new StandardCopyOption[] {StandardCopyOption.ATOMIC_MOVE});
-    } catch (IOException e) {
-      throw new RuntimeException("Failed to copy " + sourcePath + " to " + destinationPath, e);
-    } finally {
-      if (temporary != null) {
-        try {
-          Files.deleteIfExists(temporary);
-        } catch (IOException ignored) {
-          // The original copy failure is more useful than cleanup failure.
-        }
-      }
-    }
-  }
-
   private record LocalOutputFile(String path, Path local) implements OutputFile {
     @Override
     public PositionOutputStream create(boolean overwrite) throws IOException {

@@ -28,20 +28,13 @@ import ai.floedb.floecat.schema.identity.IdentityMode;
 import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
 import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
 import ai.floedb.floecat.schema.identity.SchemaIdentityState;
-import io.delta.kernel.Operation;
-import io.delta.kernel.ScanBuilder;
 import io.delta.kernel.Snapshot;
-import io.delta.kernel.engine.Engine;
 import io.delta.kernel.internal.actions.Protocol;
-import io.delta.kernel.statistics.SnapshotStatistics;
-import io.delta.kernel.transaction.UpdateTableTransactionBuilder;
 import io.delta.kernel.types.ArrayType;
 import io.delta.kernel.types.FieldMetadata;
 import io.delta.kernel.types.StringType;
 import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
-import java.io.IOException;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -55,9 +48,7 @@ class DeltaCanonicalIdentityTest {
   void mappedCollectionsUseNativeAndDerivedIdentityWithoutIcebergCompatV2() {
     Snapshot snapshot = mappedSnapshot(7L, false, false);
 
-    ColumnIdentityMap identity =
-        reset(snapshot, 7L, ColumnIdentityMap.getDefaultInstance(), 0L, HistoryTier.VERSIONED_LOG)
-            .identityMap();
+    ColumnIdentityMap identity = freshIdentity(snapshot, 7L);
 
     assertThat(identity.getMode())
         .isEqualTo(ColumnIdentityMode.COLUMN_IDENTITY_MODE_NATIVE_FIELD_ID);
@@ -72,13 +63,9 @@ class DeltaCanonicalIdentityTest {
     StructType schema = new StructType().add("tags", new ArrayType(StringType.STRING, true), true);
     Snapshot unmapped =
         new TestSnapshot(6L, schema, Map.of(), new Protocol(1, 2, Set.of(), Set.of()));
-    ColumnIdentityMap structured =
-        reset(unmapped, 6L, ColumnIdentityMap.getDefaultInstance(), 0L, HistoryTier.VERSIONED_LOG)
-            .identityMap();
+    ColumnIdentityMap structured = freshIdentity(unmapped, 6L);
 
-    ColumnIdentityMap mapped =
-        reset(mappedSnapshot(7L, false, false), 7L, structured, 0L, HistoryTier.VERSIONED_LOG)
-            .identityMap();
+    ColumnIdentityMap mapped = nextGeneration(mappedSnapshot(7L, false, false), 7L, structured);
 
     assertThat(mapped.getMode()).isEqualTo(ColumnIdentityMode.COLUMN_IDENTITY_MODE_NATIVE_FIELD_ID);
     assertThat(columnId(mapped, ColumnPath.ROOT.field("tags"))).isEqualTo(100L);
@@ -139,9 +126,7 @@ class DeltaCanonicalIdentityTest {
   void inactiveIcebergCompatV2ToleratesNestedIdsWithoutUsingThemAsIdentity() {
     Snapshot snapshot = mappedSnapshot(7L, false, true);
 
-    ColumnIdentityMap identity =
-        reset(snapshot, 7L, ColumnIdentityMap.getDefaultInstance(), 0L, HistoryTier.VERSIONED_LOG)
-            .identityMap();
+    ColumnIdentityMap identity = freshIdentity(snapshot, 7L);
 
     var element =
         ColumnIdentityMaps.restore(identity)
@@ -153,24 +138,9 @@ class DeltaCanonicalIdentityTest {
 
   @Test
   void enablingIcebergCompatV2AddsProvenanceWithoutChangingIdentity() {
-    ColumnIdentityMap inactive =
-        reset(
-                mappedSnapshot(7L, false, false),
-                7L,
-                ColumnIdentityMap.getDefaultInstance(),
-                0L,
-                HistoryTier.VERSIONED_LOG)
-            .identityMap();
+    ColumnIdentityMap inactive = freshIdentity(mappedSnapshot(7L, false, false), 7L);
 
-    ColumnIdentityMap active =
-        reconcile(
-                mappedSnapshot(8L, true, true),
-                8L,
-                inactive,
-                0L,
-                PreferredCanonicalIds.NONE,
-                HistoryTier.VERSIONED_LOG)
-            .identityMap();
+    ColumnIdentityMap active = reconcileIdentity(mappedSnapshot(8L, true, true), 8L, inactive);
 
     assertThat(active.getFingerprint()).isEqualTo(inactive.getFingerprint());
     assertThat(
@@ -185,61 +155,46 @@ class DeltaCanonicalIdentityTest {
     return ColumnIdentityMaps.restore(identity).byPath(path).orElseThrow().canonicalId();
   }
 
-  private static TestReconciled reset(
-      Snapshot snapshot,
-      long sourceVersion,
-      ColumnIdentityMap previous,
-      long highWaterMarkFloor,
-      HistoryTier historyTier) {
-    DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
-    IdentityMode mode = DeltaCanonicalIdentity.identityMode(resolved);
-    long floor =
-        Math.max(
-            highWaterMarkFloor,
-            previous.equals(ColumnIdentityMap.getDefaultInstance())
-                ? 0L
-                : ColumnIdentityMaps.restore(previous).highWaterMark());
-    if (mode == IdentityMode.NATIVE_FIELD_ID) {
-      floor = Math.max(floor, DeltaColumnMapping.maxColumnId(snapshot));
-    }
-    SchemaIdentityReconciler.Result result =
-        SchemaIdentityReconciler.reset(resolved.schema(), sourceVersion, mode, floor, historyTier);
-    return new TestReconciled(identityMap(result.state(), snapshot));
+  /** A first-generation map for {@code snapshot}, as identity reconciliation persists it. */
+  private static ColumnIdentityMap freshIdentity(Snapshot snapshot, long version) {
+    return canonicalIdentity(snapshot, version, Optional.empty(), 0L);
   }
 
-  private static TestReconciled reconcile(
-      Snapshot snapshot,
-      long sourceVersion,
-      ColumnIdentityMap previous,
-      long highWaterMarkFloor,
-      PreferredCanonicalIds preferred,
-      HistoryTier historyTier) {
-    DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
-    IdentityMode mode = DeltaCanonicalIdentity.identityMode(resolved);
-    long floor =
-        mode == IdentityMode.NATIVE_FIELD_ID
-            ? Math.max(highWaterMarkFloor, DeltaColumnMapping.maxColumnId(snapshot))
-            : highWaterMarkFloor;
-    SchemaIdentityReconciler.Result result =
-        SchemaIdentityReconciler.reconcile(
-            resolved.schema(),
-            sourceVersion,
-            mode,
-            Optional.of(ColumnIdentityMaps.restore(previous)),
-            floor,
-            preferred,
-            historyTier);
-    return new TestReconciled(identityMap(result.state(), snapshot));
+  /** A new generation for {@code snapshot}, allocated above {@code previous}. */
+  private static ColumnIdentityMap nextGeneration(
+      Snapshot snapshot, long version, ColumnIdentityMap previous) {
+    return canonicalIdentity(snapshot, version, Optional.empty(), previous.getHighWaterMark());
   }
 
-  private static ColumnIdentityMap identityMap(SchemaIdentityState state, Snapshot snapshot) {
-    ColumnIdentityMap map = ColumnIdentityMaps.toProto(state);
-    return state.mode() == IdentityMode.NATIVE_FIELD_ID
+  /** {@code snapshot} reconciled against {@code previous} across complete history. */
+  private static ColumnIdentityMap reconcileIdentity(
+      Snapshot snapshot, long version, ColumnIdentityMap previous) {
+    return canonicalIdentity(
+        snapshot, version, Optional.of(ColumnIdentityMaps.restore(previous)), 0L);
+  }
+
+  private static ColumnIdentityMap canonicalIdentity(
+      Snapshot snapshot, long version, Optional<SchemaIdentityState> previous, long floor) {
+    DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
+    IdentityMode mode = DeltaCanonicalIdentity.identityMode(resolved);
+    boolean nativeIds = mode == IdentityMode.NATIVE_FIELD_ID;
+    long highWaterMarkFloor =
+        nativeIds ? Math.max(floor, DeltaColumnMapping.maxColumnId(snapshot)) : floor;
+    ColumnIdentityMap map =
+        ColumnIdentityMaps.toProto(
+            SchemaIdentityReconciler.reconcile(
+                    resolved.schema(),
+                    version,
+                    mode,
+                    previous,
+                    highWaterMarkFloor,
+                    PreferredCanonicalIds.NONE,
+                    HistoryTier.VERSIONED_LOG)
+                .state());
+    return nativeIds
         ? ColumnIdentityMaps.withNativeHighWaterMark(map, DeltaColumnMapping.maxColumnId(snapshot))
         : map;
   }
-
-  private record TestReconciled(ColumnIdentityMap identityMap) {}
 
   private static Snapshot mappedSnapshot(
       long version, boolean icebergCompatV2, boolean includeNestedId) {
@@ -269,75 +224,5 @@ class DeltaCanonicalIdentityTest {
         icebergCompatV2 ? Set.of("columnMapping", "icebergCompatV2") : Set.of("columnMapping");
     Protocol protocol = new Protocol(3, 7, Set.of("columnMapping"), writerFeatures);
     return new TestSnapshot(version, schema, properties, protocol);
-  }
-
-  private record TestSnapshot(
-      long version, StructType schema, Map<String, String> properties, Protocol protocol)
-      implements Snapshot, KernelAdapter.ProtocolSnapshot {
-    @Override
-    public String getPath() {
-      return "s3://bucket/table";
-    }
-
-    @Override
-    public long getVersion() {
-      return version;
-    }
-
-    @Override
-    public List<String> getPartitionColumnNames() {
-      return List.of();
-    }
-
-    @Override
-    public long getTimestamp(Engine engine) {
-      return version;
-    }
-
-    @Override
-    public StructType getSchema() {
-      return schema;
-    }
-
-    @Override
-    public Optional<String> getDomainMetadata(String domain) {
-      return Optional.empty();
-    }
-
-    @Override
-    public Map<String, String> getTableProperties() {
-      return properties;
-    }
-
-    @Override
-    public SnapshotStatistics getStatistics() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public ScanBuilder getScanBuilder() {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public UpdateTableTransactionBuilder buildUpdateTableTransaction(
-        String engineInfo, Operation operation) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public Snapshot publish(Engine engine) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void writeChecksum(Engine engine, ChecksumWriteMode checksumWriteMode) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void writeCheckpoint(Engine engine) throws IOException {
-      throw new UnsupportedOperationException();
-    }
   }
 }
