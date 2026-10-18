@@ -24,6 +24,7 @@ import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogException;
 import ai.floedb.floecat.client.unity.UnityCatalogSchemaJson;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
+import ai.floedb.floecat.client.unity.UnityCatalogTypeText;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
@@ -35,7 +36,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.regex.Pattern;
 
 final class UnityCatalogAccessClient implements CatalogClient {
   private static final ObjectMapper JSON = new ObjectMapper();
@@ -647,19 +647,16 @@ final class UnityCatalogAccessClient implements CatalogClient {
   /**
    * A column's Iceberg type, or {@code null} when it has none.
    *
-   * <p>Prefers {@code type_json}, which carries the nested shape for a struct, array or map;
-   * without it, only the declared primitive name is available. Nested ids are drawn from the same
-   * counter as the top-level fields, because Iceberg requires them unique across the whole schema
-   * rather than per level.
+   * <p>Uses the shared Unity parser: supplied {@code type_json} is authoritative, and absent JSON
+   * is reconstructed from {@code type_text}. Nested ids share the top-level counter because Iceberg
+   * requires them unique across the whole schema.
    */
   static JsonNode columnType(UnityCatalogTable.Column column, int[] nextId) {
-    JsonNode declared = typeFromJson(column.typeJson());
-    JsonNode fromJson = declared == null ? null : icebergTypeNode(declared, nextId);
-    if (fromJson != null) {
-      return fromJson;
+    try {
+      return icebergTypeNode(UnityCatalogSchemaJson.field(column).get("type"), nextId);
+    } catch (IllegalArgumentException unsupported) {
+      return null;
     }
-    String primitive = icebergType(column);
-    return primitive == null ? null : JSON.getNodeFactory().textNode(primitive);
   }
 
   /**
@@ -762,49 +759,12 @@ final class UnityCatalogAccessClient implements CatalogClient {
       case "timestamp_ntz" -> "timestamp";
       case "string" -> "string";
       case "binary" -> "binary";
-      default -> name.startsWith("decimal") ? decimalType(name) : null;
+      default ->
+          name.startsWith("decimal")
+              ? UnityCatalogTypeText.toDeltaType(name).asText().replace(",", ", ")
+              : null;
     };
   }
-
-  /**
-   * The Iceberg primitive name for a Unity column, or {@code null} when there is not one.
-   *
-   * <p>Iceberg has no byte or short, so both widen to {@code int}, which cannot lose a value.
-   * Delta's {@code TIMESTAMP} is an instant, which is Iceberg's {@code timestamptz}, while {@code
-   * TIMESTAMP_NTZ} is the local-time {@code timestamp}; swapping those two shifts every value by
-   * the session offset without erroring. Decimal carries precision and scale, which only {@code
-   * type_text} states.
-   */
-  static String icebergType(UnityCatalogTable.Column column) {
-    String name =
-        column.typeName() == null ? "" : column.typeName().trim().toUpperCase(Locale.ROOT);
-    return switch (name) {
-      case "BOOLEAN" -> "boolean";
-      case "BYTE", "TINYINT", "SHORT", "SMALLINT", "INT", "INTEGER" -> "int";
-      case "LONG", "BIGINT" -> "long";
-      case "FLOAT", "REAL" -> "float";
-      case "DOUBLE" -> "double";
-      case "DATE" -> "date";
-      case "TIMESTAMP" -> "timestamptz";
-      case "TIMESTAMP_NTZ" -> "timestamp";
-      case "STRING", "VARCHAR", "CHAR" -> "string";
-      case "BINARY" -> "binary";
-      case "DECIMAL", "DEC", "NUMERIC" -> decimalType(column.typeText());
-      default -> null;
-    };
-  }
-
-  /** {@code decimal(p,s)} from the declared text; without both, Iceberg cannot type the column. */
-  private static String decimalType(String typeText) {
-    if (typeText == null) {
-      return null;
-    }
-    var matcher = DECIMAL_TYPE.matcher(typeText.trim());
-    return matcher.matches() ? "decimal(" + matcher.group(1) + ", " + matcher.group(2) + ")" : null;
-  }
-
-  private static final Pattern DECIMAL_TYPE =
-      Pattern.compile("(?i)^decimal\\s*\\(\\s*(\\d{1,2})\\s*,\\s*(\\d{1,2})\\s*\\)$");
 
   /**
    * Both load paths funnel through a schema builder, so the guard belongs here rather than twice.
@@ -833,18 +793,6 @@ final class UnityCatalogAccessClient implements CatalogClient {
           CatalogAccessException.Code.UNSUPPORTED,
           failure.getMessage() + " table=" + fullName(name),
           failure);
-    }
-  }
-
-  private static JsonNode typeFromJson(String value) {
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    try {
-      JsonNode type = JSON.readTree(value).get("type");
-      return type == null || type.isNull() ? null : type;
-    } catch (Exception ignored) {
-      return null;
     }
   }
 

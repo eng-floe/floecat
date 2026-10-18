@@ -129,14 +129,8 @@ public final class StatsProtoEmitter {
   private static long resolveId(
       ColumnIdAlgorithm algo, Map<String, Long> idByPath, FloecatConnector.ColumnRef ref) {
 
-    if (ref == null) return 0L;
-
-    if (ref.canonicalId() > 0L) {
-      return ref.canonicalId();
-    }
-    if (algo == ColumnIdAlgorithm.CID_CANONICAL_MAP) {
-      LOG.warn("Skipping column without an unambiguous canonical ID: " + ref.name());
-      return 0L;
+    if (ref == null || ref.canonicalId() > 0L || algo == ColumnIdAlgorithm.CID_CANONICAL_MAP) {
+      return canonicalId(ref);
     }
 
     // FIELD_ID policy: use field_id only; do NOT look at path/name/ordinal
@@ -193,18 +187,22 @@ public final class StatsProtoEmitter {
    * planning precision, whereas emitting it under a wrong or absent ID would corrupt them.
    */
   private static long resolveViewId(ColumnIdAlgorithm algo, FloecatConnector.ColumnRef ref) {
-    if (ref == null) {
-      return 0L;
-    }
-    if (ref.canonicalId() > 0L) {
-      return ref.canonicalId();
-    }
-    if (algo == ColumnIdAlgorithm.CID_CANONICAL_MAP) {
-      LOG.warn("Skipping column without an unambiguous canonical ID: " + ref.name());
-      return 0L;
+    if (ref == null || ref.canonicalId() > 0L || algo == ColumnIdAlgorithm.CID_CANONICAL_MAP) {
+      return canonicalId(ref);
     }
     return ColumnIdComputer.compute(
         algo, ref.name(), ref.physicalPath(), ref.ordinal(), ref.fieldId());
+  }
+
+  private static long canonicalId(FloecatConnector.ColumnRef ref) {
+    if (ref == null) {
+      return 0L;
+    }
+    if (ref.canonicalId() <= 0L) {
+      LOG.warn("Skipping column without an unambiguous canonical ID: " + ref.name());
+      return 0L;
+    }
+    return ref.canonicalId();
   }
 
   public static List<TargetStatsRecord> toTargetColumnStats(

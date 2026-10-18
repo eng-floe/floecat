@@ -228,11 +228,16 @@ class RemoteFileArtifactReusePlannerTest {
     ReconcileCapturePolicy policy =
         ReconcileCapturePolicy.of(
             List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
-    var bundle = indexBundle(plan, policy, "schema-a", "#1");
+    var bundle =
+        indexBundle(plan, policy, "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[]}", "#1");
 
     ReconcileFileExecutionPlan enriched =
         RemoteFileArtifactReusePlanner.enrichFromBundles(
-                "schema-b", List.of(plan), policy, false, List.of(bundle))
+                "{\"type\":\"struct\",\"schema-id\":2,\"fields\":[]}",
+                List.of(plan),
+                policy,
+                false,
+                List.of(bundle))
             .getFirst();
 
     assertFalse(enriched.reusesIndexArtifact());

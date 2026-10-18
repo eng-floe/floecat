@@ -42,7 +42,6 @@ import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -691,7 +690,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
           && parsedTarget != null
           && parsedTarget.isObject()
           && parsedBase.equals(parsedTarget);
-    } catch (JsonProcessingException error) {
+    } catch (IllegalArgumentException error) {
       return false;
     }
   }

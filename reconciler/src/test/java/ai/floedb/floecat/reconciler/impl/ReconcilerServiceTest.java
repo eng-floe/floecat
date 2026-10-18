@@ -3548,13 +3548,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   private static ColumnIdentityMap emptyIdentityMap(long sourceVersion) {
     return ColumnIdentityMaps.toProto(
         SchemaIdentityReconciler.reconcile(
-                ResolvedSchema.of(List.of()),
-                sourceVersion,
-                IdentityMode.STRUCTURED_PATH,
-                Optional.empty(),
-                0L,
-                PreferredCanonicalIds.NONE,
-                HistoryTier.VERSIONED_LOG)
-            .state());
+            ResolvedSchema.of(List.of()),
+            sourceVersion,
+            IdentityMode.STRUCTURED_PATH,
+            Optional.empty(),
+            0L,
+            PreferredCanonicalIds.NONE,
+            HistoryTier.VERSIONED_LOG));
   }
 }

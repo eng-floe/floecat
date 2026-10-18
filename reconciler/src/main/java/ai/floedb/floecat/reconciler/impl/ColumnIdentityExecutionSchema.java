@@ -31,7 +31,6 @@ final class ColumnIdentityExecutionSchema {
 
   private ColumnIdentityExecutionSchema() {}
 
-  /** Attaches the map so capture signatures and remote execution share the same identity. */
   static String attach(String schemaJson, ColumnIdentityMap identityMap) {
     if (identityMap == null || identityMap.equals(ColumnIdentityMap.getDefaultInstance())) {
       return schemaJson == null ? "" : schemaJson;
@@ -39,32 +38,28 @@ final class ColumnIdentityExecutionSchema {
     if (identityMap.getFingerprint().isBlank()) {
       throw new IllegalArgumentException("Column identity map fingerprint is required");
     }
-    try {
-      var parsed = MAPPER.readTree(schemaJson);
-      if (!(parsed instanceof ObjectNode schema)) {
-        throw new IllegalArgumentException("Execution schema must be a JSON object");
-      }
-      schema.put(MAP_FIELD, Base64.getEncoder().encodeToString(identityMap.toByteArray()));
-      schema.put(FINGERPRINT_FIELD, identityMap.getFingerprint());
-      return MAPPER.writeValueAsString(schema);
-    } catch (IllegalArgumentException e) {
-      throw e;
-    } catch (Exception e) {
-      throw new IllegalArgumentException("Unable to attach column identity to execution schema", e);
-    }
+    ObjectNode schema = parse(schemaJson);
+    schema.put(MAP_FIELD, Base64.getEncoder().encodeToString(identityMap.toByteArray()));
+    schema.put(FINGERPRINT_FIELD, identityMap.getFingerprint());
+    return schema.toString();
   }
 
-  /** Extracts and validates the identity map carried by an execution schema. */
   static ColumnIdentityMap identityMap(String executionSchemaJson) {
     if (executionSchemaJson == null || executionSchemaJson.isBlank()) {
       return ColumnIdentityMap.getDefaultInstance();
     }
+    return identityMap(parse(executionSchemaJson));
+  }
+
+  private static ColumnIdentityMap identityMap(ObjectNode schema) {
+    if (!schema.has(MAP_FIELD)) {
+      return ColumnIdentityMap.getDefaultInstance();
+    }
+    String encoded = schema.path(MAP_FIELD).asText("");
+    if (encoded.isBlank()) {
+      throw new IllegalArgumentException("Execution schema identity map is blank");
+    }
     try {
-      var schema = MAPPER.readTree(executionSchemaJson);
-      String encoded = schema.path(MAP_FIELD).asText("");
-      if (encoded.isBlank()) {
-        return ColumnIdentityMap.getDefaultInstance();
-      }
       ColumnIdentityMap identityMap =
           ColumnIdentityMap.parseFrom(Base64.getDecoder().decode(encoded));
       String fingerprint = schema.path(FINGERPRINT_FIELD).asText("");
@@ -72,41 +67,42 @@ final class ColumnIdentityExecutionSchema {
         throw new IllegalArgumentException("Execution schema identity fingerprint mismatch");
       }
       return identityMap;
-    } catch (IllegalArgumentException e) {
-      throw e;
-    } catch (Exception e) {
-      throw new IllegalArgumentException("Unable to read execution schema column identity", e);
+    } catch (com.google.protobuf.InvalidProtocolBufferException invalid) {
+      throw new IllegalArgumentException(
+          "Unable to read execution schema column identity", invalid);
     }
   }
 
-  /** Returns the logical schema without the identity metadata used by the execution contract. */
-  static JsonNode logicalSchema(String executionSchemaJson) throws JsonProcessingException {
-    JsonNode parsed = MAPPER.readTree(executionSchemaJson);
-    if (!(parsed instanceof ObjectNode schema)) {
-      return parsed;
-    }
+  static JsonNode logicalSchema(String executionSchemaJson) {
+    ObjectNode schema = parse(executionSchemaJson);
     schema.remove(MAP_FIELD);
     schema.remove(FINGERPRINT_FIELD);
     return schema;
   }
 
-  /** Removes version-specific identity state while retaining the stable identity fingerprint. */
+  /** Removes version-specific state while retaining the stable fingerprint in reuse signatures. */
   static String artifactReuseSchema(String executionSchemaJson) {
     if (executionSchemaJson == null || executionSchemaJson.isBlank()) {
       return executionSchemaJson == null ? "" : executionSchemaJson;
     }
-    if (!executionSchemaJson.contains(MAP_FIELD)) {
+    ObjectNode schema = parse(executionSchemaJson);
+    if (!schema.has(MAP_FIELD)) {
       return executionSchemaJson;
     }
+    // Validate before discarding metadata; malformed identity must never become reusable.
+    identityMap(schema);
+    schema.remove(MAP_FIELD);
+    return schema.toString();
+  }
+
+  private static ObjectNode parse(String json) {
     try {
-      JsonNode parsed = MAPPER.readTree(executionSchemaJson);
-      if (!(parsed instanceof ObjectNode schema) || !schema.has(MAP_FIELD)) {
-        return executionSchemaJson;
+      if (MAPPER.readTree(json) instanceof ObjectNode schema) {
+        return schema;
       }
-      schema.remove(MAP_FIELD);
-      return MAPPER.writeValueAsString(schema);
-    } catch (JsonProcessingException error) {
-      return executionSchemaJson;
+      throw new IllegalArgumentException("Execution schema must be a JSON object");
+    } catch (JsonProcessingException invalid) {
+      throw new IllegalArgumentException("Invalid execution schema JSON", invalid);
     }
   }
 }

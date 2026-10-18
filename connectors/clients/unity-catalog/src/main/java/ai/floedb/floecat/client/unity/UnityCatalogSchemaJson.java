@@ -32,31 +32,7 @@ public final class UnityCatalogSchemaJson {
     Objects.requireNonNull(columns, "columns");
     var fields = JSON.createArrayNode();
     for (UnityCatalogTable.Column column : columns) {
-      ObjectNode parsed = fieldFromJson(column.typeJson());
-      ObjectNode field = JSON.createObjectNode();
-      field.put("name", column.name());
-      if (parsed == null) {
-        String declared = column.typeText() != null ? column.typeText() : column.typeName();
-        if (declared == null || declared.isBlank()) {
-          throw new IllegalArgumentException(
-              "Unity Catalog column states no type: column=" + column.name());
-        }
-        field.set("type", UnityCatalogTypeText.toDeltaType(declared));
-      } else {
-        field.set("type", parsed.get("type"));
-      }
-      field.put("nullable", column.nullable());
-      if (parsed != null) {
-        parsed
-            .properties()
-            .forEach(
-                entry -> {
-                  if (!field.has(entry.getKey())) {
-                    field.set(entry.getKey(), entry.getValue());
-                  }
-                });
-      }
-      fields.add(field);
+      fields.add(field(column));
     }
     ObjectNode schema = JSON.createObjectNode();
     schema.put("type", "struct");
@@ -64,18 +40,48 @@ public final class UnityCatalogSchemaJson {
     return schema.toString();
   }
 
-  private static ObjectNode fieldFromJson(String value) {
+  /** Resolves one complete column while preserving authoritative field metadata. */
+  public static ObjectNode field(UnityCatalogTable.Column column) {
+    ObjectNode parsed = fieldFromJson(column.typeJson(), column.name());
+    ObjectNode field = JSON.createObjectNode();
+    field.put("name", column.name());
+    if (parsed == null) {
+      String declared = column.typeText() != null ? column.typeText() : column.typeName();
+      if (declared == null || declared.isBlank()) {
+        throw new IllegalArgumentException(
+            "Unity Catalog column states no type: column=" + column.name());
+      }
+      field.set("type", UnityCatalogTypeText.toDeltaType(declared));
+    } else {
+      field.set("type", parsed.get("type"));
+    }
+    field.put("nullable", column.nullable());
+    if (parsed != null) {
+      parsed
+          .properties()
+          .forEach(
+              entry -> {
+                if (!field.has(entry.getKey())) {
+                  field.set(entry.getKey(), entry.getValue());
+                }
+              });
+    }
+    return field;
+  }
+
+  private static ObjectNode fieldFromJson(String value, String columnName) {
     if (value == null || value.isBlank()) {
       return null;
     }
     try {
       JsonNode parsed = JSON.readTree(value);
       if (!parsed.isObject() || parsed.get("type") == null || parsed.get("type").isNull()) {
-        return null;
+        throw new IllegalArgumentException(
+            "Unity type_json must be an object with a type: column=" + columnName);
       }
       return ((ObjectNode) parsed).deepCopy();
-    } catch (Exception ignored) {
-      return null;
+    } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+      throw new IllegalArgumentException("Invalid Unity type_json: column=" + columnName, invalid);
     }
   }
 }

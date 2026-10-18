@@ -411,7 +411,9 @@ class UnityCatalogAccessClientTest {
             new Case("BINARY", "binary", "binary"),
             new Case("DECIMAL", "decimal(38,9)", "decimal(38, 9)"))) {
       assertThat(
-              UnityCatalogAccessClient.icebergType(column("c", c.typeName(), c.typeText(), true)))
+              UnityCatalogAccessClient.columnType(
+                      column("c", c.typeName(), c.typeText(), true), new int[] {1})
+                  .asText())
           .as(c.typeName())
           .isEqualTo(c.expected());
     }
@@ -423,7 +425,8 @@ class UnityCatalogAccessClientTest {
    */
   @Test
   void viewWithAnUnrepresentableColumnTypeIsRefusedByName() {
-    UnityCatalogTable view = viewWith(column("payload", "STRUCT", "struct<a:int>", true));
+    UnityCatalogTable view =
+        viewWith(column("payload", "INTERVAL", "interval day to second", true));
     when(unity.getTable("main.sales.orders_view")).thenReturn(Optional.of(view));
 
     assertThatThrownBy(() -> client.loadView(new CatalogObjectName(SALES, "orders_view")))
@@ -434,7 +437,9 @@ class UnityCatalogAccessClientTest {
               assertThat(failure.getMessage()).contains("payload");
             });
     // Decimal without a stated precision and scale is unmapped for the same reason.
-    assertThat(UnityCatalogAccessClient.icebergType(column("d", "DECIMAL", null, true))).isNull();
+    assertThat(
+            UnityCatalogAccessClient.columnType(column("d", "DECIMAL", null, true), new int[] {1}))
+        .isNull();
   }
 
   /**
@@ -1007,9 +1012,9 @@ class UnityCatalogAccessClientTest {
             });
   }
 
-  /** A column whose type_json is unusable still publishes from its declared type. */
+  /** A supplied but malformed type_json must not discard authoritative field metadata. */
   @Test
-  void fallsBackToTheDeclaredTypeWhenTypeJsonIsUnusable() throws Exception {
+  void refusesMalformedTypeJson() {
     UnityCatalogTable table =
         new UnityCatalogTable(
             "orders",
@@ -1022,11 +1027,9 @@ class UnityCatalogAccessClientTest {
             Map.of());
     when(unity.getTable("main.sales.orders")).thenReturn(Optional.of(table));
 
-    var mapped =
-        new com.fasterxml.jackson.databind.ObjectMapper()
-            .readTree(client.loadTable(ORDERS).schemaJson());
-
-    assertThat(mapped.get("fields").get(0).get("type").asText()).isEqualTo("long");
+    assertThatThrownBy(() -> client.loadTable(ORDERS))
+        .isInstanceOf(CatalogAccessException.class)
+        .hasMessageContaining("type_json");
   }
 
   private static UnityCatalogTable.Column partitioned(String name, int partitionIndex) {

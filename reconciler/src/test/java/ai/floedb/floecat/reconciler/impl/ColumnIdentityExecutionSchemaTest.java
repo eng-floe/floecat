@@ -58,6 +58,18 @@ class ColumnIdentityExecutionSchemaTest {
         .hasMessageContaining("JSON object");
   }
 
+  @Test
+  void rejectsMalformedIdentityDuringArtifactReuse() {
+    for (String malformed :
+        java.util.List.of(
+            "{\"_floecat_column_identity_map\":",
+            "[]",
+            "{\"_floecat_column_identity_map\":\"not base64\"}")) {
+      assertThatThrownBy(() -> ColumnIdentityExecutionSchema.artifactReuseSchema(malformed))
+          .isInstanceOf(IllegalArgumentException.class);
+    }
+  }
+
   private static ColumnIdentityMap identityMap(String fingerprint) {
     return ColumnIdentityMap.newBuilder()
         .setFormatVersion(1)

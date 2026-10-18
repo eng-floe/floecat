@@ -141,14 +141,12 @@ public final class ObjectCache {
     }
   }
 
-  /** Map a table schema once for its real mapping inputs, not once per snapshot or caller. */
   /** Map a canonical schema once for its schema and authoritative identity-map inputs. */
   public SchemaDescriptor mappedSchema(
       UserTableNode table, String schemaJson, ColumnIdentityMap columnIdentityMap) {
     Objects.requireNonNull(table, "table");
     Objects.requireNonNull(columnIdentityMap, "columnIdentityMap");
-    if (table.columnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP
-        && columnIdentityMap.equals(ColumnIdentityMap.getDefaultInstance())) {
+    if (missingCanonicalIdentity(table, columnIdentityMap)) {
       return SchemaDescriptor.getDefaultInstance();
     }
     String effectiveSchema =
@@ -158,9 +156,7 @@ public final class ObjectCache {
             schemaIdentity(table, effectiveSchema) + '\0' + columnIdentityMap.getFingerprint());
     Key key = new Key(table.id().getAccountId(), Kind.SCHEMA, identity);
     return get(
-        key,
-        SchemaDescriptor.class,
-        () -> schemaMapper.map(table, effectiveSchema, columnIdentityMap));
+        key, SchemaDescriptor.class, () -> mapSchema(table, effectiveSchema, columnIdentityMap));
   }
 
   /**
@@ -201,17 +197,24 @@ public final class ObjectCache {
             throw new IllegalArgumentException(
                 "resolved schema does not match the resolved table snapshot");
           }
-          String schemaJson = resolved.schemaJson();
-          String effectiveSchema =
-              schemaJson == null || schemaJson.isBlank()
-                  ? resolved.table().schemaJson()
-                  : schemaJson;
-          if (resolved.table().columnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP
-              && resolved.columnIdentityMap().equals(ColumnIdentityMap.getDefaultInstance())) {
-            return SchemaDescriptor.getDefaultInstance();
-          }
-          return schemaMapper.map(resolved.table(), effectiveSchema, resolved.columnIdentityMap());
+          return mapSchema(resolved.table(), resolved.schemaJson(), resolved.columnIdentityMap());
         });
+  }
+
+  private SchemaDescriptor mapSchema(
+      UserTableNode table, String schemaJson, ColumnIdentityMap identityMap) {
+    if (missingCanonicalIdentity(table, identityMap)) {
+      return SchemaDescriptor.getDefaultInstance();
+    }
+    String effectiveSchema =
+        schemaJson == null || schemaJson.isBlank() ? table.schemaJson() : schemaJson;
+    return schemaMapper.map(table, effectiveSchema, identityMap);
+  }
+
+  private static boolean missingCanonicalIdentity(
+      UserTableNode table, ColumnIdentityMap identityMap) {
+    return table.columnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP
+        && identityMap.equals(ColumnIdentityMap.getDefaultInstance());
   }
 
   /** Load the full engine-neutral relation for one immutable user-table DDL identity. */

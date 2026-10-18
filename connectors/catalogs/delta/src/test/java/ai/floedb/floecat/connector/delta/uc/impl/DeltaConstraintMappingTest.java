@@ -231,14 +231,13 @@ class DeltaConstraintMappingTest {
             .toList();
     return ColumnIdentityMaps.toProto(
         SchemaIdentityReconciler.reconcile(
-                ResolvedSchema.of(nodes),
-                0L,
-                IdentityMode.STRUCTURED_PATH,
-                Optional.empty(),
-                0L,
-                PreferredCanonicalIds.NONE,
-                HistoryTier.VERSIONED_LOG)
-            .state());
+            ResolvedSchema.of(nodes),
+            0L,
+            IdentityMode.STRUCTURED_PATH,
+            Optional.empty(),
+            0L,
+            PreferredCanonicalIds.NONE,
+            HistoryTier.VERSIONED_LOG));
   }
 
   private static Map<String, Long> columnIdsByName(List<ConstraintDefinition> constraints) {

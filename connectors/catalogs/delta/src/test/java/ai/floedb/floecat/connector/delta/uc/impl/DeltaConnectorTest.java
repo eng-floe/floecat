@@ -341,88 +341,48 @@ class DeltaConnectorTest {
   }
 
   @Test
-  void incrementalEnumerationReenumeratesKnownVersionsForRepair() {
+  void incrementalEnumerationRepairsMissingMapsAndSkipsKnownCompleteSnapshots() {
     Snapshot latest = snapshot(5L, 5000L);
     Snapshot versionOne = snapshot(1L, 1000L);
     Table table =
         new StubTable(
             latest,
             Map.of(
-                0L, snapshot(0L, 0L),
-                1L, versionOne,
-                2L, snapshot(2L, 2000L),
-                3L, snapshot(3L, 3000L),
-                4L, snapshot(4L, 4000L),
-                5L, latest));
-
-    TestDeltaConnector connector = new TestDeltaConnector(table);
-
-    List<FloecatConnector.SnapshotBundle> bundles =
-        connector
-            .enumerateSnapshots(
-                "ns",
-                "tbl",
-                ResourceId.getDefaultInstance(),
-                new FloecatConnector.SnapshotEnumerationOptions(
-                    false,
-                    Set.of(1L),
-                    Set.of(),
-                    FloecatConnector.SnapshotSelectionKind.ALL,
-                    Set.of(),
-                    0,
-                    Map.of(1L, freshIdentity(versionOne)),
-                    0L))
-            .toList();
-
-    List<Long> snapshotIds =
-        bundles.stream()
-            .map(FloecatConnector.SnapshotBundle::snapshotId)
-            .collect(Collectors.toList());
-    assertEquals(List.of(0L, 1L, 2L, 3L, 4L, 5L), snapshotIds);
-
-    List<Long> timestamps =
-        bundles.stream()
-            .map(FloecatConnector.SnapshotBundle::upstreamCreatedAtMs)
-            .collect(Collectors.toList());
-    assertEquals(List.of(0L, 1000L, 2000L, 3000L, 4000L, 5000L), timestamps);
-  }
-
-  @Test
-  void incrementalEnumerationContinuesAfterPersistedIdentityPredecessor() {
-    Snapshot latest = snapshot(5L, 5000L);
-    Snapshot versionOne = snapshot(1L, 1000L);
-    Table table =
-        new StubTable(
-            latest,
-            Map.of(
-                0L, snapshot(0L, 0L),
-                1L, versionOne,
-                2L, snapshot(2L, 2000L),
-                3L, snapshot(3L, 3000L),
-                4L, snapshot(4L, 4000L),
-                5L, latest));
-    ColumnIdentityMap versionOneMap = freshIdentity(versionOne, 1L);
-    TestDeltaConnector connector = new TestDeltaConnector(table);
-
-    List<Long> snapshotIds =
-        connector
-            .enumerateSnapshots(
-                "ns",
-                "tbl",
-                ResourceId.getDefaultInstance(),
-                new FloecatConnector.SnapshotEnumerationOptions(
-                    false,
-                    Set.of(1L),
-                    Set.of(),
-                    FloecatConnector.SnapshotSelectionKind.ALL,
-                    Set.of(),
-                    0,
-                    Map.of(1L, versionOneMap),
-                    0L))
-            .map(FloecatConnector.SnapshotBundle::snapshotId)
-            .toList();
-
-    assertEquals(List.of(0L, 2L, 3L, 4L, 5L), snapshotIds);
+                0L,
+                snapshot(0L, 0L),
+                1L,
+                versionOne,
+                2L,
+                snapshot(2L, 2000L),
+                3L,
+                snapshot(3L, 3000L),
+                4L,
+                snapshot(4L, 4000L),
+                5L,
+                latest));
+    for (boolean hasPersistedMap : List.of(false, true)) {
+      var options =
+          new FloecatConnector.SnapshotEnumerationOptions(
+              false,
+              Set.of(1L, 4L),
+              Set.of(),
+              FloecatConnector.SnapshotSelectionKind.ALL,
+              Set.of(),
+              0,
+              hasPersistedMap ? Map.of(1L, freshIdentity(versionOne)) : Map.of(),
+              0L);
+      List<FloecatConnector.SnapshotBundle> bundles =
+          new TestDeltaConnector(table)
+              .enumerateSnapshots("ns", "tbl", ResourceId.getDefaultInstance(), options)
+              .toList();
+      List<Long> expected =
+          hasPersistedMap ? List.of(0L, 2L, 3L, 4L, 5L) : List.of(0L, 1L, 2L, 3L, 4L, 5L);
+      assertEquals(
+          expected, bundles.stream().map(FloecatConnector.SnapshotBundle::snapshotId).toList());
+      assertEquals(
+          expected.stream().map(version -> version * 1000L).toList(),
+          bundles.stream().map(FloecatConnector.SnapshotBundle::upstreamCreatedAtMs).toList());
+    }
   }
 
   @Test
@@ -1102,7 +1062,7 @@ class DeltaConnectorTest {
         new TestDeltaConnector(new StubTable(latest, Map.of(7L, latest)));
     ColumnIdentityMap identityMap = freshIdentity(latest);
     long stableColumnId =
-        DeltaCanonicalIdentity.canonicalIdsByStatsKey(latest, identityMap).get("id");
+        DeltaCanonicalIdentity.resolve(latest, identityMap).canonicalIdsByStatsKey().get("id");
     var entry = pageIndexEntry("s3://bucket/file.parquet", "id");
 
     var selected =
@@ -1210,7 +1170,7 @@ class DeltaConnectorTest {
     connector.setSnapshotSchemaJson(evolvedSchemaJson);
     ColumnIdentityMap identityMap = freshIdentity(latest);
     long addedColumnId =
-        DeltaCanonicalIdentity.canonicalIdsByStatsKey(latest, identityMap).get("added");
+        DeltaCanonicalIdentity.resolve(latest, identityMap).canonicalIdsByStatsKey().get("added");
     String oldFile = "s3://bucket/old.parquet";
     String newFile = "s3://bucket/new.parquet";
 
@@ -1490,14 +1450,13 @@ class DeltaConnectorTest {
             .toList();
     return ColumnIdentityMaps.toProto(
         SchemaIdentityReconciler.reconcile(
-                ResolvedSchema.of(nodes),
-                7L,
-                IdentityMode.NATIVE_FIELD_ID,
-                Optional.empty(),
-                2L,
-                PreferredCanonicalIds.NONE,
-                HistoryTier.VERSIONED_LOG)
-            .state());
+            ResolvedSchema.of(nodes),
+            7L,
+            IdentityMode.NATIVE_FIELD_ID,
+            Optional.empty(),
+            2L,
+            PreferredCanonicalIds.NONE,
+            HistoryTier.VERSIONED_LOG));
   }
 
   private static FloecatConnector.ParquetPageIndexEntry pageIndexEntry(
