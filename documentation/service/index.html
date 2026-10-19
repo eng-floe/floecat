@@ -2680,6 +2680,18 @@ rows upserted after all batches have been consumed.</p>
 <td><code>floecat.secrets.aws.role-arn</code></td>
 <td>Optional role to assume per account when using AWS Secrets Manager.</td>
 </tr>
+<tr>
+<td><code>floecat.storage.aws.secrets.cache.enabled</code></td>
+<td>Startup-scoped Secrets Manager result-cache switch (default <code>true</code>); disabled reads bypass the cache and retain no result payloads.</td>
+</tr>
+<tr>
+<td><code>floecat.secrets.cache.ttl</code></td>
+<td>Per-process positive and negative Secrets Manager result-cache TTL (default <code>PT30S</code>).</td>
+</tr>
+<tr>
+<td><code>floecat.secrets.cache.max-entries</code></td>
+<td>Maximum entries in the per-process Secrets Manager result cache (default <code>1024</code>).</td>
+</tr>
 </tbody>
 </table>
 <p>Extension points:

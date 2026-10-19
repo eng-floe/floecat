@@ -1873,7 +1873,9 @@ selected snapshot unavailable.</p>
   authoritative absence.</li>
 <li><strong>Answers from outside Floecat expire.</strong> A credential vended by a source catalog is not content
   and has a lifetime, so the cache that holds it serves each answer for part of that lifetime and
-  its expiry is part of correctness. It uses <code>ExpiringCache</code>, not <code>MemoryCache</code>.</li>
+  its expiry is part of correctness. It uses <code>ExpiringCache</code>, not <code>MemoryCache</code>. Secrets Manager
+  results are mutable external answers with a short fixed freshness bound; they use the separate
+  coalescing expiring-cache contract and invalidate locally after a successful write.</li>
 </ul>
 <h2 id="warm-and-cold-reads">Warm and cold reads<a class="headerlink" href="#warm-and-cold-reads" title="Permanent link">&para;</a></h2>
 <p>A warm read reuses the process-local value. A cold read, a disabled cache, or a cache miss follows
@@ -1908,6 +1910,12 @@ identity; they do not replace a value in an existing key.</p>
 <td><code>DiskBlobCache</code> behind <code>BlobCacheAccess</code></td>
 <td>Immutable serialized CAS bodies, manifest pages, generation manifests and reusable-artifact bundles/indexes on local NVMe</td>
 <td>Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mapped content stays retained until its scoped read closes. The disk budget and kill switch are <code>floecat.cache.blob.disk.*</code>; it is independent of the heap budget.</td>
+</tr>
+<tr>
+<td>Secrets Manager results</td>
+<td><code>ProdSecretsManager</code> on <code>CoalescingExpiringCache</code></td>
+<td>Present secret payloads and authoritative missing-secret results, keyed by account, secret type and secret ID</td>
+<td>Entries expire after <code>floecat.secrets.cache.ttl</code>; same-key misses share one source load, failures are not retained, and mutation attempts invalidate the local entry. <code>floecat.secrets.cache.max-entries</code> bounds this short-lived operational cache independently of the immutable metadata heap budget. <code>floecat.storage.aws.secrets.cache.enabled=false</code> bypasses it.</td>
 </tr>
 <tr>
 <td>Vended credentials</td>
@@ -1963,9 +1971,10 @@ the cache. The reconcile planner lists accounts and connectors on every pass, an
 credential resolution lists the account's storage authorities. Persisted storage authorities carry
 no credentials; those are held in the secrets manager.</p>
 <h2 id="the-shared-cache-contract-corecache">The shared cache contract (<code>core/cache</code>)<a class="headerlink" href="#the-shared-cache-contract-corecache" title="Permanent link">&para;</a></h2>
-<p>The cache module provides one small read-through primitive. Callers use repositories and do not
-choose cache tiers or coordinate in-flight requests. Caffeine owns same-key load coordination; the
-application adds no second load map or version fence for immutable entries.</p>
+<p>The cache module provides the read-through primitives. Callers use repositories and do not choose
+cache tiers or coordinate in-flight requests. Where a cache contract calls for same-key load
+coordination, the cache implementation owns it; application callers add no second load map or
+version fence.</p>
 <p>The future cache layers share this module's operational and telemetry vocabulary, but not one
 storage-shaped interface or one resource pool. <code>MemoryCache&lt;K, V&gt;</code> is the in-memory primitive used
 by object and hint caches. The pointer layer belongs behind <code>PointerStore</code> and owns ordered
@@ -1992,7 +2001,15 @@ sizing harness use the same arithmetic.</p>
 </tr>
 <tr>
 <td><code>CaffeineExpiringCache</code></td>
-<td>The implementation, on a synchronous Caffeine cache read with <code>getIfPresent</code> and filled with <code>put</code>, so no load runs under the map's locks and a slow load holds up no other key.</td>
+<td>The non-coalescing policy over shared Caffeine expiry, telemetry and lifecycle support. It reads with <code>getIfPresent</code> and fills with <code>put</code>, so no load runs under the map's locks and a slow load holds up no other key.</td>
+</tr>
+<tr>
+<td><code>CoalescingExpiringCache&lt;K, V&gt;</code></td>
+<td>Read-through <code>get</code> for expiring external answers whose same-key loads must be shared, plus explicit invalidation and approximate entry count. A load that throws or returns null is not held.</td>
+</tr>
+<tr>
+<td><code>CaffeineCoalescingExpiringCache</code></td>
+<td>The coalescing policy over the same shared Caffeine support. Per-key futures outside Caffeine share an in-flight load without holding a Caffeine map-bin lock during source I/O; invalidation fences that key against late stale admission.</td>
 </tr>
 <tr>
 <td><code>CaffeineMemoryCache</code></td>
@@ -2024,6 +2041,13 @@ in-flight mechanism.</p>
 <p>An expiring-cache loader runs on the calling thread outside any lock, so it may make a remote call
 that takes seconds without holding up other keys. Same-key misses are not merged: the source sees
 one load per concurrent miss, and none while a value is held.</p>
+<p>A coalescing expiring-cache loader also runs on a caller thread, but concurrent callers for the same
+key wait for and reuse its in-flight answer. The per-key coordination is separate from Caffeine's
+storage map, so a slow load does not hold a map-bin lock or block an unrelated colliding key.
+Invalidation prevents an already-running load for that key from being admitted afterward. Use that
+contract only where sharing the source result is safe and suppressing a same-key request stampede
+is required. Explicit invalidation is local to the process; TTL bounds changes made by another
+process or directly in the source.</p>
 <p>Budgets resolve from the container rather than from a compiled-in figure. The JVM already sizes its
 heap from the container memory limit, so <code>floecat.cache.heap-share</code> (0.5) of the maximum heap
 follows the container without reading cgroups; <code>floecat.cache.total-bytes</code> pins the total instead
@@ -2047,8 +2071,9 @@ index for planner keys and durable KV for operational keys.</p>
 <p>A cache built on the <code>core/cache</code> contract publishes the same series, tagged by cache name, so
 those are comparable and a new one brings its telemetry with it. The disk blob cache adds mapping,
 corruption and sweep signals because those are file-lifecycle events rather than heap-cache events.</p>
-<p>The vended-credential cache reports hit, miss, load-time and error series only: it is bounded by
-entry count rather than weight, and it has no enabled or entries gauge.</p>
+<p>The vended-credential cache reports hit, miss, load-time and error series only. The Secrets Manager
+result cache reports those series plus the enabled gauge; it is bounded by entry count rather than
+weight and has no entries gauge. Its series use <code>cache="secrets-manager-result"</code>.</p>
 <table>
 <thead>
 <tr>
