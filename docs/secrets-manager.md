@@ -35,9 +35,11 @@ secrets are the only credential source used for client credential vending.
 
 ## Configuration
 
-Optional role assumption:
+Settings:
 
 - `floecat.secrets.aws.role-arn` (optional)
+- `floecat.secrets.cache.ttl` (default `PT30S`)
+- `floecat.secrets.cache.max-entries` (default `1024`)
 
 If set, Floecat assumes this role per account operation and tags the STS session with `AccountId=<accountId>`. If unset, Floecat uses its default AWS credentials for all operations.
 
@@ -52,6 +54,18 @@ Or via environment variable:
 ```bash
 export FLOECAT_SECRETS_AWS_ROLE_ARN=arn:aws:iam::123456789012:role/floecat-secrets
 ```
+
+Secrets Manager reads are cached locally in each Floecat process. The cache includes both found
+values and missing-secret results, is bounded by `floecat.secrets.cache.max-entries`, and expires
+entries after `floecat.secrets.cache.ttl`. Concurrent reads for the same secret share one
+Secrets Manager request. Failed requests are not cached. Successful create, update, and delete
+operations invalidate the corresponding local entry, and cached payloads are defensively copied.
+Reads publish the common `floecat_core_cache_*` hit, miss, load-latency, and error series with
+`cache="secrets-manager-result"`.
+
+The cache is not coordinated across Floecat processes. A secret changed through another process or
+directly in AWS can therefore remain stale until the local TTL expires. Use an ISO-8601 duration
+such as `PT30S` for the TTL; both settings must be positive.
 
 ## Required IAM permissions (base)
 
