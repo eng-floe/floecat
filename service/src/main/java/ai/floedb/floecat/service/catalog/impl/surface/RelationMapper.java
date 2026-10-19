@@ -161,10 +161,6 @@ final class RelationMapper {
     if (!graphSchema.isEmpty()) {
       return SchemaDescriptor.newBuilder().addAllColumns(graphSchema).build();
     }
-    if (table.getUpstream().getColumnIdAlgorithm()
-        == ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP) {
-      return SchemaDescriptor.getDefaultInstance();
-    }
     return schemaMapper.map(
         table,
         table.getSchemaJson(),

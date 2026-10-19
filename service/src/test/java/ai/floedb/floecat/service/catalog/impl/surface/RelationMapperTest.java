@@ -15,12 +15,13 @@
  */
 package ai.floedb.floecat.service.catalog.impl.surface;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -32,7 +33,7 @@ import org.junit.jupiter.api.Test;
 
 class RelationMapperTest {
   @Test
-  void canonicalTableWithNoGraphSchemaRemainsEmpty() {
+  void canonicalTableWithNoGraphSchemaFailsFast() {
     ResourceId id =
         ResourceId.newBuilder()
             .setAccountId("acct")
@@ -45,17 +46,20 @@ class RelationMapperTest {
             .setDisplayName("events")
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
             .setUpstream(
-                UpstreamRef.newBuilder().setColumnIdAlgorithm(ColumnIdAlgorithm.CID_CANONICAL_MAP))
+                UpstreamRef.newBuilder()
+                    .setFormat(TableFormat.TF_DELTA)
+                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_CANONICAL_MAP))
             .build();
     CatalogGraphView graph = mock(CatalogGraphView.class);
     CatalogContext context = CatalogContext.empty();
     when(graph.tableSchema(id, context)).thenReturn(List.of());
     when(graph.tableName(id, context)).thenReturn(Optional.empty());
 
-    var relation =
-        new RelationMapper(graph, context, ignored -> Optional.empty())
-            .fromTable(table, true, false);
-
-    assertThat(relation.getSchema().getColumnsList()).isEmpty();
+    assertThatThrownBy(
+            () ->
+                new RelationMapper(graph, context, ignored -> Optional.empty())
+                    .fromTable(table, true, false))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Canonical column identity map is required");
   }
 }

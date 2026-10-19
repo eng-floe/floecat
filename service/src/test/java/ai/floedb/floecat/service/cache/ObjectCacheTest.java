@@ -49,7 +49,7 @@ import org.junit.jupiter.api.Test;
 class ObjectCacheTest {
 
   @Test
-  void canonicalSchemaWithoutIdentityMapIsEmpty() {
+  void canonicalSchemaWithoutIdentityMapFailsFast() {
     ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
     UserTableNode table =
         table(
@@ -59,11 +59,10 @@ class ObjectCacheTest {
             ColumnIdAlgorithm.CID_CANONICAL_MAP,
             List.of());
 
-    assertThat(
-            cache
-                .mappedSchema(table, "{}", ColumnIdentityMap.getDefaultInstance())
-                .getColumnsList())
-        .isEmpty();
+    assertThatThrownBy(
+            () -> cache.mappedSchema(table, "{}", ColumnIdentityMap.getDefaultInstance()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Canonical column identity map is required");
   }
 
   @Test

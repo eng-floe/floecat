@@ -21,7 +21,6 @@ import ai.floedb.floecat.cache.CacheFamily;
 import ai.floedb.floecat.cache.CaffeineMemoryCache;
 import ai.floedb.floecat.cache.MemoryCache;
 import ai.floedb.floecat.cache.WeightedValue;
-import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -146,9 +145,6 @@ public final class ObjectCache {
       UserTableNode table, String schemaJson, ColumnIdentityMap columnIdentityMap) {
     Objects.requireNonNull(table, "table");
     Objects.requireNonNull(columnIdentityMap, "columnIdentityMap");
-    if (missingCanonicalIdentity(table, columnIdentityMap)) {
-      return SchemaDescriptor.getDefaultInstance();
-    }
     String effectiveSchema =
         schemaJson == null || schemaJson.isBlank() ? table.schemaJson() : schemaJson;
     String identity =
@@ -206,12 +202,6 @@ public final class ObjectCache {
     String effectiveSchema =
         schemaJson == null || schemaJson.isBlank() ? table.schemaJson() : schemaJson;
     return schemaMapper.map(table, effectiveSchema, identityMap);
-  }
-
-  private static boolean missingCanonicalIdentity(
-      UserTableNode table, ColumnIdentityMap identityMap) {
-    return table.columnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP
-        && identityMap.equals(ColumnIdentityMap.getDefaultInstance());
   }
 
   /** Load the full engine-neutral relation for one immutable user-table DDL identity. */
