@@ -233,8 +233,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
     String schemaName = namespace.schemaName();
 
     return numberedColumns(
-        ctx,
-        table,
+        SchemaColumns.topLevelOnly(ctx.graph().tableSchema(table.id(), ctx.catalogContext())),
         (col, position) ->
             new SystemObjectRow(
                 new Object[] {
@@ -249,7 +248,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
   }
 
   /**
-   * A table's user-facing columns paired with their ordinal_position.
+   * A relation's user-facing columns paired with their ordinal_position.
    *
    * <p>ordinal_position is a POSITION, not an identity: the SQL standard defines it as the column's
    * 1-based place in the table, so it must not carry a format-native field id. Field ids do not
@@ -257,19 +256,15 @@ public final class ColumnsScanner implements SystemObjectScanner {
    * declaration order. Using them here renders a column list that disagrees with the table's real
    * shape.
    *
-   * <p>Both the row and the Arrow path number columns here rather than each keeping its own
-   * counter. They answer the same query, so a reader that saw them disagree would have no way to
-   * tell which was right; sharing the walk makes agreement structural instead of a thing tests have
-   * to keep rediscovering.
+   * <p>Callers supply only the columns exposed by the relation: table callers remove flattened
+   * nested schema rows, while views already carry a top-level output-column list. Both the row and
+   * the Arrow path number those columns here rather than each keeping its own counter. They answer
+   * the same query, so a reader that saw them disagree would have no way to tell which was right;
+   * sharing the walk makes agreement structural instead of a thing tests have to keep
+   * rediscovering.
    */
   private static <T> List<T> numberedColumns(
-      SystemObjectScanContext ctx,
-      TableNode table,
-      java.util.function.BiFunction<SchemaColumn, Integer, T> toRow) {
-    // Synthetic element/key/value placeholder rows are stats plumbing, not user columns.
-    List<SchemaColumn> columns =
-        SchemaColumns.withoutSyntheticNodes(
-            ctx.graph().tableSchema(table.id(), ctx.catalogContext()));
+      List<SchemaColumn> columns, java.util.function.BiFunction<SchemaColumn, Integer, T> toRow) {
     List<T> out = new ArrayList<>(columns.size());
     int position = 1;
     for (SchemaColumn col : columns) {
@@ -290,23 +285,19 @@ public final class ColumnsScanner implements SystemObjectScanner {
             catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
 
     String schemaName = namespace.schemaName();
-    List<SchemaColumn> cols = view.outputColumns();
-
-    List<SystemObjectRow> rows = new ArrayList<>(cols.size());
-    for (int i = 0; i < cols.size(); i++) {
-      SchemaColumn col = cols.get(i);
-      rows.add(
-          new SystemObjectRow(
-              new Object[] {
-                catalogName,
-                schemaName,
-                view.displayName(),
-                col.getName(),
-                typeStringOrNull(col),
-                i + 1
-              }));
-    }
-    return rows.stream();
+    return numberedColumns(
+        view.outputColumns(),
+        (col, position) ->
+            new SystemObjectRow(
+                new Object[] {
+                  catalogName,
+                  schemaName,
+                  view.displayName(),
+                  col.getName(),
+                  typeStringOrNull(col),
+                  position
+                }))
+        .stream();
   }
 
   private static String blankToNull(String value) {
@@ -341,8 +332,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
     if (node instanceof TableNode table) {
       return numberedColumns(
-          ctx,
-          table,
+          SchemaColumns.topLevelOnly(ctx.graph().tableSchema(table.id(), ctx.catalogContext())),
           (col, position) ->
               ColumnEntry.of(
                   catalogName,
@@ -354,20 +344,16 @@ public final class ColumnsScanner implements SystemObjectScanner {
     }
 
     if (node instanceof ViewNode view) {
-      List<SchemaColumn> cols = view.outputColumns();
-      List<ColumnEntry> entries = new ArrayList<>(cols.size());
-      for (int i = 0; i < cols.size(); i++) {
-        SchemaColumn col = cols.get(i);
-        entries.add(
-            ColumnEntry.of(
-                catalogName,
-                schemaName,
-                view.displayName(),
-                col.getName(),
-                typeStringOrNull(col),
-                i + 1));
-      }
-      return entries;
+      return numberedColumns(
+          view.outputColumns(),
+          (col, position) ->
+              ColumnEntry.of(
+                  catalogName,
+                  schemaName,
+                  view.displayName(),
+                  col.getName(),
+                  typeStringOrNull(col),
+                  position));
     }
 
     return List.of();

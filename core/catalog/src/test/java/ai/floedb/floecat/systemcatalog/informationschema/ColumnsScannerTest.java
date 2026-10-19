@@ -25,8 +25,10 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
+import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
@@ -238,21 +240,30 @@ class ColumnsScannerTest {
     var scanner = new ColumnsScanner();
     List<List<String>> expected = scanner.scan(ctx).map(row -> toStringList(row.values())).toList();
 
-    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
-      List<List<String>> arrowRows =
-          scanner
-              .scanArrow(ctx, null, List.of(), allocator)
-              .map(
-                  batch -> {
-                    try (batch) {
-                      return toRows(batch.root());
-                    }
-                  })
-              .flatMap(List::stream)
-              .toList();
+    assertThat(scanArrow(scanner, ctx)).isEqualTo(expected);
+  }
 
-      assertThat(arrowRows).isEqualTo(expected);
-    }
+  @Test
+  void scanArrow_matchesRowPathForViews() {
+    var builder = TestTableScanContextBuilder.builder("marketing");
+    var ns = builder.addNamespace("finance.sales");
+    addView(
+        builder,
+        ns,
+        "order_totals",
+        List.of(
+            positionColumn("id", "long", 40),
+            positionColumn("name", "string", 0),
+            positionColumn("amount", "long", 7)));
+    SystemObjectScanContext ctx = builder.build();
+    var scanner = new ColumnsScanner();
+
+    List<List<String>> expected = scanner.scan(ctx).map(row -> toStringList(row.values())).toList();
+
+    assertThat(expected)
+        .extracting(row -> row.get(3), row -> row.get(5))
+        .containsExactly(tuple("id", "1"), tuple("name", "2"), tuple("amount", "3"));
+    assertThat(scanArrow(scanner, ctx)).isEqualTo(expected);
   }
 
   @Test
@@ -271,27 +282,14 @@ class ColumnsScannerTest {
             positionColumn("amount", "long", 7)));
     SystemObjectScanContext ctx = builder.build();
     var scanner = new ColumnsScanner();
+    List<List<String>> arrowRows = scanArrow(scanner, ctx);
 
-    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
-      List<List<String>> arrowRows =
-          scanner
-              .scanArrow(ctx, null, List.of(), allocator)
-              .map(
-                  batch -> {
-                    try (batch) {
-                      return toRows(batch.root());
-                    }
-                  })
-              .flatMap(List::stream)
-              .toList();
-
-      assertThat(arrowRows)
-          .extracting(row -> row.get(3), row -> row.get(5))
-          .containsExactly(tuple("id", "1"), tuple("name", "2"), tuple("amount", "3"));
-      // Both paths answer the same query; a reader cannot tell which is right if they disagree.
-      assertThat(arrowRows)
-          .isEqualTo(scanner.scan(ctx).map(row -> toStringList(row.values())).toList());
-    }
+    assertThat(arrowRows)
+        .extracting(row -> row.get(3), row -> row.get(5))
+        .containsExactly(tuple("id", "1"), tuple("name", "2"), tuple("amount", "3"));
+    // Both paths answer the same query; a reader cannot tell which is right if they disagree.
+    assertThat(arrowRows)
+        .isEqualTo(scanner.scan(ctx).map(row -> toStringList(row.values())).toList());
   }
 
   @Test
@@ -351,6 +349,54 @@ class ColumnsScannerTest {
     return results;
   }
 
+  private static List<List<String>> scanArrow(ColumnsScanner scanner, SystemObjectScanContext ctx) {
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      return scanner
+          .scanArrow(ctx, null, List.of(), allocator)
+          .map(
+              batch -> {
+                try (batch) {
+                  return toRows(batch.root());
+                }
+              })
+          .flatMap(List::stream)
+          .toList();
+    }
+  }
+
+  private static void addView(
+      TestTableScanContextBuilder builder,
+      NamespaceNode namespace,
+      String name,
+      List<SchemaColumn> columns) {
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId(namespace.id().getAccountId())
+            .setKind(ResourceKind.RK_VIEW)
+            .setId(namespace.id().getId() + "." + name)
+            .build();
+    builder
+        .graphView()
+        .addRelation(
+            namespace.id(),
+            new ViewNode(
+                viewId,
+                "blob://test/v1",
+                namespace.catalogId(),
+                namespace.id(),
+                name,
+                "select 1",
+                "sql",
+                columns,
+                List.of(),
+                List.of(),
+                GraphNodeOrigin.USER,
+                Map.of(),
+                Optional.empty(),
+                Map.of(),
+                Map.of()));
+  }
+
   private static List<String> toStringList(Object[] values) {
     List<String> result = new ArrayList<>(values.length);
     for (Object value : values) {
@@ -384,50 +430,28 @@ class ColumnsScannerTest {
   }
 
   @Test
-  void scan_hidesSyntheticContainerNodesButKeepsStructChildren() {
-    // Schema as the nested traversal emits it for:
-    //   tags array<int>, m map<string,long>, s struct<a int>
+  void scan_nestedSchemaReportsOnlyTopLevelPositions() {
+    // Schema as the flattened nested traversal emits it for:
+    //   a int, s struct<x int, y int>, b int
     var builder = TestTableScanContextBuilder.builder("marketing");
     var ns = builder.addNamespace("finance.sales");
     builder.addTableWithSchema(
         ns,
         "orders",
         java.util.List.of(
-            col("tags", "tags", "ARRAY<INT>", 1, false),
-            col("element", "tags[]", "INT", 2, true),
-            col("m", "m", "MAP<STRING, INT>", 3, false),
-            col("key", "m.key", "STRING", 4, true),
-            col("value", "m{}", "INT", 5, true),
-            col("s", "s", "STRUCT<a: INT>", 6, false),
-            col("a", "s.a", "INT", 7, true)));
+            col("a", "a", "INT", 40, true),
+            col("s", "s", "STRUCT<x: INT, y: INT>", 7, false),
+            col("x", "s.x", "INT", 101, true),
+            col("y", "s.y", "INT", 102, true),
+            col("b", "b", "INT", 0, true)));
 
-    var rows =
-        new ColumnsScanner().scan(builder.build()).map(r -> Arrays.asList(r.values())).toList();
+    SystemObjectScanContext ctx = builder.build();
+    var scanner = new ColumnsScanner();
+    var rows = scanner.scan(ctx).map(r -> toStringList(r.values())).toList();
 
-    var names = rows.stream().map(r -> r.get(3)).toList();
-    // Synthetic element/key/value placeholders are stats plumbing, not user columns.
-    assertThat(names).containsExactly("tags", "m", "s", "a");
-  }
-
-  @Test
-  void scan_keepsRealColumnsNamedLikeSyntheticNodes() {
-    // A real struct field named "key" must not be confused with a map-key placeholder.
-    var builder = TestTableScanContextBuilder.builder("marketing");
-    var ns = builder.addNamespace("finance.sales");
-    builder.addTableWithSchema(
-        ns,
-        "orders",
-        java.util.List.of(
-            col("s", "s", "STRUCT<key: INT>", 1, false),
-            col("key", "s.key", "INT", 2, true),
-            col("m", "m", "MAP<STRING, INT>", 3, false),
-            col("key", "m.key", "STRING", 4, true),
-            col("value", "m{}", "INT", 5, true)));
-
-    var rows =
-        new ColumnsScanner().scan(builder.build()).map(r -> Arrays.asList(r.values())).toList();
-
-    var names = rows.stream().map(r -> r.get(3)).toList();
-    assertThat(names).containsExactly("s", "key", "m");
+    assertThat(rows)
+        .extracting(row -> row.get(3), row -> row.get(5))
+        .containsExactly(tuple("a", "1"), tuple("s", "2"), tuple("b", "3"));
+    assertThat(scanArrow(scanner, ctx)).isEqualTo(rows);
   }
 }
