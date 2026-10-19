@@ -246,7 +246,7 @@ class LogicalTypeFormatTest {
 
   @Test
   void parseRejectsIntervalFractionalPrecisionAboveSix() {
-    assertThatThrownBy(() -> LogicalTypeFormat.parse("INTERVAL DAY TO SECOND(7)"))
+    assertThatThrownBy(() -> LogicalTypeFormat.parse("INTERVAL DAY TO SECOND(10)"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("precision must be 0..");
   }
@@ -262,7 +262,7 @@ class LogicalTypeFormatTest {
     assertThatThrownBy(() -> LogicalTypeFormat.parse("TIMESTAMP(bad)"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("invalid temporal precision parameter");
-    assertThatThrownBy(() -> LogicalTypeFormat.parse("TIME(9)"))
+    assertThatThrownBy(() -> LogicalTypeFormat.parse("TIME(10)"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("temporal precision must be 0..");
   }

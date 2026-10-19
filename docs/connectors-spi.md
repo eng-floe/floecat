@@ -44,44 +44,38 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
 
 ### Column bounds encoding
 
-When connectors emit `ScalarStats.min`/`max`, they must use the canonical string format documented in
-`floecat/catalog/stats.proto`. Each of these bounds is optional—`hasMin()`/`hasMax()` indicate the
-field was populated (even when the string itself is empty). In brief:
+New connectors should populate the typed `ScalarStats.min_value`/`max_value` fields. The legacy
+`min`/`max` strings remain readable for records written before typed bounds were introduced and may
+be dual-written during rollout. Each bound is optional; readers use the typed field when present and
+fall back to the legacy string only for older records.
 
-  * Bounds are UTF-8 strings reflecting the logical ordering (not engine collation) and should be
-    left unset when unknown.
-  * Encodings follow the logical_type:
-    * Boolean → `"true"`/`"false"` (lowercase).
-    * Integer → base-10 digits with optional `-`, no leading `+` or zero padding.
-    * Float → Java `Float.toString`/`Double.toString` output, plus `NaN`, `Infinity`, `-Infinity`.
-      Normalizing `-0` → `0` improves stability.
-    * Decimal → plain base-10 string with optional `-`, no exponent, normalized by trimming leading
-      zeros in the integer part and trailing zeros in the fractional part; `ValueEncoders.encodeToString(lt, value)`
-      already follows this normalization routine and collapses `-0` → `0`.
-    * Date/Time/Timestamp → ISO-8601 (`YYYY-MM-DD`, `HH:MM:SS[.fffffffff]`, `YYYY-MM-DDTHH:MM:SS[.fffffffff]`
-      for `TIMESTAMP`, `YYYY-MM-DDTHH:MM:SS[.fffffffff]Z` for `TIMESTAMPTZ`). If the logical type
-      includes a temporal precision suffix (e.g. `TIMESTAMP(3)`), emit exactly that many fractional
-      digits (0..6). Otherwise Floecat defaults to microsecond precision with ISO formatting.
-    * UUID → lowercase 8-4-4-4-12 hex.
-    * String → literal UTF-8 content.
-    * Binary → base64 (RFC 4648) without line breaks (padding `=` is OK).
-  * Row/null/NAN counts are optional (`row_count`, `null_count`, `nan_count`); set them only when the connector can
-    report a value so downstream planners can distinguish “unknown” from zero.
-  * Non-orderable types (`INTERVAL`, `JSON`, `ARRAY`, `MAP`, `STRUCT`, `VARIANT`) should leave
-    `min`/`max` unset. Floecat treats `INTERVAL` as non‑stats‑orderable; if you still emit bounds,
-    encode them as ISO‑8601 duration strings and expect them to be stored but ignored by pruning
-    comparisons.
+Typed bounds must use the `ScalarValue` variant matching `logical_type`:
 
-Helpers such as `ValueEncoders.encodeToString` already follow these rules; reuse them when converting
-native column values to strings so stats stay portable across languages.
+  * integer, boolean, floating-point, date, time, timestamp, and timestamp-with-time-zone values
+    use their corresponding scalar variant;
+  * temporal values use the epoch unit declared by `LogicalType.temporal_precision` (0..9), with
+    an omitted precision meaning microseconds;
+  * decimals use the canonical decimal representation, binary values use the bytes variant, and
+    strings, UUIDs, and JSON use the string variant.
+
+Leave a bound unset when it is unknown. Non-orderable types (`INTERVAL`, `ARRAY`, `MAP`, `STRUCT`,
+`VARIANT`, and unsupported JSON values) must not emit bounds; there is no useful pruning order for
+them.
+
+The legacy `min`/`max` fields are UTF-8 compatibility fields only. If an older consumer requires
+them, their encodings follow the historical logical-type rules: booleans use lowercase text,
+numbers use canonical decimal text, temporal values use ISO-8601, UUIDs use lowercase canonical
+text, and binary values use unpadded-or-padded RFC 4648 Base64. `ValueEncoders.encodeToString` is
+appropriate only for populating those legacy fields; new connectors should construct `ScalarValue`s
+directly.
 
 ### Temporal values (no numeric heuristics)
 
 Floecat does not guess time units based on numeric magnitude. Connectors must supply typed temporal
-values (e.g., `LocalTime`, `LocalDateTime`, `Instant`) or ISO‑8601 strings with the correct
-precision. Numeric epoch values are rejected for `TIME`, `TIMESTAMP`, and `TIMESTAMPTZ`. If your
-connector reads Parquet/Delta/Iceberg stats, convert numeric values using the source metadata’s
-explicit unit before calling `ValueEncoders.encodeToString`.
+values (e.g., `LocalTime`, `LocalDateTime`, `Instant`) with the precision carried by the typed
+`ScalarValue`. ISO‑8601 strings are accepted only when populating the legacy `min`/`max` fields.
+Numeric values from Parquet/Delta/Iceberg must be converted using the source metadata’s explicit
+unit before constructing the typed scalar.
 
 Schema mappers should normalize temporal types at ingest time and emit canonical logical types.
 

@@ -27,6 +27,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.types.rpc.ScalarValue;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -116,6 +117,41 @@ public class StatsProtoEmitterTest {
         s0.getTarget().getColumn().getColumnId(),
         s1.getTarget().getColumn().getColumnId(),
         "canonicalized paths should resolve to same id");
+  }
+
+  @Test
+  public void toColumnStats_emitsTypedBoundsAndLegacyCompatibility() {
+    var schema = schemaWithColumns(schemaCol("value", "value", 1, 7, true));
+    var input =
+        List.of(
+            new FloecatConnector.ColumnStatsView(
+                ref("value", "value", 1, 7),
+                "INT",
+                10L,
+                null,
+                null,
+                ScalarValue.newBuilder().setI64(2).build(),
+                ScalarValue.newBuilder().setI64(9).build(),
+                null,
+                null,
+                Map.of()));
+
+    var scalar =
+        StatsProtoEmitter.toTargetColumnStats(
+                rid("t1"),
+                1L,
+                1700000000000L,
+                ConnectorFormat.CF_ICEBERG,
+                ColumnIdAlgorithm.CID_FIELD_ID,
+                schema,
+                input)
+            .get(0)
+            .getScalar();
+
+    assertEquals(ScalarValue.VCase.I64, scalar.getMinValue().getVCase());
+    assertEquals(2L, scalar.getMinValue().getI64());
+    assertEquals(2L, Long.parseLong(scalar.getMin()));
+    assertEquals(9L, Long.parseLong(scalar.getMax()));
   }
 
   @Test

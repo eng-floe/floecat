@@ -39,6 +39,7 @@ import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsResolutionResult;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.rpc.ScalarValue;
 import io.smallrye.config.ConfigMapping;
 import io.smallrye.config.WithDefault;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -364,12 +365,27 @@ public final class StatsProviderFactory {
           scalar.hasNullCount() ? OptionalLong.of(scalar.getNullCount()) : OptionalLong.empty(),
           scalar.hasNanCount() ? OptionalLong.of(scalar.getNanCount()) : OptionalLong.empty(),
           LogicalTypeProtoAdapter.columnLogicalType(scalar),
-          scalar.hasMin() ? Optional.of(scalar.getMin()) : Optional.empty(),
-          scalar.hasMax() ? Optional.of(scalar.getMax()) : Optional.empty(),
+          encodedBound(scalar, true),
+          encodedBound(scalar, false),
           estimatedNdv,
           scalar.hasAvgWidthBytes()
               ? OptionalLong.of(scalar.getAvgWidthBytes())
               : OptionalLong.empty());
+    }
+
+    private static Optional<ScalarValue> encodedBound(ScalarStats scalar, boolean minimum) {
+      try {
+        LogicalType type = LogicalTypeProtoAdapter.columnLogicalType(scalar);
+        Object value =
+            minimum
+                ? LogicalTypeProtoAdapter.columnMinValue(scalar)
+                : LogicalTypeProtoAdapter.columnMaxValue(scalar);
+        return value == null
+            ? Optional.empty()
+            : Optional.of(LogicalTypeProtoAdapter.encodeTypedValue(type, value));
+      } catch (RuntimeException ignored) {
+        return Optional.empty();
+      }
     }
 
     private record TableStatsViewImpl(
@@ -394,8 +410,8 @@ public final class StatsProviderFactory {
         OptionalLong nullCount,
         OptionalLong nanCount,
         LogicalType logicalType,
-        Optional<String> min,
-        Optional<String> max,
+        Optional<ScalarValue> min,
+        Optional<ScalarValue> max,
         Ndv ndvValue,
         OptionalLong avgWidth)
         implements StatsProvider.ColumnStatsView {
@@ -410,12 +426,12 @@ public final class StatsProviderFactory {
       }
 
       @Override
-      public Optional<String> minValue() {
+      public Optional<ScalarValue> minValue() {
         return min;
       }
 
       @Override
-      public Optional<String> maxValue() {
+      public Optional<ScalarValue> maxValue() {
         return max;
       }
 
