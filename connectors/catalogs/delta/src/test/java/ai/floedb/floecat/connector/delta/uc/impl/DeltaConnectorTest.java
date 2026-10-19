@@ -259,6 +259,7 @@ class DeltaConnectorTest {
                             0L))
                     .toList());
 
+    assertTrue(error.getMessage().contains("Cannot reconcile unmapped Delta column identity"));
     assertTrue(error.getMessage().contains("incomplete metadata history"));
     assertTrue(error.getMessage().contains("history-unavailable"));
   }
