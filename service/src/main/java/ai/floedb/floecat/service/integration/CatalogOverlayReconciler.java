@@ -27,9 +27,9 @@ import ai.floedb.floecat.catalog.access.CatalogTraversalFailures;
 import ai.floedb.floecat.catalog.access.CatalogView;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
+import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
 import ai.floedb.floecat.catalog.delta.DeltaIdentityHistoryProvider;
 import ai.floedb.floecat.catalog.delta.DeltaLogEngineFactory;
-import ai.floedb.floecat.catalog.delta.DeltaSourceVersion;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Namespace;
@@ -42,11 +42,9 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.resolver.IcebergSchemaMapper;
-import ai.floedb.floecat.delta.identity.CurrentSchemaDeltaHistorySource;
 import ai.floedb.floecat.delta.identity.DeltaIdentityService;
 import ai.floedb.floecat.delta.identity.DeltaLogHistorySource;
 import ai.floedb.floecat.delta.identity.IdentityResult;
-import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.delta.identity.PersistedIdentityLookup;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
@@ -65,6 +63,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
+import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.util.LogSafeText;
 import com.google.protobuf.util.Timestamps;
@@ -140,6 +139,7 @@ public class CatalogOverlayReconciler {
   @Inject TableRootRepository tableRoots;
   @Inject TableRootWriter rootWriter;
   @Inject MarkerStore markerStore;
+  @Inject ServerSideFileIoPropertiesResolver fileIoProperties;
 
   @ConfigProperty(
       name = "floecat.catalog-overlay.reconcile.max-parallel-loads",
@@ -977,13 +977,14 @@ public class CatalogOverlayReconciler {
             .setUpstream(upstream)
             .putAllProperties(properties);
     if (upstream.getFormat() == TableFormat.TF_DELTA) {
-      builder.setColumnIdentityMap(reconcileDeltaIdentity(source, current, client));
+      builder.setColumnIdentityMap(
+          reconcileDeltaIdentity(source, current, client, builder.build()));
     }
     return builder.build();
   }
 
   private ColumnIdentityMap reconcileDeltaIdentity(
-      CatalogTable source, Table current, CatalogClient client) {
+      CatalogTable source, Table current, CatalogClient client, Table desired) {
     try {
       Optional<ColumnIdentityMap> tableMap =
           current != null && current.hasColumnIdentityMap()
@@ -991,32 +992,40 @@ public class CatalogOverlayReconciler {
               : Optional.empty();
       PersistedIdentityLookup persisted = PersistedIdentityLookup.forTableMap(tableMap);
       Optional<String> tablePath = source.storageLocation();
-      Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials> credentials =
-          tablePath.isEmpty()
-              ? Optional.empty()
-              : cancellableCall(() -> client.vendStorageCredentials(source.name()));
-      if (tablePath.isPresent() && credentials.isPresent()) {
-        try (var opened = DeltaLogEngineFactory.open(credentials.orElseThrow())) {
-          var deltaTable = io.delta.kernel.Table.forPath(opened.engine(), tablePath.orElseThrow());
+      if (tablePath.isPresent()) {
+        String path = tablePath.orElseThrow();
+        Map<String, String> properties = fileIoProperties.resolve(desired, path);
+        VendedStorageCredentials credentials =
+            new VendedStorageCredentials(properties, path, Optional.empty());
+        try (var opened = DeltaLogEngineFactory.open(credentials)) {
+          var deltaTable = io.delta.kernel.Table.forPath(opened.engine(), path);
           var history =
               new DeltaLogHistorySource(
-                  source.name().toString(), tablePath.orElseThrow(), deltaTable, opened.engine());
+                  source.name().toString(), path, deltaTable, opened.engine());
           return reconciledHeadMap(history, persisted);
         }
-      } else {
+      }
+      if (client instanceof DeltaIdentityHistoryProvider provider) {
         OptionalLong predecessorVersion =
             tableMap.isEmpty()
                 ? OptionalLong.empty()
                 : OptionalLong.of(
                     ColumnIdentityMaps.restore(tableMap.orElseThrow()).sourceVersion());
         var history =
-            client instanceof DeltaIdentityHistoryProvider provider
-                ? provider
-                    .deltaIdentityHistory(source, predecessorVersion)
-                    .orElseGet(() -> currentSchemaHistory(source))
-                : currentSchemaHistory(source);
+            provider
+                .deltaIdentityHistory(source, predecessorVersion)
+                .orElseThrow(
+                    () ->
+                        new TableIdentityException(
+                            "SOURCE_ERROR for table "
+                                + source.name()
+                                + ": catalog exposes no ordered Delta identity history"));
         return reconciledHeadMap(history, persisted);
       }
+      throw new TableIdentityException(
+          "SOURCE_ERROR for table "
+              + source.name()
+              + ": Delta transaction-log location is unavailable");
     } catch (CancellationException | TableIdentityException failure) {
       throw failure;
     } catch (Exception failure) {
@@ -1051,15 +1060,6 @@ public class CatalogOverlayReconciler {
               + ": identity reconciliation returned no head map");
     }
     return headMap;
-  }
-
-  private static CurrentSchemaDeltaHistorySource currentSchemaHistory(CatalogTable source) {
-    DeltaSourceVersion version = DeltaSourceVersion.fromProperties(source.properties());
-    return new CurrentSchemaDeltaHistorySource(
-        source.name().toString(),
-        KernelAdapter.currentSchemaIdentity(
-            version.value(), source.schemaJson(), source.properties()),
-        version.anchored());
   }
 
   private View viewFor(

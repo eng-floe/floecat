@@ -75,6 +75,24 @@ class DeltaIdentityServiceTest {
   }
 
   @Test
+  void noHistoryMappedDropAndReaddWithNewNativeIdAllocatesNewIdentity() {
+    ColumnIdentityMap present =
+        reconcile(
+            source(1L, mappedSchema(field("x", "long", 1)), mappedProperties(5)), Optional.empty());
+    ColumnIdentityMap dropped =
+        reconcile(source(2L, mappedSchema(), mappedProperties(5)), Optional.of(present));
+    ColumnIdentityMap readded =
+        reconcile(
+            source(3L, mappedSchema(field("x", "long", 6)), mappedProperties(6)),
+            Optional.of(dropped));
+
+    assertThat(dropped.getEntriesList()).isEmpty();
+    assertThat(dropped.getHighWaterMark()).isEqualTo(present.getHighWaterMark());
+    assertThat(columnId(readded, "x")).isNotEqualTo(columnId(present, "x"));
+    assertThat(columnId(readded, "x")).isGreaterThan(dropped.getHighWaterMark());
+  }
+
+  @Test
   void noHistoryMappedCounterRollbackStartsANewGeneration() {
     ColumnIdentityMap first =
         reconcile(

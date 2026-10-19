@@ -29,6 +29,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -140,6 +141,11 @@ class ScanBundleServiceTest {
             .setSnapshotId(42L)
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
             .setMetadataLocation("s3://bucket/table/metadata/00001.metadata.json")
+            .setColumnIdentityMap(
+                ColumnIdentityMap.newBuilder()
+                    .setFormatVersion(2)
+                    .setSourceVersion(42L)
+                    .setFingerprint("sha256:" + "11".repeat(32)))
             .build();
     when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.of(table));
     when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI)).thenReturn(Optional.of(snapshot));
@@ -172,6 +178,7 @@ class ScanBundleServiceTest {
     verify(snapshotRepo).getByBlobUri(SNAPSHOT_BLOB_URI);
     verify(snapshotRepo, never()).getById(any(), anyLong());
     assertEquals(42L, init.snapshotId());
+    assertEquals(snapshot.getColumnIdentityMap(), init.tableInfo().getColumnIdentityMap());
     assertEquals(
         "s3://bucket/table/metadata/00001.metadata.json", init.tableInfo().getMetadataLocation());
     assertEquals("us-east-1", init.tableInfo().getPropertiesMap().get("s3.region"));
