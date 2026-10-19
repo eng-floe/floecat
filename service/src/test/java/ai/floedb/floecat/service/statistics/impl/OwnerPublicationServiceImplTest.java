@@ -1610,11 +1610,7 @@ class OwnerPublicationServiceImplTest {
         ResolvedSchema.of(
             java.util.List.of(
                 new SchemaNode(
-                    ColumnPath.ROOT.field("id"),
-                    1,
-                    true,
-                    OptionalInt.empty(),
-                    Optional.empty())));
+                    ColumnPath.ROOT.field("id"), 1, true, OptionalInt.empty(), Optional.empty())));
     return ColumnIdentityMaps.toProto(
         SchemaIdentityReconciler.reconcile(
             schema,
