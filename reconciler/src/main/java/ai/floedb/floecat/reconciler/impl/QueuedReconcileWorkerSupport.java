@@ -115,8 +115,7 @@ class QueuedReconcileWorkerSupport {
       return new IdentityEnumerationContext(false, existingSnapshotIds, Map.of(), 0L);
     }
 
-    static IdentityEnumerationContext canonical(
-        ReconcilerBackend.SnapshotIdentityHistory history) {
+    static IdentityEnumerationContext canonical(ReconcilerBackend.SnapshotIdentityHistory history) {
       return new IdentityEnumerationContext(
           true, history.snapshotIds(), history.columnIdentityMaps(), history.highWaterMark());
     }
@@ -1141,8 +1140,7 @@ class QueuedReconcileWorkerSupport {
             && upstream.columnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP;
     IdentityEnumerationContext identityContext =
         canonicalDelta
-            ? IdentityEnumerationContext.canonical(
-                backend.snapshotIdentityHistory(ctx, tableId))
+            ? IdentityEnumerationContext.canonical(backend.snapshotIdentityHistory(ctx, tableId))
             : IdentityEnumerationContext.disabled(backend.existingSnapshotIds(ctx, tableId));
     Set<Long> knownSnapshotIds =
         (captureOnly || !fullRescan) ? identityContext.existingSnapshotIds() : Set.of();
