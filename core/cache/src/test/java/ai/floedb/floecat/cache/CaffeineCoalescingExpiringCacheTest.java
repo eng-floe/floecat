@@ -23,12 +23,15 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -138,6 +141,124 @@ class CaffeineCoalescingExpiringCacheTest {
   }
 
   @Test
+  void readAfterInvalidationStartsFreshLoad() throws Exception {
+    CoalescingExpiringCache<String, String> cache = cache(100, CacheEvents.none());
+    AtomicInteger loads = new AtomicInteger();
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    Future<String> stale =
+        pool.submit(
+            () ->
+                cache.get(
+                    "key",
+                    ignored -> {
+                      loads.incrementAndGet();
+                      started.countDown();
+                      await(release);
+                      return "stale";
+                    }));
+
+    assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+    cache.invalidate("key");
+
+    Future<String> fresh =
+        pool.submit(() -> cache.get("key", ignored -> "fresh-" + loads.incrementAndGet()));
+    assertThat(fresh.get(5, TimeUnit.SECONDS)).isEqualTo("fresh-2");
+    release.countDown();
+
+    assertThat(stale.get(5, TimeUnit.SECONDS)).isEqualTo("stale");
+    assertThat(cache.get("key", ignored -> "unexpected")).isEqualTo("fresh-2");
+    assertThat(loads).hasValue(2);
+  }
+
+  @Test
+  void invalidateAllPreventsActiveLoadFromRepopulatingCache() throws Exception {
+    CoalescingExpiringCache<String, String> cache = cache(100, CacheEvents.none());
+    AtomicInteger loads = new AtomicInteger();
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    Future<String> stale =
+        pool.submit(
+            () ->
+                cache.get(
+                    "key",
+                    ignored -> {
+                      loads.incrementAndGet();
+                      started.countDown();
+                      await(release);
+                      return "stale";
+                    }));
+
+    assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+    cache.invalidateAll();
+    release.countDown();
+
+    assertThat(stale.get(5, TimeUnit.SECONDS)).isEqualTo("stale");
+    assertThat(cache.estimatedSize()).isZero();
+    assertThat(cache.get("key", ignored -> "fresh-" + loads.incrementAndGet()))
+        .isEqualTo("fresh-2");
+    assertThat(loads).hasValue(2);
+  }
+
+  @Test
+  void interruptReleasesCoalescedWaiter() throws Exception {
+    CountDownLatch waiterMissed = new CountDownLatch(1);
+    CacheEvents events =
+        new CacheEvents() {
+          @Override
+          public void miss() {
+            waiterMissed.countDown();
+          }
+        };
+    CoalescingExpiringCache<String, String> cache = cache(100, events);
+    AtomicInteger loads = new AtomicInteger();
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    Future<String> owner =
+        pool.submit(
+            () ->
+                cache.get(
+                    "key",
+                    ignored -> {
+                      loads.incrementAndGet();
+                      started.countDown();
+                      await(release);
+                      return "value";
+                    }));
+
+    assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+    AtomicReference<Thread> waiterThread = new AtomicReference<>();
+    AtomicBoolean interrupted = new AtomicBoolean();
+    Future<String> waiter =
+        pool.submit(
+            () -> {
+              waiterThread.set(Thread.currentThread());
+              try {
+                return cache.get(
+                    "key",
+                    ignored -> {
+                      loads.incrementAndGet();
+                      return "unexpected";
+                    });
+              } finally {
+                interrupted.set(Thread.currentThread().isInterrupted());
+              }
+            });
+
+    assertThat(waiterMissed.await(5, TimeUnit.SECONDS)).isTrue();
+    waiterThread.get().interrupt();
+    assertThatThrownBy(() -> waiter.get(5, TimeUnit.SECONDS))
+        .isInstanceOf(ExecutionException.class)
+        .hasCauseInstanceOf(IllegalStateException.class)
+        .hasRootCauseInstanceOf(InterruptedException.class);
+    assertThat(interrupted).isTrue();
+
+    release.countDown();
+    assertThat(owner.get(5, TimeUnit.SECONDS)).isEqualTo("value");
+    assertThat(loads).hasValue(1);
+  }
+
+  @Test
   void expiresAndCanBeInvalidated() {
     CoalescingExpiringCache<String, String> cache = cache(100, CacheEvents.none());
     AtomicInteger loads = new AtomicInteger();
@@ -188,6 +309,110 @@ class CaffeineCoalescingExpiringCacheTest {
                 }));
 
     assertThat(seen).containsExactly("miss", "load", "hit", "miss", "failed");
+  }
+
+  @Test
+  void coalescedWaiterIsReportedAsMissNotHit() throws Exception {
+    AtomicInteger hits = new AtomicInteger();
+    AtomicInteger misses = new AtomicInteger();
+    AtomicInteger loadTimes = new AtomicInteger();
+    CountDownLatch waiterMissed = new CountDownLatch(1);
+    CacheEvents events =
+        new CacheEvents() {
+          @Override
+          public void hit(Duration served) {
+            hits.incrementAndGet();
+          }
+
+          @Override
+          public void miss() {
+            misses.incrementAndGet();
+            waiterMissed.countDown();
+          }
+
+          @Override
+          public void loadTime(Duration elapsed) {
+            loadTimes.incrementAndGet();
+          }
+        };
+    CoalescingExpiringCache<String, String> cache = cache(100, events);
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    Future<String> owner =
+        pool.submit(
+            () ->
+                cache.get(
+                    "key",
+                    ignored -> {
+                      started.countDown();
+                      await(release);
+                      return "value";
+                    }));
+
+    assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+    Future<String> waiter = pool.submit(() -> cache.get("key", ignored -> "unexpected"));
+    assertThat(waiterMissed.await(5, TimeUnit.SECONDS)).isTrue();
+    release.countDown();
+
+    assertThat(owner.get(5, TimeUnit.SECONDS)).isEqualTo("value");
+    assertThat(waiter.get(5, TimeUnit.SECONDS)).isEqualTo("value");
+    assertThat(hits).hasValue(0);
+    assertThat(misses).hasValue(2);
+    assertThat(loadTimes).hasValue(1);
+  }
+
+  @Test
+  void coalescedFailureReportsEveryCallerAsMiss() throws Exception {
+    AtomicInteger hits = new AtomicInteger();
+    AtomicInteger misses = new AtomicInteger();
+    AtomicInteger failures = new AtomicInteger();
+    CountDownLatch waiterMissed = new CountDownLatch(1);
+    CacheEvents events =
+        new CacheEvents() {
+          @Override
+          public void hit(Duration served) {
+            hits.incrementAndGet();
+          }
+
+          @Override
+          public void miss() {
+            misses.incrementAndGet();
+            waiterMissed.countDown();
+          }
+
+          @Override
+          public void loadFailed(Duration elapsed, RuntimeException error) {
+            failures.incrementAndGet();
+          }
+        };
+    CoalescingExpiringCache<String, String> cache = cache(100, events);
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    Future<String> owner =
+        pool.submit(
+            () ->
+                cache.get(
+                    "key",
+                    ignored -> {
+                      started.countDown();
+                      await(release);
+                      throw new IllegalStateException("source unavailable");
+                    }));
+
+    assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+    Future<String> waiter = pool.submit(() -> cache.get("key", ignored -> "unexpected"));
+    assertThat(waiterMissed.await(5, TimeUnit.SECONDS)).isTrue();
+    release.countDown();
+
+    assertThatThrownBy(() -> owner.get(5, TimeUnit.SECONDS))
+        .isInstanceOf(ExecutionException.class)
+        .hasCauseInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> waiter.get(5, TimeUnit.SECONDS))
+        .isInstanceOf(ExecutionException.class)
+        .hasCauseInstanceOf(IllegalStateException.class);
+    assertThat(hits).hasValue(0);
+    assertThat(misses).hasValue(2);
+    assertThat(failures).hasValue(1);
   }
 
   @Test

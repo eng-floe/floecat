@@ -19,9 +19,9 @@ package ai.floedb.floecat.cache;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 
@@ -30,6 +30,8 @@ public final class CaffeineCoalescingExpiringCache<K, V> implements CoalescingEx
 
   private final CaffeineExpiringCacheSupport<K, V> support;
   private final ConcurrentMap<K, InFlight<V>> inFlight = new ConcurrentHashMap<>();
+  private final Object invalidateAllLock = new Object();
+  private long generation;
 
   private CaffeineCoalescingExpiringCache(CaffeineExpiringCacheSupport<K, V> support) {
     this.support = support;
@@ -59,12 +61,15 @@ public final class CaffeineCoalescingExpiringCache<K, V> implements CoalescingEx
       return held;
     }
 
-    InFlight<V> load = new InFlight<>();
-    InFlight<V> existing = inFlight.putIfAbsent(key, load);
+    InFlight<V> load;
+    InFlight<V> existing;
+    synchronized (invalidateAllLock) {
+      load = new InFlight<>(generation);
+      existing = inFlight.putIfAbsent(key, load);
+    }
     if (existing != null) {
-      V value = await(existing.result);
-      support.hit(startNanos);
-      return value;
+      support.miss();
+      return await(existing.result);
     }
 
     try {
@@ -78,8 +83,10 @@ public final class CaffeineCoalescingExpiringCache<K, V> implements CoalescingEx
       }
       V value = loader.apply(key);
       synchronized (load) {
-        if (!load.invalidated) {
-          support.putIfRetained(key, value);
+        synchronized (invalidateAllLock) {
+          if (!load.invalidated && load.generation == generation) {
+            support.putIfRetained(key, value);
+          }
         }
         load.result.complete(value);
       }
@@ -107,6 +114,7 @@ public final class CaffeineCoalescingExpiringCache<K, V> implements CoalescingEx
     }
     synchronized (load) {
       load.invalidated = true;
+      inFlight.remove(key, load);
       support.invalidate(key);
     }
   }
@@ -118,15 +126,11 @@ public final class CaffeineCoalescingExpiringCache<K, V> implements CoalescingEx
 
   @Override
   public void invalidateAll() {
-    inFlight
-        .values()
-        .forEach(
-            load -> {
-              synchronized (load) {
-                load.invalidated = true;
-              }
-            });
-    support.invalidateAll();
+    synchronized (invalidateAllLock) {
+      generation++;
+      inFlight.clear();
+      support.invalidateAll();
+    }
   }
 
   private static <V> void completeExceptionally(InFlight<V> load, Throwable failure) {
@@ -137,20 +141,29 @@ public final class CaffeineCoalescingExpiringCache<K, V> implements CoalescingEx
 
   private static <V> V await(CompletableFuture<V> result) {
     try {
-      return result.join();
-    } catch (CompletionException failure) {
+      return result.get();
+    } catch (InterruptedException failure) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException(
+          "Interrupted while waiting for in-flight cache load", failure);
+    } catch (ExecutionException failure) {
       if (failure.getCause() instanceof RuntimeException cause) {
         throw cause;
       }
       if (failure.getCause() instanceof Error cause) {
         throw cause;
       }
-      throw failure;
+      throw new IllegalStateException("In-flight cache load failed", failure.getCause());
     }
   }
 
   private static final class InFlight<V> {
     private final CompletableFuture<V> result = new CompletableFuture<>();
+    private final long generation;
     private boolean invalidated;
+
+    private InFlight(long generation) {
+      this.generation = generation;
+    }
   }
 }

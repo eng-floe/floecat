@@ -85,13 +85,17 @@ final class CaffeineExpiringCacheSupport<K, V> {
     report(() -> events.hit(since(startNanos)));
   }
 
-  void loaded(long startNanos) {
+  void miss() {
     report(events::miss);
+  }
+
+  void loaded(long startNanos) {
+    miss();
     report(() -> events.loadTime(since(startNanos)));
   }
 
   void loadFailed(long startNanos, RuntimeException failure) {
-    report(events::miss);
+    miss();
     report(() -> events.loadFailed(since(startNanos), failure));
   }
 

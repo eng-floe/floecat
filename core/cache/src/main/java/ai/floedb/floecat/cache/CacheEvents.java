@@ -33,16 +33,16 @@ public interface CacheEvents {
   }
 
   /**
-   * Served without going to the source, after {@code served}. A hit is not always immediate: a
-   * caller arriving during another's load waits for it, then is served from the map. Without the
-   * duration a stampede of such followers reads as a high hit rate.
+   * Served from a held value without going to the source or waiting for another caller's load,
+   * after {@code served}.
    */
   default void hit(Duration served) {}
 
   /**
-   * Not held, whoever ends up loading it. Bulk reads report one per distinct missing key, so their
-   * path cannot fall out of the ratio. That ratio is this against {@link #hit(Duration)} and
-   * nothing else.
+   * Not held for this caller. A caller coalesced behind another caller's load still reports a miss,
+   * so a stampede does not appear as a high hit rate. Bulk reads report one per distinct missing
+   * key, so their path cannot fall out of the ratio. That ratio is this against {@link
+   * #hit(Duration)} and nothing else.
    */
   default void miss() {}
 
