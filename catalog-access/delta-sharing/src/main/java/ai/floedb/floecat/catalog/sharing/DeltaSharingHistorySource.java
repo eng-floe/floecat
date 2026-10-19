@@ -59,7 +59,8 @@ final class DeltaSharingHistorySource implements DeltaHistorySource {
       TableHistory changes) {
     TableMetadata metadata = base.metadata();
     Protocol protocol = base.protocol();
-    snapshots.put(baseVersion, DeltaSharingIdentityActions.snapshot(baseVersion, metadata, protocol));
+    snapshots.put(
+        baseVersion, DeltaSharingIdentityActions.snapshot(baseVersion, metadata, protocol));
 
     Map<Long, TableMetadata> metadataByVersion = new TreeMap<>();
     for (TableMetadata action : changes.metadata()) {
@@ -107,8 +108,7 @@ final class DeltaSharingHistorySource implements DeltaHistorySource {
       }
       metadata = metadataByVersion.getOrDefault(version, metadata);
       protocol = protocolByVersion.getOrDefault(version, protocol);
-      snapshots.put(
-          version, DeltaSharingIdentityActions.snapshot(version, metadata, protocol));
+      snapshots.put(version, DeltaSharingIdentityActions.snapshot(version, metadata, protocol));
       retained.add(version);
     }
     snapshots.put(

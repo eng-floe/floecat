@@ -997,8 +997,7 @@ public class CatalogOverlayReconciler {
 
   private ColumnIdentityMap reconcileDeltaIdentity(
       CatalogTable source, Table current, CatalogClient client, Table desired) {
-    CatalogUpstreamBudget budget =
-        CatalogUpstreamBudget.start(deltaIdentityTimeout, nanoTime);
+    CatalogUpstreamBudget budget = CatalogUpstreamBudget.start(deltaIdentityTimeout, nanoTime);
     try {
       Optional<ColumnIdentityMap> tableMap =
           current != null && current.hasColumnIdentityMap()
@@ -1069,8 +1068,7 @@ public class CatalogOverlayReconciler {
       return OptionalLong.of(ColumnIdentityMaps.restore(tableMap.orElseThrow()).sourceVersion());
     } catch (IllegalArgumentException invalid) {
       throw new TableIdentityException(
-          "INVALID_PERSISTED_STATE for table " + tableName + ": " + invalid.getMessage(),
-          invalid);
+          "INVALID_PERSISTED_STATE for table " + tableName + ": " + invalid.getMessage(), invalid);
     }
   }
 

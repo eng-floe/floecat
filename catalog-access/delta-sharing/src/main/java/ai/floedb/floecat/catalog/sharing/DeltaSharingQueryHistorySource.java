@@ -38,9 +38,7 @@ final class DeltaSharingQueryHistorySource implements DeltaHistorySource {
     this.metadataChanged = !history.metadata().isEmpty() || !history.protocols().isEmpty();
     this.unorderedHistory =
         new UnorderedHistory(
-            history.metadata().stream()
-                .map(DeltaSharingIdentityActions::metadata)
-                .toList(),
+            history.metadata().stream().map(DeltaSharingIdentityActions::metadata).toList(),
             history.protocols().stream()
                 .map(historical -> historical.protocol())
                 .map(DeltaSharingIdentityActions::protocol)

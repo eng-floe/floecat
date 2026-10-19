@@ -32,8 +32,8 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.access.CatalogCapabilities;
 import ai.floedb.floecat.catalog.access.CatalogAccessException;
+import ai.floedb.floecat.catalog.access.CatalogCapabilities;
 import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogObjectName;

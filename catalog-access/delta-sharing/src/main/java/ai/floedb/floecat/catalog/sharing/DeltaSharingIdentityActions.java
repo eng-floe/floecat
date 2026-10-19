@@ -27,8 +27,7 @@ import java.util.Set;
 final class DeltaSharingIdentityActions {
   private DeltaSharingIdentityActions() {}
 
-  static DeltaIdentitySnapshot snapshot(
-      long version, TableMetadata metadata, Protocol protocol) {
+  static DeltaIdentitySnapshot snapshot(long version, TableMetadata metadata, Protocol protocol) {
     HistoricalMetadata historicalMetadata = metadata(metadata);
     HistoricalProtocol historicalProtocol = protocol(protocol);
     return KernelAdapter.currentSchemaIdentity(
