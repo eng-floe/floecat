@@ -2365,8 +2365,8 @@ intend lossy rounding opt in explicitly, e.g.
   leave bounds unset. <code>INTERVAL</code> encodings can be stored but are ignored by stats comparisons.</li>
 <li><strong>Comparators</strong> – <code>LogicalComparators</code> provides specialised comparators for lexical ordering of
   encoded min/max values so histogram builders can operate on encoded strings.</li>
-<li><strong>Encoders</strong> – <code>ValueEncoders</code> normalises values before storing them in stats to guarantee
-  consistent lexical ordering across connectors.</li>
+<li><strong>Encoders</strong> – new stats carry typed <code>ScalarValue</code> bounds, with the logical type supplying the
+  temporal unit. <code>ValueEncoders</code> remains the compatibility path for legacy string bounds.</li>
 </ul>
 <h2 id="data-flow-lifecycle">Data Flow &amp; Lifecycle<a class="headerlink" href="#data-flow-lifecycle" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>Connector reads Parquet/Delta/Iceberg schema
