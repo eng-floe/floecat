@@ -772,19 +772,25 @@ class DeltaSharingCatalogClientTest {
   }
 
   @Test
-  void aUrlOnlyTableLoadsWithoutAStorageLocationOrCredentialRequest() {
+  void aUrlOnlyTableIsRefusedBeforeMaterialization() {
     FakeSharingClient fake = new FakeSharingClient();
     fake.accessModes = List.of(AccessMode.URL);
     try (DeltaSharingCatalogClient client = client(fake)) {
-      assertThat(client.loadTable(events()).storageLocation()).isEmpty();
+      assertThatThrownBy(() -> client.loadTable(events()))
+          .isInstanceOfSatisfying(
+              CatalogAccessException.class,
+              failure -> {
+                assertThat(failure.code()).isEqualTo(CatalogAccessException.Code.UNSUPPORTED);
+                assertThat(failure.getMessage()).contains("url access only");
+              });
     }
     assertThat(fake.credentialCalls).isZero();
   }
 
   @Test
-  void urlOnlyIdentityUsesVersionedChangeFeedWhenAvailable() {
+  void identityUsesVersionedChangeFeedWhenAvailable() {
     FakeSharingClient fake = new FakeSharingClient();
-    fake.accessModes = List.of(AccessMode.URL);
+    fake.accessModes = List.of(AccessMode.DIR);
     try (DeltaSharingCatalogClient client = client(fake)) {
       CatalogTable table = client.loadTable(events());
       var history = client.deltaIdentityHistory(table, OptionalLong.of(10L)).orElseThrow();
@@ -801,7 +807,7 @@ class DeltaSharingCatalogClientTest {
   @Test
   void unversionedTablesDoNotFabricateHistoryVersionZero() {
     FakeSharingClient fake = new FakeSharingClient();
-    fake.accessModes = List.of(AccessMode.URL);
+    fake.accessModes = List.of(AccessMode.DIR);
     fake.describedVersion = Optional.empty();
     fake.metadataConfiguration = Map.of("delta.sharing.version", "99");
     try (DeltaSharingCatalogClient client = client(fake)) {
@@ -816,7 +822,7 @@ class DeltaSharingCatalogClientTest {
   void historyCannotBindMetadataFromADifferentHeadVersion() {
     for (boolean versioned : List.of(false, true)) {
       FakeSharingClient fake = new FakeSharingClient();
-      fake.accessModes = List.of(AccessMode.URL);
+      fake.accessModes = List.of(AccessMode.DIR);
       fake.changeFeedFailure = versioned ? null : DeltaSharingException.Failure.INVALID_REQUEST;
       try (DeltaSharingCatalogClient client = client(fake)) {
         CatalogTable table = client.loadTable(events());
@@ -829,9 +835,9 @@ class DeltaSharingCatalogClientTest {
   }
 
   @Test
-  void urlOnlyIdentityFallsBackToUnorderedQueryHistory() {
+  void identityFallsBackToUnorderedQueryHistory() {
     FakeSharingClient fake = new FakeSharingClient();
-    fake.accessModes = List.of(AccessMode.URL);
+    fake.accessModes = List.of(AccessMode.DIR);
     fake.changeFeedFailure = DeltaSharingException.Failure.INVALID_REQUEST;
     try (DeltaSharingCatalogClient client = client(fake)) {
       CatalogTable table = client.loadTable(events());
@@ -846,9 +852,24 @@ class DeltaSharingCatalogClientTest {
   }
 
   @Test
+  void queryHistoryClampsAPersistedPredecessorAheadOfTheSourceHead() {
+    FakeSharingClient fake = new FakeSharingClient();
+    fake.accessModes = List.of(AccessMode.DIR);
+    fake.describeAtVersionFailure = DeltaSharingException.Failure.INVALID_REQUEST;
+    try (DeltaSharingCatalogClient client = client(fake)) {
+      CatalogTable table = client.loadTable(events());
+
+      assertThat(client.deltaIdentityHistory(table, OptionalLong.of(99L))).isPresent();
+    }
+
+    assertThat(fake.queryHistoryStartVersion).isEqualTo(12L);
+    assertThat(fake.queryHistoryEndVersion).isEqualTo(12L);
+  }
+
+  @Test
   void unorderedQueryHistoryRetainsMetadataAndProtocolEvidence() {
     FakeSharingClient fake = new FakeSharingClient();
-    fake.accessModes = List.of(AccessMode.URL);
+    fake.accessModes = List.of(AccessMode.DIR);
     fake.changeFeedFailure = DeltaSharingException.Failure.INVALID_REQUEST;
     fake.queryHistoryMetadata =
         List.of(
@@ -881,7 +902,7 @@ class DeltaSharingCatalogClientTest {
   @Test
   void historyForbiddenAfterHeadAccessFallsBackToTheNextTier() {
     FakeSharingClient fake = new FakeSharingClient();
-    fake.accessModes = List.of(AccessMode.URL);
+    fake.accessModes = List.of(AccessMode.DIR);
     fake.changeFeedFailure = DeltaSharingException.Failure.PERMISSION_DENIED;
     fake.changeFeedStatus = 403;
     try (DeltaSharingCatalogClient client = client(fake)) {
@@ -895,9 +916,9 @@ class DeltaSharingCatalogClientTest {
   }
 
   @Test
-  void urlOnlyIdentityReportsNoHistoryWhenNeitherEndpointIsShared() {
+  void identityReportsNoHistoryWhenNeitherEndpointIsShared() {
     FakeSharingClient fake = new FakeSharingClient();
-    fake.accessModes = List.of(AccessMode.URL);
+    fake.accessModes = List.of(AccessMode.DIR);
     fake.changeFeedFailure = DeltaSharingException.Failure.NOT_FOUND;
     fake.queryHistoryFailure = DeltaSharingException.Failure.NOT_FOUND;
     try (DeltaSharingCatalogClient client = client(fake)) {
@@ -909,14 +930,19 @@ class DeltaSharingCatalogClientTest {
   }
 
   @Test
-  void strictModeLoadsAnUnstatedTableAsUrlOnlyButStillRefusesCredentialVending() {
+  void strictModeRefusesAnUnstatedTableDuringLoad() {
     FakeSharingClient fake = new FakeSharingClient();
     fake.accessModes = List.of();
     fake.listedLocation = Optional.of(LOCATION);
     fake.metadataLocation = Optional.empty();
     try (DeltaSharingCatalogClient client =
         new DeltaSharingCatalogClient(fake, Map.of(), true, new RecordingProbe())) {
-      assertThat(client.loadTable(events()).storageLocation()).isEmpty();
+      assertThatThrownBy(() -> client.loadTable(events()))
+          .as("load")
+          .isInstanceOfSatisfying(
+              CatalogAccessException.class,
+              failure ->
+                  assertThat(failure.code()).isEqualTo(CatalogAccessException.Code.UNSUPPORTED));
       assertThatThrownBy(() -> client.vendStorageCredentials(events()))
           .as("vend")
           .isInstanceOfSatisfying(
@@ -1202,13 +1228,18 @@ class DeltaSharingCatalogClientTest {
   }
 
   @Test
-  void aUrlModeOnEitherSurfaceLoadsWithoutStorageButStillCannotVendCredentials() {
+  void aUrlModeOnEitherSurfaceIsRefusedDuringLoad() {
     FakeSharingClient fake = new FakeSharingClient();
     fake.accessModes = List.of(AccessMode.DIR);
     fake.metadataAccessModes = List.of(AccessMode.URL);
     try (DeltaSharingCatalogClient client =
         new DeltaSharingCatalogClient(fake, Map.of(), false, new RecordingProbe())) {
-      assertThat(client.loadTable(events()).storageLocation()).isEmpty();
+      assertThatThrownBy(() -> client.loadTable(events()))
+          .as("load")
+          .isInstanceOfSatisfying(
+              CatalogAccessException.class,
+              failure ->
+                  assertThat(failure.code()).isEqualTo(CatalogAccessException.Code.UNSUPPORTED));
       assertThatThrownBy(() -> client.vendStorageCredentials(events()))
           .as("vend")
           .isInstanceOfSatisfying(
@@ -1264,14 +1295,18 @@ class DeltaSharingCatalogClientTest {
   }
 
   @Test
-  void strictModeLoadsAnUnstatedTableWithoutStorageOrAsking() {
+  void strictModeRefusesAnUnstatedTableWithoutAsking() {
     FakeSharingClient fake = new FakeSharingClient();
     fake.accessModes = List.of();
     fake.listedLocation = Optional.empty();
     fake.metadataLocation = Optional.empty();
     try (DeltaSharingCatalogClient client =
         new DeltaSharingCatalogClient(fake, Map.of(), true, new RecordingProbe())) {
-      assertThat(client.loadTable(events()).storageLocation()).isEmpty();
+      assertThatThrownBy(() -> client.loadTable(events()))
+          .isInstanceOfSatisfying(
+              CatalogAccessException.class,
+              failure ->
+                  assertThat(failure.code()).isEqualTo(CatalogAccessException.Code.UNSUPPORTED));
     }
     assertThat(fake.credentialCalls).isZero();
   }
@@ -1556,6 +1591,7 @@ class DeltaSharingCatalogClientTest {
     private int listSharesCalls;
     private int listTablesCalls;
     private DeltaSharingException.Failure changeFeedFailure;
+    private DeltaSharingException.Failure describeAtVersionFailure;
     private DeltaSharingException.Failure queryHistoryFailure;
     private int changeFeedStatus = 404;
     private int queryHistoryStatus = 404;
@@ -1563,6 +1599,8 @@ class DeltaSharingCatalogClientTest {
     private Optional<Long> describedVersion = Optional.of(12L);
     private int changeFeedCalls;
     private int queryHistoryCalls;
+    private long queryHistoryStartVersion = -1L;
+    private long queryHistoryEndVersion = -1L;
     private List<HistoricalProtocol> queryHistoryProtocols = List.of();
     private List<TableMetadata> queryHistoryMetadata = List.of();
     private boolean closed;
@@ -1620,6 +1658,10 @@ class DeltaSharingCatalogClientTest {
     @Override
     public TableDescription describeTableAtVersion(
         String share, String schema, String table, long version) {
+      if (describeAtVersionFailure != null) {
+        throw new DeltaSharingException(
+            describeAtVersionFailure, 404, "versioned metadata unavailable");
+      }
       TableDescription current = describeTable(share, schema, table);
       TableMetadata metadata = current.metadata();
       return new TableDescription(
@@ -1653,6 +1695,8 @@ class DeltaSharingCatalogClientTest {
     public TableHistory queryHistory(
         String share, String schema, String table, long startingVersion, long endingVersion) {
       queryHistoryCalls++;
+      queryHistoryStartVersion = startingVersion;
+      queryHistoryEndVersion = endingVersion;
       if (queryHistoryFailure != null) {
         throw new DeltaSharingException(
             queryHistoryFailure, queryHistoryStatus, "history unavailable");

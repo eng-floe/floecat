@@ -21,7 +21,6 @@ import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableHistory;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableMetadata;
 import ai.floedb.floecat.delta.identity.DeltaHistorySource;
 import ai.floedb.floecat.delta.identity.DeltaIdentitySnapshot;
-import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.schema.identity.HistoryTier;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -60,7 +59,7 @@ final class DeltaSharingHistorySource implements DeltaHistorySource {
       TableHistory changes) {
     TableMetadata metadata = base.metadata();
     Protocol protocol = base.protocol();
-    snapshots.put(baseVersion, snapshot(baseVersion, metadata, protocol));
+    snapshots.put(baseVersion, DeltaSharingIdentityActions.snapshot(baseVersion, metadata, protocol));
 
     Map<Long, TableMetadata> metadataByVersion = new TreeMap<>();
     for (TableMetadata action : changes.metadata()) {
@@ -108,22 +107,14 @@ final class DeltaSharingHistorySource implements DeltaHistorySource {
       }
       metadata = metadataByVersion.getOrDefault(version, metadata);
       protocol = protocolByVersion.getOrDefault(version, protocol);
-      snapshots.put(version, snapshot(version, metadata, protocol));
+      snapshots.put(
+          version, DeltaSharingIdentityActions.snapshot(version, metadata, protocol));
       retained.add(version);
     }
-    snapshots.put(headVersion, snapshot(headVersion, head.metadata(), head.protocol()));
+    snapshots.put(
+        headVersion,
+        DeltaSharingIdentityActions.snapshot(headVersion, head.metadata(), head.protocol()));
     return List.copyOf(retained);
-  }
-
-  static DeltaIdentitySnapshot snapshot(long version, TableMetadata metadata, Protocol protocol) {
-    return KernelAdapter.currentSchemaIdentity(
-        version,
-        metadata.schemaJson(),
-        metadata.configuration(),
-        protocol.minReaderVersion(),
-        protocol.minWriterVersion(),
-        Set.copyOf(protocol.readerFeatures()),
-        Set.copyOf(protocol.writerFeatures()));
   }
 
   @Override

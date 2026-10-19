@@ -33,6 +33,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.access.CatalogCapabilities;
+import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogObjectName;
@@ -87,6 +88,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -264,6 +266,15 @@ class CatalogOverlayReconcilerTest {
     var failure = assertThrows(IllegalStateException.class, reconciler::validateConfiguration);
 
     assertTrue(failure.getMessage().contains("lock-wait must be positive"));
+  }
+
+  @Test
+  void rejectsNonPositiveDeltaIdentityTimeoutAtStartup() {
+    reconciler.deltaIdentityTimeout = Duration.ZERO;
+
+    var failure = assertThrows(IllegalStateException.class, reconciler::validateConfiguration);
+
+    assertTrue(failure.getMessage().contains("delta-identity-timeout must be positive"));
   }
 
   @Test
@@ -626,6 +637,83 @@ class CatalogOverlayReconcilerTest {
     assertEquals(0, result.tablesCreated());
     assertTrue(
         tables.getByName("acct", "catalog", namespace.getResourceId().getId(), "orders").isEmpty());
+  }
+
+  @Test
+  void branchLocalDeltaHistoryFailureSkipsOnlyThatTable() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName denied = new CatalogObjectName(sales, "denied");
+    CatalogObjectName readable = new CatalogObjectName(sales, "readable");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(denied, sharedDeltaTable(denied, "denied-id", 42L));
+    client.tables.put(readable, sharedDeltaTable(readable, "readable-id", 42L));
+    client.deltaHistoryFailures.put(
+        denied,
+        new CatalogAccessException(
+            CatalogAccessException.Code.PERMISSION_DENIED, "history denied for this table"));
+
+    var result = reconcile();
+
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    assertEquals(1, result.objectsSkipped());
+    assertEquals(1, result.tablesCreated());
+    assertTrue(
+        tables.getByName("acct", "catalog", namespace.getResourceId().getId(), "denied").isEmpty());
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "readable")
+            .isPresent());
+  }
+
+  @Test
+  void catalogWideDeltaHistoryFailureAbortsThePass() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+    client.deltaHistoryFailures.put(
+        orders,
+        new CatalogAccessException(
+            CatalogAccessException.Code.UNAVAILABLE, "history service unavailable"));
+
+    CatalogAccessException failure = assertThrows(CatalogAccessException.class, this::reconcile);
+
+    assertEquals(CatalogAccessException.Code.UNAVAILABLE, failure.code());
+  }
+
+  @Test
+  void unexpectedDeltaHistoryFailureAbortsThePass() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+    client.deltaHistoryFailures.put(orders, new IllegalStateException("unexpected provider bug"));
+
+    assertThrows(IllegalStateException.class, this::reconcile);
+  }
+
+  @Test
+  void deltaHistoryReadUsesAPerTableUpstreamBudget() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+    reconciler.deltaIdentityTimeout = Duration.ofNanos(1L);
+    AtomicLong budgetClock = new AtomicLong();
+    reconciler.nanoTime = () -> budgetClock.getAndAdd(2L);
+
+    CatalogAccessException failure = assertThrows(CatalogAccessException.class, this::reconcile);
+
+    assertEquals(CatalogAccessException.Code.TIMEOUT, failure.code());
+    assertEquals(0, client.deltaHistoryCalls.get());
   }
 
   @Test
@@ -2145,6 +2233,19 @@ class CatalogOverlayReconcilerTest {
         Map.of());
   }
 
+  private static CatalogTable sharedDeltaTable(
+      CatalogObjectName name, String stableIdentity, long version) {
+    return new CatalogTable(
+        name,
+        ExternalObjectIdentity.stable(stableIdentity),
+        "DELTA",
+        DELTA_SCHEMA_JSON,
+        List.of(),
+        Optional.empty(),
+        Optional.empty(),
+        Map.of("delta.sharing.version", Long.toString(version)));
+  }
+
   private static ResourceId id(String value, ResourceKind kind) {
     return ResourceId.newBuilder().setAccountId("acct").setId(value).setKind(kind).build();
   }
@@ -2155,6 +2256,8 @@ class CatalogOverlayReconcilerTest {
     private final Map<CatalogObjectName, CatalogTable> tables = new java.util.LinkedHashMap<>();
     private final Map<CatalogObjectName, CatalogView> views = new HashMap<>();
     private boolean provideDeltaHistory;
+    private final Map<CatalogObjectName, RuntimeException> deltaHistoryFailures = new HashMap<>();
+    private final AtomicInteger deltaHistoryCalls = new AtomicInteger();
 
     @Override
     public CatalogCapabilities capabilities() {
@@ -2279,6 +2382,11 @@ class CatalogOverlayReconcilerTest {
     @Override
     public Optional<DeltaHistorySource> deltaIdentityHistory(
         CatalogTable table, OptionalLong predecessorVersion) {
+      deltaHistoryCalls.incrementAndGet();
+      RuntimeException failure = deltaHistoryFailures.get(table.name());
+      if (failure != null) {
+        throw failure;
+      }
       if (!provideDeltaHistory) {
         return Optional.empty();
       }

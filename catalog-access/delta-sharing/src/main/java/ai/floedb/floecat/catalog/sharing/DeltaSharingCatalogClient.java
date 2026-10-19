@@ -237,9 +237,7 @@ public final class DeltaSharingCatalogClient
         described.metadata().schemaJson(),
         described.metadata().partitionColumns(),
         Optional.empty(),
-        // Present for directory access and absent otherwise, which is the protocol being explicit
-        // that a url-only recipient is never told where the table lives.
-        storageLocation(addressed, name, listed, described, modes),
+        Optional.of(requireStorageLocation(addressed, name, listed, described, modes)),
         Map.copyOf(properties));
   }
 
@@ -311,7 +309,7 @@ public final class DeltaSharingCatalogClient
       }
     }
 
-    long startVersion = predecessorVersion.orElse(headVersion);
+    long startVersion = Math.min(predecessorVersion.orElse(headVersion), headVersion);
     try {
       TableHistory queryHistory =
           client.queryHistory(
@@ -778,31 +776,6 @@ public final class DeltaSharingCatalogClient
           "Delta Sharing answered for " + qualified + " with credentials that do not reach it");
     }
     return requireServable(stated.orElse(vended), qualified);
-  }
-
-  private Optional<String> storageLocation(
-      Schema addressed,
-      CatalogObjectName name,
-      Table listed,
-      TableDescription described,
-      List<AccessMode> modes) {
-    boolean refusesDirectory =
-        refusesDir(listed.accessModes()) || refusesDir(described.metadata().accessModes());
-    if (refusesDirectory) {
-      boolean unrecognised =
-          onlyUnrecognised(listed.accessModes())
-              || onlyUnrecognised(described.metadata().accessModes());
-      if (unrecognised) {
-        return Optional.of(requireStorageLocation(addressed, name, listed, described, modes));
-      }
-      // URL mode deliberately discloses no object-store location. It is still a valid table for
-      // overlay metadata and canonical identity; reads and overlay capture use Sharing endpoints.
-      return Optional.empty();
-    }
-    if (modes.isEmpty() && strictAccessModes) {
-      return Optional.empty();
-    }
-    return Optional.of(requireStorageLocation(addressed, name, listed, described, modes));
   }
 
   /**

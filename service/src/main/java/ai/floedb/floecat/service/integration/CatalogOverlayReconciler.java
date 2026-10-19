@@ -97,6 +97,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -149,6 +150,13 @@ public class CatalogOverlayReconciler {
   @ConfigProperty(name = "floecat.catalog-overlay.reconcile.lock-wait", defaultValue = "100ms")
   Duration reconcileLockWait = Duration.ofMillis(100);
 
+  @ConfigProperty(
+      name = "floecat.catalog-overlay.reconcile.delta-identity-timeout",
+      defaultValue = "30s")
+  Duration deltaIdentityTimeout = Duration.ofSeconds(30);
+
+  LongSupplier nanoTime = System::nanoTime;
+
   // One entry per active or waiting overlay. This is instance-local load control; the repository
   // fences remain the correctness boundary when different service instances reconcile the same
   // overlay. Reference counts change only under map.compute, and an entry is removed after its last
@@ -167,6 +175,10 @@ public class CatalogOverlayReconciler {
     if (reconcileLockWait.isNegative() || reconcileLockWait.isZero()) {
       throw new IllegalStateException(
           "floecat.catalog-overlay.reconcile.lock-wait must be positive");
+    }
+    if (deltaIdentityTimeout.isNegative() || deltaIdentityTimeout.isZero()) {
+      throw new IllegalStateException(
+          "floecat.catalog-overlay.reconcile.delta-identity-timeout must be positive");
     }
   }
 
@@ -985,42 +997,53 @@ public class CatalogOverlayReconciler {
 
   private ColumnIdentityMap reconcileDeltaIdentity(
       CatalogTable source, Table current, CatalogClient client, Table desired) {
+    CatalogUpstreamBudget budget =
+        CatalogUpstreamBudget.start(deltaIdentityTimeout, nanoTime);
     try {
       Optional<ColumnIdentityMap> tableMap =
           current != null && current.hasColumnIdentityMap()
               ? Optional.of(current.getColumnIdentityMap())
               : Optional.empty();
+      OptionalLong predecessorVersion = persistedSourceVersion(tableMap, source.name());
       PersistedIdentityLookup persisted = PersistedIdentityLookup.forTableMap(tableMap);
       Optional<String> tablePath = source.storageLocation();
       if (tablePath.isPresent()) {
         String path = tablePath.orElseThrow();
-        Map<String, String> properties = fileIoProperties.resolve(desired, path);
-        VendedStorageCredentials credentials =
-            new VendedStorageCredentials(properties, path, Optional.empty());
-        try (var opened = DeltaLogEngineFactory.open(credentials)) {
-          var deltaTable = io.delta.kernel.Table.forPath(opened.engine(), path);
-          var history =
-              new DeltaLogHistorySource(
-                  source.name().toString(), path, deltaTable, opened.engine());
-          return reconciledHeadMap(history, persisted);
-        }
+        return budget.call(
+            () -> {
+              Map<String, String> properties = fileIoProperties.resolve(desired, path);
+              VendedStorageCredentials credentials =
+                  new VendedStorageCredentials(properties, path, Optional.empty());
+              try (var opened = DeltaLogEngineFactory.open(credentials)) {
+                var deltaTable = io.delta.kernel.Table.forPath(opened.engine(), path);
+                var history =
+                    new DeltaLogHistorySource(
+                        source.name().toString(), path, deltaTable, opened.engine());
+                return reconciledHeadMap(history, persisted);
+              } catch (RuntimeException failure) {
+                throw failure;
+              } catch (Exception failure) {
+                throw new CatalogAccessException(
+                    CatalogAccessException.Code.INTERNAL,
+                    "Delta identity engine cleanup failed for table " + source.name(),
+                    failure);
+              }
+            });
       }
       if (client instanceof DeltaIdentityHistoryProvider provider) {
-        OptionalLong predecessorVersion =
-            tableMap.isEmpty()
-                ? OptionalLong.empty()
-                : OptionalLong.of(
-                    ColumnIdentityMaps.restore(tableMap.orElseThrow()).sourceVersion());
-        var history =
-            provider
-                .deltaIdentityHistory(source, predecessorVersion)
-                .orElseThrow(
-                    () ->
-                        new TableIdentityException(
-                            "SOURCE_ERROR for table "
-                                + source.name()
-                                + ": catalog exposes no ordered Delta identity history"));
-        return reconciledHeadMap(history, persisted);
+        return budget.call(
+            () -> {
+              var history =
+                  provider
+                      .deltaIdentityHistory(source, predecessorVersion)
+                      .orElseThrow(
+                          () ->
+                              new TableIdentityException(
+                                  "SOURCE_ERROR for table "
+                                      + source.name()
+                                      + ": catalog exposes no ordered Delta identity history"));
+              return reconciledHeadMap(history, persisted);
+            });
       }
       throw new TableIdentityException(
           "SOURCE_ERROR for table "
@@ -1028,9 +1051,26 @@ public class CatalogOverlayReconciler {
               + ": Delta transaction-log location is unavailable");
     } catch (CancellationException | TableIdentityException failure) {
       throw failure;
-    } catch (Exception failure) {
+    } catch (CatalogAccessException failure) {
+      if (!CatalogTraversalFailures.describesOneBranch(failure)) {
+        throw failure;
+      }
       throw new TableIdentityException(
           "SOURCE_ERROR for table " + source.name() + ": " + failure.getMessage(), failure);
+    }
+  }
+
+  private static OptionalLong persistedSourceVersion(
+      Optional<ColumnIdentityMap> tableMap, CatalogObjectName tableName) {
+    if (tableMap.isEmpty()) {
+      return OptionalLong.empty();
+    }
+    try {
+      return OptionalLong.of(ColumnIdentityMaps.restore(tableMap.orElseThrow()).sourceVersion());
+    } catch (IllegalArgumentException invalid) {
+      throw new TableIdentityException(
+          "INVALID_PERSISTED_STATE for table " + tableName + ": " + invalid.getMessage(),
+          invalid);
     }
   }
 

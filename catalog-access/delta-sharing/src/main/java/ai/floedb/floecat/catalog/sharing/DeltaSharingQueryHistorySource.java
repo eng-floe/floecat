@@ -22,7 +22,6 @@ import ai.floedb.floecat.delta.identity.DeltaIdentitySnapshot;
 import ai.floedb.floecat.schema.identity.HistoryTier;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 
 /** Current schema plus unversioned query history, sufficient to recognize a data-only range. */
 final class DeltaSharingQueryHistorySource implements DeltaHistorySource {
@@ -40,22 +39,14 @@ final class DeltaSharingQueryHistorySource implements DeltaHistorySource {
     this.unorderedHistory =
         new UnorderedHistory(
             history.metadata().stream()
-                .map(
-                    metadata ->
-                        new HistoricalMetadata(metadata.schemaJson(), metadata.configuration()))
+                .map(DeltaSharingIdentityActions::metadata)
                 .toList(),
             history.protocols().stream()
                 .map(historical -> historical.protocol())
-                .map(
-                    protocol ->
-                        new HistoricalProtocol(
-                            protocol.minReaderVersion(),
-                            protocol.minWriterVersion(),
-                            Set.copyOf(protocol.readerFeatures()),
-                            Set.copyOf(protocol.writerFeatures())))
+                .map(DeltaSharingIdentityActions::protocol)
                 .toList());
     this.head =
-        DeltaSharingHistorySource.snapshot(headVersion, current.metadata(), current.protocol());
+        DeltaSharingIdentityActions.snapshot(headVersion, current.metadata(), current.protocol());
   }
 
   @Override
