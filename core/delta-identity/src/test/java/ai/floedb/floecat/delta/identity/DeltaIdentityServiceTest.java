@@ -226,6 +226,69 @@ class DeltaIdentityServiceTest {
   }
 
   @Test
+  void unmappedHistoryGapIsRejected() {
+    Snapshot previousSnapshot = snapshot(1L, UNMAPPED_A, Map.of());
+    ColumnIdentityMap previous =
+        reconcile(
+            new TestHistorySource(
+                1L, HistoryTier.VERSIONED_LOG, Map.of(1L, previousSnapshot), List.of(1L)),
+            Optional.empty());
+    Snapshot current = snapshot(3L, UNMAPPED_AB, Map.of());
+    DeltaHistorySource gapped =
+        new TestHistorySource(
+            3L, HistoryTier.VERSIONED_LOG, Map.of(3L, current), List.of(3L)) {
+          @Override
+          public MetadataHistory metadataVersions(long firstVersion, long lastVersion) {
+            return MetadataHistory.gap("history-unavailable");
+          }
+        };
+
+    IdentityResult result = service.reconcileCurrent(gapped, lookup(Optional.of(previous)));
+
+    assertThat(result.maps()).isEmpty();
+    assertThat(result.failures())
+        .singleElement()
+        .satisfies(
+            failure -> {
+              assertThat(failure.kind()).isEqualTo(IdentityResult.Failure.Kind.SOURCE_ERROR);
+              assertThat(failure.message())
+                  .contains("Cannot reconcile unmapped Delta column identity")
+                  .contains("history-unavailable");
+            });
+  }
+
+  @Test
+  void mappedHistoryGapReconcilesByNativeFieldId() {
+    Snapshot previousSnapshot =
+        snapshot(1L, mappedSchema(field("a", "long", 1)), mappedProperties(1));
+    ColumnIdentityMap previous =
+        reconcile(
+            new TestHistorySource(
+                1L, HistoryTier.VERSIONED_LOG, Map.of(1L, previousSnapshot), List.of(1L)),
+            Optional.empty());
+    Snapshot current =
+        snapshot(
+            3L,
+            mappedSchema(field("renamed", "long", 1), field("b", "string", 2)),
+            mappedProperties(2));
+    DeltaHistorySource gapped =
+        new TestHistorySource(
+            3L, HistoryTier.VERSIONED_LOG, Map.of(3L, current), List.of(3L)) {
+          @Override
+          public MetadataHistory metadataVersions(long firstVersion, long lastVersion) {
+            return MetadataHistory.gap("history-unavailable");
+          }
+        };
+
+    IdentityResult result = service.reconcileCurrent(gapped, lookup(Optional.of(previous)));
+
+    assertThat(result.failures()).isEmpty();
+    ColumnIdentityMap reconciled = result.maps().get(3L);
+    assertThat(columnId(reconciled, "renamed")).isEqualTo(columnId(previous, "a"));
+    assertThat(columnId(reconciled, "b")).isGreaterThan(previous.getHighWaterMark());
+  }
+
+  @Test
   void predecessorGapStillUsesIdentityProvenContinuousToSuccessor() {
     Snapshot version10 = snapshot(10L, UNMAPPED_A, Map.of());
     Snapshot version20 = snapshot(20L, UNMAPPED_A, Map.of());

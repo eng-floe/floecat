@@ -195,8 +195,14 @@ public final class DeltaIdentityService {
     DeltaHistorySource.MetadataHistory metadata =
         history.metadataVersions(state.sourceVersion() + 1L, version);
     if (!metadata.complete()) {
-      return startGeneration(
-          selected, version, entry.getValue(), highWaterMark, preferred, history.historyTier());
+      return reconcileAcrossHistoryGap(
+          history,
+          version,
+          selected,
+          entry.getValue(),
+          highWaterMark,
+          preferred,
+          metadata.reason());
     }
 
     List<MetadataStep> steps = new ArrayList<>(metadata.versions().size());
@@ -204,8 +210,14 @@ public final class DeltaIdentityService {
       DeltaIdentitySnapshot metadataSnapshot =
           metadataVersion == version ? selected : history.snapshot(metadataVersion).orElse(null);
       if (metadataSnapshot == null) {
-        return startGeneration(
-            selected, version, entry.getValue(), highWaterMark, preferred, history.historyTier());
+        return reconcileAcrossHistoryGap(
+            history,
+            version,
+            selected,
+            entry.getValue(),
+            highWaterMark,
+            preferred,
+            "metadata snapshot " + metadataVersion + " is unavailable");
       }
       steps.add(new MetadataStep(metadataVersion, metadataSnapshot));
     }
@@ -249,6 +261,33 @@ public final class DeltaIdentityService {
         selected,
         version,
         weakerTier(ColumnIdentityMaps.restore(current).historyTier(), history.historyTier()));
+  }
+
+  private static ColumnIdentityMap reconcileAcrossHistoryGap(
+      DeltaHistorySource history,
+      long version,
+      DeltaIdentitySnapshot selected,
+      ColumnIdentityMap previous,
+      long highWaterMark,
+      PreferredCanonicalIds preferred,
+      String reason) {
+    SchemaIdentityState state = ColumnIdentityMaps.restore(previous);
+    if (state.mode() == IdentityMode.STRUCTURED_PATH
+        && mode(selected) == IdentityMode.STRUCTURED_PATH) {
+      if (!preferred.equals(PreferredCanonicalIds.NONE)) {
+        // A complete selected-to-successor range can prove the selected identity even when the
+        // predecessor-to-selected range has been retained away.
+        return startGeneration(
+            selected, version, previous, highWaterMark, preferred, history.historyTier());
+      }
+      throw new IllegalStateException(
+          "Cannot reconcile unmapped Delta column identity across incomplete metadata history"
+              + (reason == null || reason.isBlank() ? "" : ": " + reason));
+    }
+    // Native field IDs remain authoritative across a history gap. Mode changes and unsafe native
+    // counter reuse are still handled as generation boundaries by the no-history reconciler.
+    return reconcileWithoutOrderedHistory(
+        history, version, selected, previous, highWaterMark, preferred);
   }
 
   static Map<Long, PreferredCanonicalIds> preferredByMetadataVersion(
