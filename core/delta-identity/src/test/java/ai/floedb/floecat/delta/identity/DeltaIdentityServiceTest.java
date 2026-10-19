@@ -235,8 +235,7 @@ class DeltaIdentityServiceTest {
             Optional.empty());
     Snapshot current = snapshot(3L, UNMAPPED_AB, Map.of());
     DeltaHistorySource gapped =
-        new TestHistorySource(
-            3L, HistoryTier.VERSIONED_LOG, Map.of(3L, current), List.of(3L)) {
+        new TestHistorySource(3L, HistoryTier.VERSIONED_LOG, Map.of(3L, current), List.of(3L)) {
           @Override
           public MetadataHistory metadataVersions(long firstVersion, long lastVersion) {
             return MetadataHistory.gap("history-unavailable");
@@ -272,8 +271,7 @@ class DeltaIdentityServiceTest {
             mappedSchema(field("renamed", "long", 1), field("b", "string", 2)),
             mappedProperties(2));
     DeltaHistorySource gapped =
-        new TestHistorySource(
-            3L, HistoryTier.VERSIONED_LOG, Map.of(3L, current), List.of(3L)) {
+        new TestHistorySource(3L, HistoryTier.VERSIONED_LOG, Map.of(3L, current), List.of(3L)) {
           @Override
           public MetadataHistory metadataVersions(long firstVersion, long lastVersion) {
             return MetadataHistory.gap("history-unavailable");
