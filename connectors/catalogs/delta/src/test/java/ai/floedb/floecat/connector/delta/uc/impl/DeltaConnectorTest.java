@@ -230,7 +230,7 @@ class DeltaConnectorTest {
   }
 
   @Test
-  void unavailableUnmappedHistoryResetsAbovePersistedHighWaterMark() {
+  void unavailableUnmappedHistoryIsRejected() {
     StructType schema = new StructType().add("id", LongType.LONG, false);
     Snapshot v100 = snapshot(100L, 100000L, schema);
     Snapshot latest = snapshot(103L, 103000L, schema);
@@ -239,25 +239,28 @@ class DeltaConnectorTest {
             new StubTable(latest, Map.of(103L, latest), Map.of(101L, truncatedHistory(103L))));
     connector.setMetadataHistory(DeltaHistorySource.MetadataHistory.gap("history-unavailable"));
 
-    List<FloecatConnector.SnapshotBundle> bundles =
-        connector
-            .enumerateSnapshots(
-                "ns",
-                "tbl",
-                ResourceId.getDefaultInstance(),
-                new FloecatConnector.SnapshotEnumerationOptions(
-                    false,
-                    Set.of(100L),
-                    Set.of(),
-                    FloecatConnector.SnapshotSelectionKind.CURRENT,
-                    Set.of(),
-                    0,
-                    Map.of(100L, freshIdentity(v100)),
-                    0L))
-            .toList();
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                connector
+                    .enumerateSnapshots(
+                        "ns",
+                        "tbl",
+                        ResourceId.getDefaultInstance(),
+                        new FloecatConnector.SnapshotEnumerationOptions(
+                            false,
+                            Set.of(100L),
+                            Set.of(),
+                            FloecatConnector.SnapshotSelectionKind.CURRENT,
+                            Set.of(),
+                            0,
+                            Map.of(100L, freshIdentity(v100)),
+                            0L))
+                    .toList());
 
-    assertEquals(2L, bundles.getFirst().columnIdentityMap().getEntries(0).getColumnId());
-    assertEquals(2L, bundles.getFirst().columnIdentityMap().getHighWaterMark());
+    assertTrue(error.getMessage().contains("incomplete metadata history"));
+    assertTrue(error.getMessage().contains("history-unavailable"));
   }
 
   @Test

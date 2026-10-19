@@ -101,6 +101,47 @@ class QueuedReconcileWorkerSupport {
       String sourceTable,
       FloecatConnector.SnapshotBundle bundle) {}
 
+  record IdentityEnumerationContext(
+      boolean enabled,
+      Set<Long> existingSnapshotIds,
+      Map<Long, ColumnIdentityMap> persistedMaps,
+      long persistedHighWaterMark) {
+    IdentityEnumerationContext {
+      existingSnapshotIds = Set.copyOf(existingSnapshotIds);
+      persistedMaps = Map.copyOf(persistedMaps);
+    }
+
+    static IdentityEnumerationContext disabled(Set<Long> existingSnapshotIds) {
+      return new IdentityEnumerationContext(false, existingSnapshotIds, Map.of(), 0L);
+    }
+
+    static IdentityEnumerationContext canonical(
+        ReconcilerBackend.SnapshotIdentityHistory history) {
+      return new IdentityEnumerationContext(
+          true, history.snapshotIds(), history.columnIdentityMaps(), history.highWaterMark());
+    }
+
+    static IdentityEnumerationContext canonical() {
+      return new IdentityEnumerationContext(true, Set.of(), Map.of(), 0L);
+    }
+
+    FloecatConnector.SnapshotEnumerationOptions applyTo(
+        FloecatConnector.SnapshotEnumerationOptions options) {
+      if (!enabled) {
+        return options;
+      }
+      return new FloecatConnector.SnapshotEnumerationOptions(
+          options.fullRescan(),
+          options.knownSnapshotIds(),
+          options.targetSnapshotIds(),
+          options.selectionKind(),
+          options.selectionSnapshotIds(),
+          options.latestN(),
+          persistedMaps,
+          persistedHighWaterMark);
+    }
+  }
+
   @Inject ReconcilerService reconcilerService;
   @Inject ReconcilerBackend backend;
   @Inject LogicalSchemaMapper schemaMapper;
@@ -1098,17 +1139,13 @@ class QueuedReconcileWorkerSupport {
     boolean canonicalDelta =
         connector.format() == ConnectorFormat.CF_DELTA
             && upstream.columnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP;
-    ReconcilerBackend.SnapshotIdentityHistory identityHistory =
-        canonicalDelta ? backend.snapshotIdentityHistory(ctx, tableId) : null;
-    Set<Long> existingSnapshotIds =
-        identityHistory == null
-            ? backend.existingSnapshotIds(ctx, tableId)
-            : identityHistory.snapshotIds();
-    Map<Long, ai.floedb.floecat.catalog.rpc.ColumnIdentityMap> persistedColumnIdentityMaps =
-        identityHistory == null ? Map.of() : identityHistory.columnIdentityMaps();
-    long persistedIdentityHighWaterMark =
-        identityHistory == null ? 0L : identityHistory.highWaterMark();
-    Set<Long> knownSnapshotIds = (captureOnly || !fullRescan) ? existingSnapshotIds : Set.of();
+    IdentityEnumerationContext identityContext =
+        canonicalDelta
+            ? IdentityEnumerationContext.canonical(
+                backend.snapshotIdentityHistory(ctx, tableId))
+            : IdentityEnumerationContext.disabled(backend.existingSnapshotIds(ctx, tableId));
+    Set<Long> knownSnapshotIds =
+        (captureOnly || !fullRescan) ? identityContext.existingSnapshotIds() : Set.of();
     // Capture modes still require a policy even though durable content state now decides
     // completeness.
     ReconcilerService.effectiveCapturePolicy(scope, captureMode);
@@ -1139,15 +1176,13 @@ class QueuedReconcileWorkerSupport {
                     scope,
                     tableId,
                     tableScopedConnector,
-                    canonicalDelta,
+                    identityContext,
                     table.sourceNamespace(),
                     table.sourceTable(),
                     enumerationSelection,
                     enumerationFullRescan,
                     includeCoreMetadata,
                     knownSnapshotIds,
-                    persistedColumnIdentityMaps,
-                    persistedIdentityHighWaterMark,
                     enumerationKnownSnapshotIds,
                     enumerationTargetSnapshotIds,
                     cancelRequested,
@@ -1166,15 +1201,13 @@ class QueuedReconcileWorkerSupport {
                   scope,
                   tableId,
                   connector,
-                  canonicalDelta,
+                  identityContext,
                   table.sourceNamespace(),
                   table.sourceTable(),
                   enumerationSelection,
                   enumerationFullRescan,
                   includeCoreMetadata,
                   knownSnapshotIds,
-                  persistedColumnIdentityMaps,
-                  persistedIdentityHighWaterMark,
                   enumerationKnownSnapshotIds,
                   enumerationTargetSnapshotIds,
                   cancelRequested,
@@ -1322,14 +1355,14 @@ class QueuedReconcileWorkerSupport {
   private boolean ensureSnapshot(
       ReconcileContext ctx,
       ResourceId tableId,
-      boolean canonicalDelta,
+      IdentityEnumerationContext identityContext,
       FloecatConnector.SnapshotBundle snapshotBundle,
       Snapshot existing) {
     if (snapshotBundle == null || snapshotBundle.snapshotId() < 0) {
       return false;
     }
     Optional<Snapshot> snapshot =
-        buildSnapshot(ctx, tableId, canonicalDelta, snapshotBundle, existing);
+        buildSnapshot(ctx, tableId, identityContext, snapshotBundle, existing);
     snapshot.ifPresent(candidate -> backend.ingestSnapshot(ctx, tableId, candidate));
     return snapshot.isPresent();
   }
@@ -1338,7 +1371,7 @@ class QueuedReconcileWorkerSupport {
       ReconcileContext ctx,
       ResourceId tableId,
       FloecatConnector connector,
-      boolean canonicalDelta,
+      IdentityEnumerationContext identityContext,
       List<FloecatConnector.SnapshotBundle> bundles,
       Set<Long> knownSnapshotIds,
       boolean includeCoreMetadata,
@@ -1380,7 +1413,7 @@ class QueuedReconcileWorkerSupport {
             statsProcessedBase,
             "Processing snapshot " + snapshotId + " for " + sourceNs + "." + sourceTable);
         boolean snapshotChanged =
-            ensureSnapshot(ctx, tableId, canonicalDelta, snapshotBundle, existingSnapshot);
+            ensureSnapshot(ctx, tableId, identityContext, snapshotBundle, existingSnapshot);
         boolean constraintsChanged =
             maybeIngestSnapshotConstraints(
                 ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
@@ -1398,15 +1431,13 @@ class QueuedReconcileWorkerSupport {
       ReconcileScope scope,
       ResourceId tableId,
       FloecatConnector connector,
-      boolean canonicalDelta,
+      IdentityEnumerationContext identityContext,
       String sourceNs,
       String sourceTable,
       ReconcileSnapshotSelection enumerationSelection,
       boolean enumerationFullRescan,
       boolean includeCoreMetadata,
       Set<Long> knownSnapshotIds,
-      Map<Long, ai.floedb.floecat.catalog.rpc.ColumnIdentityMap> persistedColumnIdentityMaps,
-      long persistedIdentityHighWaterMark,
       Set<Long> enumerationKnownSnapshotIds,
       Set<Long> targetSnapshotIds,
       BooleanSupplier cancelRequested,
@@ -1423,19 +1454,8 @@ class QueuedReconcileWorkerSupport {
             enumerationFullRescan,
             enumerationKnownSnapshotIds,
             targetSnapshotIds);
-    FloecatConnector.SnapshotEnumerationOptions enumerationOptions = baseEnumerationOptions;
-    if (canonicalDelta) {
-      enumerationOptions =
-          new FloecatConnector.SnapshotEnumerationOptions(
-              baseEnumerationOptions.fullRescan(),
-              baseEnumerationOptions.knownSnapshotIds(),
-              baseEnumerationOptions.targetSnapshotIds(),
-              baseEnumerationOptions.selectionKind(),
-              baseEnumerationOptions.selectionSnapshotIds(),
-              baseEnumerationOptions.latestN(),
-              persistedColumnIdentityMaps,
-              persistedIdentityHighWaterMark);
-    }
+    FloecatConnector.SnapshotEnumerationOptions enumerationOptions =
+        identityContext.applyTo(baseEnumerationOptions);
     long[] snapshotsProcessed = {0L};
     boolean[] tableChanged = {false};
     long[] skipped = {0L};
@@ -1463,7 +1483,7 @@ class QueuedReconcileWorkerSupport {
                     ctx,
                     tableId,
                     connector,
-                    canonicalDelta,
+                    identityContext,
                     List.of(bundle),
                     knownSnapshotIds,
                     includeCoreMetadata,
@@ -1693,7 +1713,7 @@ class QueuedReconcileWorkerSupport {
   Optional<Snapshot> buildSnapshot(
       ReconcileContext ctx,
       ResourceId tableId,
-      boolean canonicalDelta,
+      IdentityEnumerationContext identityContext,
       FloecatConnector.SnapshotBundle bundle,
       Snapshot existing) {
     long parentSnapshotId = bundle.parentId();
@@ -1717,7 +1737,7 @@ class QueuedReconcileWorkerSupport {
             .setTableId(tableId)
             .setSnapshotId(bundle.snapshotId())
             .setUpstreamCreatedAt(upstreamTimestamp);
-    if (canonicalDelta) {
+    if (identityContext.enabled()) {
       if (bundle.columnIdentityMap() == null
           || bundle
               .columnIdentityMap()

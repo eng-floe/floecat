@@ -1112,7 +1112,8 @@ class GrpcReconcilerBackendTest {
               CaptureEngineRequest request,
               ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer
                   fileResultConsumer) {
-            return Optional.of(CaptureEngineResult.of(stats, List.of(), List.of()));
+            return Optional.of(
+                CaptureEngineResult.of(stats, List.of(), List.of(), List.of("#7", "name")));
           }
         };
     backend.captureEngineRegistry = new CaptureEngineRegistry(List.of(captureEngine));
@@ -1135,6 +1136,7 @@ class GrpcReconcilerBackendTest {
                 false));
 
     assertThat(result.statsRecords()).isEqualTo(stats);
+    assertThat(result.realizedStatsSelectors()).containsExactly("#7", "name");
     verify(source).close();
   }
 

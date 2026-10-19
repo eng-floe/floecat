@@ -44,6 +44,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBase {
@@ -74,7 +75,14 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
 
     assertThatThrownBy(
-            () -> queuedWorkerSupport().buildSnapshot(ctx, tableId, true, bundle, existing))
+            () ->
+                queuedWorkerSupport()
+                    .buildSnapshot(
+                        ctx,
+                        tableId,
+                        QueuedReconcileWorkerSupport.IdentityEnumerationContext.canonical(),
+                        bundle,
+                        existing))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("without a column identity map");
   }
@@ -111,7 +119,15 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     ReconcileContext ctx =
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
 
-    assertThatThrownBy(() -> queuedWorkerSupport().buildSnapshot(ctx, tableId, true, bundle, null))
+    assertThatThrownBy(
+            () ->
+                queuedWorkerSupport()
+                    .buildSnapshot(
+                        ctx,
+                        tableId,
+                        QueuedReconcileWorkerSupport.IdentityEnumerationContext.canonical(),
+                        bundle,
+                        null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("fingerprint does not match");
   }
@@ -169,7 +185,14 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     ReconcileContext ctx =
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.<String>empty());
     Snapshot result =
-        queuedWorkerSupport().buildSnapshot(ctx, tableId, false, bundle, existing).orElseThrow();
+        queuedWorkerSupport()
+            .buildSnapshot(
+                ctx,
+                tableId,
+                QueuedReconcileWorkerSupport.IdentityEnumerationContext.disabled(Set.of()),
+                bundle,
+                existing)
+            .orElseThrow();
 
     assertThat(result.getManifestList()).isEqualTo(existing.getManifestList());
     assertThat(result.getSchemaJson()).isEqualTo(existing.getSchemaJson());
@@ -198,7 +221,14 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
 
     Snapshot result =
-        queuedWorkerSupport().buildSnapshot(ctx, tableId, false, bundle, null).orElseThrow();
+        queuedWorkerSupport()
+            .buildSnapshot(
+                ctx,
+                tableId,
+                QueuedReconcileWorkerSupport.IdentityEnumerationContext.disabled(Set.of()),
+                bundle,
+                null)
+            .orElseThrow();
 
     assertThat(result.hasParentSnapshotId()).isTrue();
     assertThat(result.getParentSnapshotId()).isZero();
