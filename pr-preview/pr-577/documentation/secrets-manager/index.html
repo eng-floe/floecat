@@ -1873,6 +1873,7 @@ secrets are the only credential source used for client credential vending.</p>
 <p>Settings:</p>
 <ul>
 <li><code>floecat.secrets.aws.role-arn</code> (optional)</li>
+<li><code>floecat.storage.aws.secrets.cache.enabled</code> (default <code>true</code>)</li>
 <li><code>floecat.secrets.cache.ttl</code> (default <code>PT30S</code>)</li>
 <li><code>floecat.secrets.cache.max-entries</code> (default <code>1024</code>)</li>
 </ul>
@@ -1886,13 +1887,18 @@ secrets are the only credential source used for client credential vending.</p>
 <p>Secrets Manager reads are cached locally in each Floecat process. The cache includes both found
 values and missing-secret results, is bounded by <code>floecat.secrets.cache.max-entries</code>, and expires
 entries after <code>floecat.secrets.cache.ttl</code>. Concurrent reads for the same secret share one
-Secrets Manager request. Failed requests are not cached. Successful create, update, and delete
-operations invalidate the corresponding local entry, and cached payloads are defensively copied.
-Reads publish the common <code>floecat_core_cache_*</code> hit, miss, load-latency, and error series with
-<code>cache="secrets-manager-result"</code>.</p>
+Secrets Manager request. Failed requests are not cached. Every create, update, and delete attempt
+invalidates the corresponding local entry, including partial-success failure paths, and cached
+payloads are defensively copied. Reads publish the common <code>floecat_core_cache_*</code> enabled, hit,
+miss, load-latency, and error series with <code>cache="secrets-manager-result"</code>.</p>
+<p>Set <code>floecat.storage.aws.secrets.cache.enabled=false</code> (environment variable
+<code>FLOECAT_STORAGE_AWS_SECRETS_CACHE_ENABLED=false</code>) to bypass the cache without changing the image.
+Disabled reads go directly to Secrets Manager and retain no result payloads. The setting is fixed
+for the life of the process, so restart the process after changing it.</p>
 <p>The cache is not coordinated across Floecat processes. A secret changed through another process or
 directly in AWS can therefore remain stale until the local TTL expires. Use an ISO-8601 duration
-such as <code>PT30S</code> for the TTL; both settings must be positive.</p>
+such as <code>PT30S</code> for the TTL; the TTL and maximum-entry settings must be positive while the cache is
+enabled.</p>
 <h2 id="required-iam-permissions-base">Required IAM permissions (base)<a class="headerlink" href="#required-iam-permissions-base" title="Permanent link">&para;</a></h2>
 <p>The IAM identity Floecat runs under must be allowed to call Secrets Manager APIs. A minimal base policy looks like:</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
