@@ -269,6 +269,15 @@ public class MetadataCaches {
     return events(new CacheMetrics(observability, "service", operation, cacheName));
   }
 
+  /** Hit, miss and load events plus an enabled gauge for a startup-configured cache. */
+  public static CacheEvents cacheEvents(
+      Observability observability, String operation, String cacheName, boolean enabled) {
+    CacheMetrics metrics = new CacheMetrics(observability, "service", operation, cacheName);
+    metrics.trackEnabled(
+        () -> enabled ? 1.0 : 0.0, "Whether the " + cacheName + " cache is enabled");
+    return events(metrics);
+  }
+
   /**
    * Counts hits and misses and times the loads. Enough, with the gauges below, to answer the
    * questions asked of a cache that is behaving oddly: whether it is on, whether it is being used,

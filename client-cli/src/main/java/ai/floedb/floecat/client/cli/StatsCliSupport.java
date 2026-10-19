@@ -643,8 +643,8 @@ final class StatsCliSupport {
           Long.toString(scalar.getRowCount()),
           Long.toString(nullCount),
           Long.toString(nanCount),
-          CliUtils.trunc(scalar.getMin(), 24),
-          CliUtils.trunc(scalar.getMax(), 24),
+          CliUtils.trunc(formatTypedBound(scalar, true), 24),
+          CliUtils.trunc(formatTypedBound(scalar, false), 24),
           scalar.hasNdv() ? CliUtils.ndvToString(scalar.getNdv()) : "-",
           scalar.hasNdv() ? scalar.getNdv().getSketchesCount() : "-");
     }
@@ -688,11 +688,25 @@ final class StatsCliSupport {
               Long.toString(scalar.getRowCount()),
               nullCount,
               nanCount,
-              CliUtils.trunc(scalar.getMin(), 20),
-              CliUtils.trunc(scalar.getMax(), 20),
+              CliUtils.trunc(formatTypedBound(scalar, true), 20),
+              CliUtils.trunc(formatTypedBound(scalar, false), 20),
               ndv);
         }
       }
+    }
+  }
+
+  private static String formatTypedBound(ScalarStats scalar, boolean minimum) {
+    if (minimum ? !scalar.hasMinValue() : !scalar.hasMaxValue()) {
+      return "";
+    }
+    try {
+      var type = LogicalTypeProtoAdapter.columnLogicalType(scalar);
+      var encoded = minimum ? scalar.getMinValue() : scalar.getMaxValue();
+      Object value = LogicalTypeProtoAdapter.decodeValue(type, encoded);
+      return value == null ? "" : LogicalTypeProtoAdapter.encodeValue(type, value);
+    } catch (RuntimeException ignored) {
+      return "";
     }
   }
 

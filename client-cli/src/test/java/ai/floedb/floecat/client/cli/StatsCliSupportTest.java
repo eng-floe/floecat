@@ -193,6 +193,56 @@ class StatsCliSupportTest {
   }
 
   @Test
+  void statsColumnsPrintsTypedBoundsWithoutLegacyStrings() throws Exception {
+    try (Harness h = new Harness()) {
+      var type =
+          ai.floedb.floecat.types.rpc.LogicalType.newBuilder()
+              .setKind(ai.floedb.floecat.types.rpc.LogicalType.Kind.TK_INT)
+              .build();
+      var scalar =
+          ai.floedb.floecat.catalog.rpc.ScalarStats.newBuilder()
+              .setLogicalType("INT")
+              .setType(type)
+              .setMin("12345")
+              .setMax("67890")
+              .setMinValue(ai.floedb.floecat.types.rpc.ScalarValue.newBuilder().setI64(7).build())
+              .setMaxValue(ai.floedb.floecat.types.rpc.ScalarValue.newBuilder().setI64(99).build())
+              .build();
+      h.statisticsService.listTargetStatsPages =
+          List.of(
+              ListTargetStatsResponse.newBuilder()
+                  .addRecords(
+                      TargetStatsRecord.newBuilder()
+                          .setTableId(tableId())
+                          .setTarget(
+                              ai.floedb.floecat.catalog.rpc.StatsTarget.newBuilder()
+                                  .setColumn(
+                                      ai.floedb.floecat.catalog.rpc.ColumnStatsTarget.newBuilder()
+                                          .setColumnId(42)))
+                          .setScalar(scalar))
+                  .build());
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      StatsCliSupport.handle(
+          "stats",
+          List.of("columns", "catalog.ns.tbl"),
+          new PrintStream(buf),
+          h.statisticsStub,
+          h.indexesStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      String out = buf.toString();
+      assertTrue(out.contains("7"));
+      assertTrue(out.contains("99"));
+      assertTrue(!out.contains("12345"));
+      assertTrue(!out.contains("67890"));
+    }
+  }
+
+  @Test
   void statsColumnsPrintsUsageWhenNoArgs() throws Exception {
     try (Harness h = new Harness()) {
       ByteArrayOutputStream buf = new ByteArrayOutputStream();

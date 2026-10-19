@@ -17,13 +17,19 @@
 package ai.floedb.floecat.storage.aws.secrets;
 
 import ai.floedb.floecat.aws.RefreshingAwsClient;
+import ai.floedb.floecat.cache.CacheEvents;
+import ai.floedb.floecat.cache.CaffeineCoalescingExpiringCache;
+import ai.floedb.floecat.cache.CoalescingExpiringCache;
 import ai.floedb.floecat.storage.aws.AwsClients;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import io.quarkus.arc.profile.IfBuildProfile;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
@@ -31,6 +37,7 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
@@ -53,6 +60,8 @@ public class ProdSecretsManager implements SecretsManager {
   private static final String ACCOUNT_ID_TAG = "AccountId";
   private static final int MAX_ROLE_SESSION_LENGTH = 64;
   private static final String ROLE_SESSION_PREFIX = "floecat-";
+  private static final long DEFAULT_RESULT_CACHE_MAX_ENTRIES = 1024L;
+  private static final Duration DEFAULT_RESULT_CACHE_TTL = Duration.ofSeconds(30);
 
   @ConfigProperty(name = "floecat.secrets.aws.role-arn")
   Optional<String> roleArn = Optional.empty();
@@ -63,22 +72,103 @@ public class ProdSecretsManager implements SecretsManager {
       new ConcurrentHashMap<>();
   private final Object perAccountClientLock = new Object();
   private final Object stsRefreshLock = new Object();
+  private final Optional<CoalescingExpiringCache<SecretCacheKey, Optional<byte[]>>> resultCache;
 
   @Inject
-  public ProdSecretsManager(AwsClients awsClients) {
+  public ProdSecretsManager(
+      AwsClients awsClients,
+      @ConfigProperty(name = "floecat.storage.aws.secrets.cache.enabled", defaultValue = "true")
+          boolean resultCacheEnabled,
+      @ConfigProperty(name = "floecat.secrets.cache.max-entries", defaultValue = "1024")
+          long resultCacheMaxEntries,
+      @ConfigProperty(name = "floecat.secrets.cache.ttl", defaultValue = "PT30S")
+          Duration resultCacheTtl,
+      @SecretsManagerResultCache Instance<CacheEvents> resultCacheEvents) {
+    this(
+        awsClients,
+        resultCacheEnabled,
+        resultCacheMaxEntries,
+        resultCacheTtl,
+        System::nanoTime,
+        resultCacheEvents.isResolvable() ? resultCacheEvents.get() : CacheEvents.none());
+  }
+
+  ProdSecretsManager(AwsClients awsClients) {
+    this(
+        awsClients,
+        true,
+        DEFAULT_RESULT_CACHE_MAX_ENTRIES,
+        DEFAULT_RESULT_CACHE_TTL,
+        System::nanoTime,
+        CacheEvents.none());
+  }
+
+  private ProdSecretsManager(
+      AwsClients awsClients,
+      boolean resultCacheEnabled,
+      long resultCacheMaxEntries,
+      Duration resultCacheTtl,
+      LongSupplier resultCacheTicker,
+      CacheEvents resultCacheEvents) {
     this.awsClients = awsClients;
     this.secretsClient =
         RefreshingAwsClient.withResourceFactory(
             "Secrets Manager", () -> awsClients.newSecretsManagerClientResource());
     this.stsClient =
         RefreshingAwsClient.withResourceFactory("STS", () -> awsClients.newStsClientResource());
+    this.resultCache =
+        resultCacheEnabled
+            ? Optional.of(
+                buildResultCache(
+                    resultCacheMaxEntries, resultCacheTtl, resultCacheTicker, resultCacheEvents))
+            : Optional.empty();
   }
 
   ProdSecretsManager(SecretsManagerClient secretsClient, StsClient stsClient) {
     this(
         null,
         RefreshingAwsClient.clientResource(secretsClient),
-        RefreshingAwsClient.clientResource(stsClient));
+        RefreshingAwsClient.clientResource(stsClient),
+        true,
+        DEFAULT_RESULT_CACHE_MAX_ENTRIES,
+        DEFAULT_RESULT_CACHE_TTL,
+        System::nanoTime,
+        CacheEvents.none());
+  }
+
+  ProdSecretsManager(
+      SecretsManagerClient secretsClient,
+      StsClient stsClient,
+      long resultCacheMaxEntries,
+      Duration resultCacheTtl,
+      LongSupplier resultCacheTicker) {
+    this(
+        null,
+        RefreshingAwsClient.clientResource(secretsClient),
+        RefreshingAwsClient.clientResource(stsClient),
+        true,
+        resultCacheMaxEntries,
+        resultCacheTtl,
+        resultCacheTicker,
+        CacheEvents.none());
+  }
+
+  ProdSecretsManager(
+      SecretsManagerClient secretsClient,
+      StsClient stsClient,
+      boolean resultCacheEnabled,
+      long resultCacheMaxEntries,
+      Duration resultCacheTtl,
+      LongSupplier resultCacheTicker) {
+    this(
+        null,
+        RefreshingAwsClient.clientResource(secretsClient),
+        RefreshingAwsClient.clientResource(stsClient),
+        resultCacheEnabled,
+        resultCacheMaxEntries,
+        resultCacheTtl,
+        resultCacheTicker,
+        CacheEvents.none());
   }
 
   ProdSecretsManager(
@@ -86,13 +176,23 @@ public class ProdSecretsManager implements SecretsManager {
     this(
         awsClients,
         RefreshingAwsClient.clientResource(secretsClient),
-        RefreshingAwsClient.clientResource(stsClient));
+        RefreshingAwsClient.clientResource(stsClient),
+        true,
+        DEFAULT_RESULT_CACHE_MAX_ENTRIES,
+        DEFAULT_RESULT_CACHE_TTL,
+        System::nanoTime,
+        CacheEvents.none());
   }
 
   private ProdSecretsManager(
       AwsClients awsClients,
       RefreshingAwsClient.ClientResource<SecretsManagerClient> secretsClient,
-      RefreshingAwsClient.ClientResource<StsClient> stsClient) {
+      RefreshingAwsClient.ClientResource<StsClient> stsClient,
+      boolean resultCacheEnabled,
+      long resultCacheMaxEntries,
+      Duration resultCacheTtl,
+      LongSupplier resultCacheTicker,
+      CacheEvents resultCacheEvents) {
     this.awsClients = awsClients;
     AtomicReference<RefreshingAwsClient.ClientResource<SecretsManagerClient>> initialSecretsClient =
         new AtomicReference<>(secretsClient);
@@ -112,12 +212,19 @@ public class ProdSecretsManager implements SecretsManager {
             () ->
                 initialOrBuildResource(
                     "STS", initialStsClient, () -> awsClients.newStsClientResource()));
+    this.resultCache =
+        resultCacheEnabled
+            ? Optional.of(
+                buildResultCache(
+                    resultCacheMaxEntries, resultCacheTtl, resultCacheTicker, resultCacheEvents))
+            : Optional.empty();
   }
 
   private final AwsClients awsClients;
 
   @PreDestroy
   void shutdown() {
+    resultCache.ifPresent(CoalescingExpiringCache::invalidateAll);
     synchronized (perAccountClientLock) {
       closePerAccountClients();
       stsClient.close();
@@ -127,8 +234,10 @@ public class ProdSecretsManager implements SecretsManager {
 
   @Override
   public void put(String accountId, String secretType, String secretId, byte[] payload) {
-    withClient(
+    mutateAndInvalidate(
         accountId,
+        secretType,
+        secretId,
         client -> {
           putOnce(client, accountId, secretType, secretId, payload);
           return null;
@@ -137,19 +246,29 @@ public class ProdSecretsManager implements SecretsManager {
 
   @Override
   public boolean putIfAbsent(String accountId, String secretType, String secretId, byte[] payload) {
-    return withClient(
-        accountId, client -> putIfAbsentOnce(client, accountId, secretType, secretId, payload));
+    return mutateAndInvalidate(
+        accountId,
+        secretType,
+        secretId,
+        client -> putIfAbsentOnce(client, accountId, secretType, secretId, payload));
   }
 
   @Override
   public Optional<byte[]> get(String accountId, String secretType, String secretId) {
-    return withClient(accountId, client -> getOnce(client, accountId, secretType, secretId));
+    SecretCacheKey cacheKey = SecretCacheKey.of(accountId, secretType, secretId);
+    Optional<byte[]> value =
+        resultCache
+            .map(cache -> cache.get(cacheKey, ignored -> load(accountId, secretType, secretId)))
+            .orElseGet(() -> load(accountId, secretType, secretId));
+    return copy(value);
   }
 
   @Override
   public void update(String accountId, String secretType, String secretId, byte[] payload) {
-    withClient(
+    mutateAndInvalidate(
         accountId,
+        secretType,
+        secretId,
         client -> {
           updateOnce(client, accountId, secretType, secretId, payload);
           return null;
@@ -158,8 +277,10 @@ public class ProdSecretsManager implements SecretsManager {
 
   @Override
   public void delete(String accountId, String secretType, String secretId) {
-    withClient(
+    mutateAndInvalidate(
         accountId,
+        secretType,
+        secretId,
         client -> {
           deleteOnce(client, accountId, secretType, secretId);
           return null;
@@ -168,12 +289,58 @@ public class ProdSecretsManager implements SecretsManager {
 
   @Override
   public void deleteImmediately(String accountId, String secretType, String secretId) {
-    withClient(
+    mutateAndInvalidate(
         accountId,
+        secretType,
+        secretId,
         client -> {
           deleteImmediatelyOnce(client, accountId, secretType, secretId);
           return null;
         });
+  }
+
+  long resultCacheSize() {
+    return resultCache.map(CoalescingExpiringCache::estimatedSize).orElse(0L);
+  }
+
+  private <T> T mutateAndInvalidate(
+      String accountId, String secretType, String secretId, ClientOperation<T> operation) {
+    SecretCacheKey cacheKey = SecretCacheKey.of(accountId, secretType, secretId);
+    try {
+      return withClient(accountId, operation);
+    } finally {
+      resultCache.ifPresent(cache -> cache.invalidate(cacheKey));
+    }
+  }
+
+  private Optional<byte[]> load(String accountId, String secretType, String secretId) {
+    return copy(withClient(accountId, client -> getOnce(client, accountId, secretType, secretId)));
+  }
+
+  private static CoalescingExpiringCache<SecretCacheKey, Optional<byte[]>> buildResultCache(
+      long maximumEntries, Duration ttl, LongSupplier ticker, CacheEvents events) {
+    if (maximumEntries <= 0) {
+      throw new IllegalArgumentException("result cache maximum entries must be positive");
+    }
+    if (ttl == null || ttl.isZero() || ttl.isNegative()) {
+      throw new IllegalArgumentException("result cache TTL must be positive");
+    }
+    Objects.requireNonNull(ticker, "resultCacheTicker");
+    return CaffeineCoalescingExpiringCache.create(
+        maximumEntries,
+        ignored -> ttl,
+        ticker,
+        Objects.requireNonNull(events, "resultCacheEvents"));
+  }
+
+  private static Optional<byte[]> copy(Optional<byte[]> value) {
+    return value.map(payload -> Arrays.copyOf(payload, payload.length));
+  }
+
+  private record SecretCacheKey(String compositeKey) {
+    private static SecretCacheKey of(String accountId, String secretType, String secretId) {
+      return new SecretCacheKey(SecretsManager.buildSecretKey(accountId, secretType, secretId));
+    }
   }
 
   private void putOnce(

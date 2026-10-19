@@ -1,0 +1,41 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.service.cache;
+
+import ai.floedb.floecat.cache.CacheEvents;
+import ai.floedb.floecat.storage.aws.secrets.SecretsManagerResultCache;
+import ai.floedb.floecat.telemetry.Observability;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Produces;
+import jakarta.inject.Singleton;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+
+/** Wires the AWS secrets result cache into the service's common cache metric family. */
+@ApplicationScoped
+public class SecretsManagerCacheTelemetry {
+
+  @Produces
+  @Singleton
+  @SecretsManagerResultCache
+  CacheEvents resultCacheEvents(
+      Observability observability,
+      @ConfigProperty(name = "floecat.storage.aws.secrets.cache.enabled", defaultValue = "true")
+          boolean enabled) {
+    return MetadataCaches.cacheEvents(
+        observability, "secrets-manager-read", "secrets-manager-result", enabled);
+  }
+}

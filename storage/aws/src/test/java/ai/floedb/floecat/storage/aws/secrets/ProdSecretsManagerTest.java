@@ -29,6 +29,7 @@ import ai.floedb.floecat.storage.aws.CredentialResolutionForbiddenAwsClients;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Base64;
@@ -39,6 +40,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
@@ -51,9 +54,236 @@ import software.amazon.awssdk.services.secretsmanager.model.DescribeSecretRespon
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
 import software.amazon.awssdk.services.secretsmanager.model.InvalidRequestException;
 import software.amazon.awssdk.services.secretsmanager.model.ResourceExistsException;
+import software.amazon.awssdk.services.secretsmanager.model.ResourceNotFoundException;
 import software.amazon.awssdk.services.sts.StsClient;
 
 class ProdSecretsManagerTest {
+
+  @Test
+  void getCachesPresentValuesAndReturnsDefensiveCopies() {
+    ClientHandle client =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("alpha".getBytes()));
+    ProdSecretsManager manager =
+        new ProdSecretsManager(client.secretsClient, ClientHandle.sts().stsClient);
+
+    byte[] first = manager.get("acct", "connectors", "secret").orElseThrow();
+    first[0] = 'X';
+    byte[] second = manager.get("acct", "connectors", "secret").orElseThrow();
+
+    assertArrayEquals("alpha".getBytes(), second);
+    assertEquals(1, client.getSecretValueCalls.get());
+    manager.shutdown();
+  }
+
+  @Test
+  void getCachesMissingValues() {
+    ClientHandle client = ClientHandle.secretsValue(null);
+    ProdSecretsManager manager =
+        new ProdSecretsManager(client.secretsClient, ClientHandle.sts().stsClient);
+
+    assertTrue(manager.get("acct", "storage-authorities", "missing").isEmpty());
+    assertTrue(manager.get("acct", "storage-authorities", "missing").isEmpty());
+
+    assertEquals(1, client.getSecretValueCalls.get());
+    manager.shutdown();
+  }
+
+  @Test
+  void disabledResultCacheBypassesCachingAndRetainsNothing() {
+    ClientHandle client =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("alpha".getBytes()));
+    ProdSecretsManager manager =
+        new ProdSecretsManager(
+            client.secretsClient,
+            ClientHandle.sts().stsClient,
+            false,
+            0,
+            Duration.ZERO,
+            System::nanoTime);
+
+    assertArrayEquals(
+        "alpha".getBytes(), manager.get("acct", "connectors", "secret").orElseThrow());
+    assertArrayEquals(
+        "alpha".getBytes(), manager.get("acct", "connectors", "secret").orElseThrow());
+
+    assertEquals(2, client.getSecretValueCalls.get());
+    assertEquals(0, manager.resultCacheSize());
+    manager.shutdown();
+  }
+
+  @Test
+  void getCachesResourceNotFoundAsMissing() {
+    ClientHandle client =
+        ClientHandle.secretsFailure(
+            ResourceNotFoundException.builder().message("secret does not exist").build());
+    ProdSecretsManager manager =
+        new ProdSecretsManager(client.secretsClient, ClientHandle.sts().stsClient);
+
+    assertTrue(manager.get("acct", "storage-authorities", "missing").isEmpty());
+    assertTrue(manager.get("acct", "storage-authorities", "missing").isEmpty());
+
+    assertEquals(1, client.getSecretValueCalls.get());
+    manager.shutdown();
+  }
+
+  @Test
+  void getCoalescesConcurrentLoadsForTheSameKey() throws Exception {
+    CountDownLatch loadStarted = new CountDownLatch(1);
+    CountDownLatch releaseLoad = new CountDownLatch(1);
+    ClientHandle client =
+        ClientHandle.secretsValue(
+            Base64.getEncoder().encodeToString("alpha".getBytes()),
+            () -> {
+              loadStarted.countDown();
+              try {
+                releaseLoad.await();
+              } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(error);
+              }
+            });
+    ProdSecretsManager manager =
+        new ProdSecretsManager(client.secretsClient, ClientHandle.sts().stsClient);
+
+    ExecutorService executor = Executors.newFixedThreadPool(8);
+    try {
+      java.util.List<Future<Optional<byte[]>>> reads = new java.util.ArrayList<>();
+      for (int i = 0; i < 32; i++) {
+        reads.add(executor.submit(() -> manager.get("acct", "connectors", "secret")));
+      }
+      assertTrue(loadStarted.await(5, TimeUnit.SECONDS));
+      releaseLoad.countDown();
+      for (Future<Optional<byte[]>> read : reads) {
+        assertArrayEquals("alpha".getBytes(), read.get(5, TimeUnit.SECONDS).orElseThrow());
+      }
+    } finally {
+      releaseLoad.countDown();
+      executor.shutdownNow();
+      manager.shutdown();
+    }
+
+    assertEquals(1, client.getSecretValueCalls.get());
+  }
+
+  @Test
+  void getDoesNotCacheFailures() {
+    ClientHandle client = ClientHandle.secretsFailure(new IllegalStateException("denied"));
+    ProdSecretsManager manager =
+        new ProdSecretsManager(client.secretsClient, ClientHandle.sts().stsClient);
+
+    assertThrows(IllegalStateException.class, () -> manager.get("acct", "connectors", "secret"));
+    assertThrows(IllegalStateException.class, () -> manager.get("acct", "connectors", "secret"));
+
+    assertEquals(2, client.getSecretValueCalls.get());
+    manager.shutdown();
+  }
+
+  @Test
+  void getReloadsAfterTheCacheTtl() {
+    AtomicLong ticker = new AtomicLong();
+    ClientHandle client =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("alpha".getBytes()));
+    ProdSecretsManager manager =
+        new ProdSecretsManager(
+            client.secretsClient,
+            ClientHandle.sts().stsClient,
+            16,
+            Duration.ofSeconds(30),
+            ticker::get);
+
+    manager.get("acct", "connectors", "secret");
+    ticker.addAndGet(Duration.ofSeconds(29).toNanos());
+    manager.get("acct", "connectors", "secret");
+    ticker.addAndGet(Duration.ofSeconds(2).toNanos());
+    manager.get("acct", "connectors", "secret");
+
+    assertEquals(2, client.getSecretValueCalls.get());
+    manager.shutdown();
+  }
+
+  @Test
+  void resultCacheIsBounded() {
+    ClientHandle client =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("alpha".getBytes()));
+    ProdSecretsManager manager =
+        new ProdSecretsManager(
+            client.secretsClient,
+            ClientHandle.sts().stsClient,
+            2,
+            Duration.ofSeconds(30),
+            System::nanoTime);
+
+    manager.get("acct", "connectors", "one");
+    manager.get("acct", "connectors", "two");
+    manager.get("acct", "connectors", "three");
+
+    assertTrue(manager.resultCacheSize() <= 2);
+    manager.shutdown();
+  }
+
+  @Test
+  void successfulMutationsInvalidateTheCachedResult() {
+    ClientHandle client =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("alpha".getBytes()));
+    ProdSecretsManager manager =
+        new ProdSecretsManager(client.secretsClient, ClientHandle.sts().stsClient);
+
+    manager.get("acct", "connectors", "secret");
+    manager.put("acct", "connectors", "secret", "replacement".getBytes());
+    manager.get("acct", "connectors", "secret");
+    manager.putIfAbsent("acct", "connectors", "secret", "replacement".getBytes());
+    manager.get("acct", "connectors", "secret");
+    manager.update("acct", "connectors", "secret", "replacement".getBytes());
+    manager.get("acct", "connectors", "secret");
+    manager.delete("acct", "connectors", "secret");
+    manager.get("acct", "connectors", "secret");
+    manager.deleteImmediately("acct", "connectors", "secret");
+    manager.get("acct", "connectors", "secret");
+
+    assertEquals(6, client.getSecretValueCalls.get());
+    manager.shutdown();
+  }
+
+  @Test
+  void partialPutFailureInvalidatesTheCachedResult() {
+    ClientHandle client =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("alpha".getBytes()));
+    ProdSecretsManager manager =
+        new ProdSecretsManager(client.secretsClient, ClientHandle.sts().stsClient);
+
+    manager.get("acct", "connectors", "secret");
+    client.createFailure = ResourceExistsException.builder().message("already exists").build();
+    client.tagFailure = new IllegalStateException("tagging failed");
+
+    assertThrows(
+        IllegalStateException.class,
+        () -> manager.put("acct", "connectors", "secret", "replacement".getBytes()));
+    manager.get("acct", "connectors", "secret");
+
+    assertEquals(1, client.putSecretValueCalls.get());
+    assertEquals(2, client.getSecretValueCalls.get());
+    manager.shutdown();
+  }
+
+  @Test
+  void partialUpdateFailureInvalidatesTheCachedResult() {
+    ClientHandle client =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("alpha".getBytes()));
+    ProdSecretsManager manager =
+        new ProdSecretsManager(client.secretsClient, ClientHandle.sts().stsClient);
+
+    manager.get("acct", "connectors", "secret");
+    client.tagFailure = new IllegalStateException("tagging failed");
+
+    assertThrows(
+        IllegalStateException.class,
+        () -> manager.update("acct", "connectors", "secret", "replacement".getBytes()));
+    manager.get("acct", "connectors", "secret");
+
+    assertEquals(1, client.putSecretValueCalls.get());
+    assertEquals(2, client.getSecretValueCalls.get());
+    manager.shutdown();
+  }
 
   @Test
   void getUsesTheConfiguredSecretsManagerClientWithoutAnIndependentCredentialPreflight() {
@@ -399,7 +629,7 @@ class ProdSecretsManagerTest {
       Future<Optional<byte[]>> first =
           executor.submit(() -> manager.get("acct", "connectors", "secret"));
       Future<Optional<byte[]>> second =
-          executor.submit(() -> manager.get("acct", "connectors", "secret"));
+          executor.submit(() -> manager.get("acct", "connectors", "other-secret"));
       assertTrue(staleAttemptsReady.await(5, TimeUnit.SECONDS));
       releaseStaleAttempts.countDown();
 
@@ -574,11 +804,15 @@ class ProdSecretsManagerTest {
     private final Runnable beforeFailure;
     private final String secretString;
     private final boolean scheduledForDeletion;
+    private RuntimeException createFailure;
+    private RuntimeException tagFailure;
     private boolean closed;
     private int closeCount;
     private ClientHandle boundStsClient;
     private final ProviderHandle provider = new ProviderHandle();
     private DeleteSecretRequest deleteRequest;
+    private final AtomicInteger getSecretValueCalls = new AtomicInteger();
+    private final AtomicInteger putSecretValueCalls = new AtomicInteger();
     private final SecretsManagerClient secretsClient;
     private final StsClient stsClient;
 
@@ -617,6 +851,10 @@ class ProdSecretsManagerTest {
       return new ClientHandle(null, null, null, secretString, false);
     }
 
+    static ClientHandle secretsValue(String secretString, Runnable beforeGet) {
+      return new ClientHandle(null, null, beforeGet, secretString, false);
+    }
+
     static ClientHandle secretsDeleteFailure(
         RuntimeException deleteFailure, boolean scheduledForDeletion) {
       return new ClientHandle(null, deleteFailure, null, null, scheduledForDeletion);
@@ -630,17 +868,27 @@ class ProdSecretsManagerTest {
     public Object invoke(Object proxy, Method method, Object[] args) {
       return switch (method.getName()) {
         case "getSecretValue" -> {
+          getSecretValueCalls.incrementAndGet();
+          if (beforeFailure != null) {
+            beforeFailure.run();
+          }
           if (failure != null) {
-            if (beforeFailure != null) {
-              beforeFailure.run();
-            }
             throw failure;
           }
           yield GetSecretValueResponse.builder().secretString(secretString).build();
         }
         case "createSecret" -> {
+          if (createFailure != null) throw createFailure;
           if (failure != null) throw failure;
           yield CreateSecretResponse.builder().build();
+        }
+        case "putSecretValue" -> {
+          putSecretValueCalls.incrementAndGet();
+          yield null;
+        }
+        case "tagResource" -> {
+          if (tagFailure != null) throw tagFailure;
+          yield null;
         }
         case "deleteSecret" -> {
           deleteRequest = (DeleteSecretRequest) args[0];
