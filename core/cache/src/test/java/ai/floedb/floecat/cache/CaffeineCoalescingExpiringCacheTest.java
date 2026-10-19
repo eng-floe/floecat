@@ -201,8 +201,7 @@ class CaffeineCoalescingExpiringCacheTest {
     assertThat(cache.estimatedSize()).isLessThanOrEqualTo(2);
   }
 
-  private <K> CoalescingExpiringCache<K, String> cache(
-      long maximumSize, CacheEvents events) {
+  private <K> CoalescingExpiringCache<K, String> cache(long maximumSize, CacheEvents events) {
     return CaffeineCoalescingExpiringCache.create(maximumSize, ignored -> HOLD, nanos::get, events);
   }
 

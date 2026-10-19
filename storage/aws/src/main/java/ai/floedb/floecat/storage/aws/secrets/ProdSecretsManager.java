@@ -120,10 +120,7 @@ public class ProdSecretsManager implements SecretsManager {
         resultCacheEnabled
             ? Optional.of(
                 buildResultCache(
-                    resultCacheMaxEntries,
-                    resultCacheTtl,
-                    resultCacheTicker,
-                    resultCacheEvents))
+                    resultCacheMaxEntries, resultCacheTtl, resultCacheTicker, resultCacheEvents))
             : Optional.empty();
   }
 
@@ -219,10 +216,7 @@ public class ProdSecretsManager implements SecretsManager {
         resultCacheEnabled
             ? Optional.of(
                 buildResultCache(
-                    resultCacheMaxEntries,
-                    resultCacheTtl,
-                    resultCacheTicker,
-                    resultCacheEvents))
+                    resultCacheMaxEntries, resultCacheTtl, resultCacheTicker, resultCacheEvents))
             : Optional.empty();
   }
 
@@ -320,9 +314,7 @@ public class ProdSecretsManager implements SecretsManager {
   }
 
   private Optional<byte[]> load(String accountId, String secretType, String secretId) {
-    return copy(
-        withClient(
-            accountId, client -> getOnce(client, accountId, secretType, secretId)));
+    return copy(withClient(accountId, client -> getOnce(client, accountId, secretType, secretId)));
   }
 
   private static CoalescingExpiringCache<SecretCacheKey, Optional<byte[]>> buildResultCache(

@@ -118,7 +118,8 @@ public final class CaffeineCoalescingExpiringCache<K, V> implements CoalescingEx
 
   @Override
   public void invalidateAll() {
-    inFlight.values()
+    inFlight
+        .values()
         .forEach(
             load -> {
               synchronized (load) {
