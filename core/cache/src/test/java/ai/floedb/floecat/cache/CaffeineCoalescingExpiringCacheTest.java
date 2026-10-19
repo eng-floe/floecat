@@ -75,6 +75,69 @@ class CaffeineCoalescingExpiringCacheTest {
   }
 
   @Test
+  void slowLoadDoesNotBlockSameBinKeysOrInvalidation() throws Exception {
+    CoalescingExpiringCache<SameBin, String> cache = cache(100, CacheEvents.none());
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    Future<String> slow =
+        pool.submit(
+            () ->
+                cache.get(
+                    new SameBin(0),
+                    ignored -> {
+                      started.countDown();
+                      await(release);
+                      return "slow";
+                    }));
+
+    assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+    try {
+      assertThat(
+              pool.submit(() -> cache.get(new SameBin(1), ignored -> "other"))
+                  .get(5, TimeUnit.SECONDS))
+          .isEqualTo("other");
+      assertThat(
+              pool.submit(
+                      () -> {
+                        cache.invalidate(new SameBin(2));
+                        return true;
+                      })
+                  .get(5, TimeUnit.SECONDS))
+          .isTrue();
+    } finally {
+      release.countDown();
+    }
+    assertThat(slow.get(5, TimeUnit.SECONDS)).isEqualTo("slow");
+  }
+
+  @Test
+  void invalidationDuringLoadPreventsStaleAdmission() throws Exception {
+    CoalescingExpiringCache<String, String> cache = cache(100, CacheEvents.none());
+    AtomicInteger loads = new AtomicInteger();
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    Future<String> stale =
+        pool.submit(
+            () ->
+                cache.get(
+                    "key",
+                    ignored -> {
+                      loads.incrementAndGet();
+                      started.countDown();
+                      await(release);
+                      return "stale";
+                    }));
+
+    assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+    cache.invalidate("key");
+    release.countDown();
+
+    assertThat(stale.get(5, TimeUnit.SECONDS)).isEqualTo("stale");
+    assertThat(cache.get("key", ignored -> "v" + loads.incrementAndGet())).isEqualTo("v2");
+    assertThat(loads).hasValue(2);
+  }
+
+  @Test
   void expiresAndCanBeInvalidated() {
     CoalescingExpiringCache<String, String> cache = cache(100, CacheEvents.none());
     AtomicInteger loads = new AtomicInteger();
@@ -138,7 +201,8 @@ class CaffeineCoalescingExpiringCacheTest {
     assertThat(cache.estimatedSize()).isLessThanOrEqualTo(2);
   }
 
-  private CoalescingExpiringCache<String, String> cache(long maximumSize, CacheEvents events) {
+  private <K> CoalescingExpiringCache<K, String> cache(
+      long maximumSize, CacheEvents events) {
     return CaffeineCoalescingExpiringCache.create(maximumSize, ignored -> HOLD, nanos::get, events);
   }
 
@@ -172,6 +236,14 @@ class CaffeineCoalescingExpiringCacheTest {
     } catch (InterruptedException error) {
       Thread.currentThread().interrupt();
       throw new RuntimeException(error);
+    }
+  }
+
+  /** A key whose hash puts every instance in the same map bin. */
+  private record SameBin(int id) {
+    @Override
+    public int hashCode() {
+      return 0;
     }
   }
 }

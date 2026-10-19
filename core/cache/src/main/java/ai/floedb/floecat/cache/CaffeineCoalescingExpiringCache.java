@@ -16,24 +16,23 @@
 
 package ai.floedb.floecat.cache;
 
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.Expiry;
 import java.time.Duration;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 
 /** Caffeine-backed {@link CoalescingExpiringCache}. */
 public final class CaffeineCoalescingExpiringCache<K, V> implements CoalescingExpiringCache<K, V> {
 
-  private final Cache<K, V> cache;
-  private final CacheEvents events;
+  private final CaffeineExpiringCacheSupport<K, V> support;
+  private final ConcurrentMap<K, InFlight<V>> inFlight = new ConcurrentHashMap<>();
 
-  private CaffeineCoalescingExpiringCache(Cache<K, V> cache, CacheEvents events) {
-    this.cache = cache;
-    this.events = events;
+  private CaffeineCoalescingExpiringCache(CaffeineExpiringCacheSupport<K, V> support) {
+    this.support = support;
   }
 
   /**
@@ -45,19 +44,8 @@ public final class CaffeineCoalescingExpiringCache<K, V> implements CoalescingEx
       Function<? super V, Duration> holdFor,
       LongSupplier ticker,
       CacheEvents events) {
-    if (maximumSize <= 0) {
-      throw new IllegalArgumentException("maximumSize must be positive");
-    }
-    Objects.requireNonNull(holdFor, "holdFor");
-    Objects.requireNonNull(ticker, "ticker");
-    Objects.requireNonNull(events, "events");
-    Cache<K, V> cache =
-        Caffeine.newBuilder()
-            .maximumSize(maximumSize)
-            .expireAfter(new HoldFor<K, V>(holdFor))
-            .ticker(ticker::getAsLong)
-            .build();
-    return new CaffeineCoalescingExpiringCache<>(cache, events);
+    return new CaffeineCoalescingExpiringCache<>(
+        CaffeineExpiringCacheSupport.create(maximumSize, holdFor, ticker, events));
   }
 
   @Override
@@ -65,89 +53,103 @@ public final class CaffeineCoalescingExpiringCache<K, V> implements CoalescingEx
     Objects.requireNonNull(key, "key");
     Objects.requireNonNull(loader, "loader");
     long startNanos = System.nanoTime();
-    V held = cache.getIfPresent(key);
+    V held = support.getIfPresent(key);
     if (held != null) {
-      report(() -> events.hit(since(startNanos)));
+      support.hit(startNanos);
       return held;
     }
 
-    AtomicBoolean invoked = new AtomicBoolean();
-    V value =
-        cache.get(
-            key,
-            ignored -> {
-              invoked.set(true);
-              try {
-                V loaded = loader.apply(key);
-                report(events::miss);
-                report(() -> events.loadTime(since(startNanos)));
-                return loaded;
-              } catch (RuntimeException failure) {
-                report(events::miss);
-                report(() -> events.loadFailed(since(startNanos), failure));
-                throw failure;
-              }
-            });
-    if (!invoked.get()) {
-      report(() -> events.hit(since(startNanos)));
+    InFlight<V> load = new InFlight<>();
+    InFlight<V> existing = inFlight.putIfAbsent(key, load);
+    if (existing != null) {
+      V value = await(existing.result);
+      support.hit(startNanos);
+      return value;
     }
-    return value;
+
+    try {
+      V raced = support.getIfPresent(key);
+      if (raced != null) {
+        synchronized (load) {
+          load.result.complete(raced);
+        }
+        support.hit(startNanos);
+        return raced;
+      }
+      V value = loader.apply(key);
+      synchronized (load) {
+        if (!load.invalidated) {
+          support.putIfRetained(key, value);
+        }
+        load.result.complete(value);
+      }
+      support.loaded(startNanos);
+      return value;
+    } catch (RuntimeException failure) {
+      completeExceptionally(load, failure);
+      support.loadFailed(startNanos, failure);
+      throw failure;
+    } catch (Error failure) {
+      completeExceptionally(load, failure);
+      throw failure;
+    } finally {
+      inFlight.remove(key, load);
+    }
   }
 
   @Override
   public void invalidate(K key) {
-    cache.invalidate(Objects.requireNonNull(key, "key"));
+    Objects.requireNonNull(key, "key");
+    InFlight<V> load = inFlight.get(key);
+    if (load == null) {
+      support.invalidate(key);
+      return;
+    }
+    synchronized (load) {
+      load.invalidated = true;
+      support.invalidate(key);
+    }
   }
 
   @Override
   public long estimatedSize() {
-    cache.cleanUp();
-    return cache.estimatedSize();
+    return support.estimatedSize();
   }
 
   @Override
   public void invalidateAll() {
-    cache.invalidateAll();
+    inFlight.values()
+        .forEach(
+            load -> {
+              synchronized (load) {
+                load.invalidated = true;
+              }
+            });
+    support.invalidateAll();
   }
 
-  private static Duration since(long startNanos) {
-    return Duration.ofNanos(System.nanoTime() - startNanos);
+  private static <V> void completeExceptionally(InFlight<V> load, Throwable failure) {
+    synchronized (load) {
+      load.result.completeExceptionally(failure);
+    }
   }
 
-  private static void report(Runnable callback) {
+  private static <V> V await(CompletableFuture<V> result) {
     try {
-      callback.run();
-    } catch (RuntimeException ignored) {
-      // Telemetry must not change what a read returns.
+      return result.join();
+    } catch (CompletionException failure) {
+      if (failure.getCause() instanceof RuntimeException cause) {
+        throw cause;
+      }
+      if (failure.getCause() instanceof Error cause) {
+        throw cause;
+      }
+      throw failure;
     }
   }
 
-  private static long nanos(Duration duration) {
-    if (duration == null || duration.isNegative() || duration.isZero()) {
-      return 0L;
-    }
-    try {
-      return duration.toNanos();
-    } catch (ArithmeticException overflow) {
-      return Long.MAX_VALUE;
-    }
-  }
-
-  /** Expiry fixed from the value when it is put; reads do not extend it. */
-  private record HoldFor<K, V>(Function<? super V, Duration> holdFor) implements Expiry<K, V> {
-    @Override
-    public long expireAfterCreate(K key, V value, long currentTime) {
-      return nanos(holdFor.apply(value));
-    }
-
-    @Override
-    public long expireAfterUpdate(K key, V value, long currentTime, long currentDuration) {
-      return nanos(holdFor.apply(value));
-    }
-
-    @Override
-    public long expireAfterRead(K key, V value, long currentTime, long currentDuration) {
-      return currentDuration;
-    }
+  private static final class InFlight<V> {
+    private final CompletableFuture<V> result = new CompletableFuture<>();
+    private boolean invalidated;
   }
 }

@@ -42,7 +42,7 @@ identity; they do not replace a value in an existing key.
 | Pointers | `PlanningPointerIndex` behind `IndexedPointerStore` | Account addressing state: names, identities, and each table's `root/current` and `snapshots/current`. Rows keyed by snapshot -- snapshot history, constraints, stats generations, index artifacts -- are durable-only, because a table can commit snapshots far faster than its schema or addressing state changes. | Not a cache. A partition is either `LOADING` or `COMPLETE`. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter. |
 | Objects | `ObjectCache` | Decoded relation metadata, mapped schemas, constraints, immutable generation-scoped snapshot facts and target-stat records | Entries are keyed by immutable content or generation identity. A live/newest stats read is read-through and is never retained. Account eviction removes every object entry for that account. |
 | Blobs | `DiskBlobCache` behind `BlobCacheAccess` | Immutable serialized CAS bodies, manifest pages, generation manifests and reusable-artifact bundles/indexes on local NVMe | Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mapped content stays retained until its scoped read closes. The disk budget and kill switch are `floecat.cache.blob.disk.*`; it is independent of the heap budget. |
-| Secrets Manager results | `ProdSecretsManager` on `CoalescingExpiringCache` | Present secret payloads and authoritative missing-secret results, keyed by account, secret type and secret ID | Entries expire after `floecat.secrets.cache.ttl`; same-key misses share one source load, failures are not retained, and successful mutations invalidate the local entry. `floecat.secrets.cache.max-entries` bounds this short-lived operational cache independently of the immutable metadata heap budget. |
+| Secrets Manager results | `ProdSecretsManager` on `CoalescingExpiringCache` | Present secret payloads and authoritative missing-secret results, keyed by account, secret type and secret ID | Entries expire after `floecat.secrets.cache.ttl`; same-key misses share one source load, failures are not retained, and mutation attempts invalidate the local entry. `floecat.secrets.cache.max-entries` bounds this short-lived operational cache independently of the immutable metadata heap budget. `floecat.storage.aws.secrets.cache.enabled=false` bypasses it. |
 | Vended credentials | `VendedCredentialCache` on `ExpiringCache` | Source-catalog vend answers, per Connector or Integration configuration and upstream table | An answer is served while at least `floecat.storage.source-catalog.vend-cache.min-remaining-fraction` of its lifetime and five minutes remain. Answers without an expiry, answers no caller could use, and credentials exchanged from the caller's token are not held. See [catalog integrations](catalog-integrations.md). |
 | Per-query state | `QueryContextStore` and per-query memos | Snapshot selections, expansion map, and scan/session bookkeeping keyed by query ID | Rebuildable process-local optimization, not a GC root. If the selected snapshot is deleted or collected, the query receives the snapshot-unavailable error. |
 
@@ -95,7 +95,8 @@ no credentials; those are held in the secrets manager.
 
 The cache module provides the read-through primitives. Callers use repositories and do not choose
 cache tiers or coordinate in-flight requests. Where a cache contract calls for same-key load
-coordination, Caffeine owns it; the application adds no second load map or version fence.
+coordination, the cache implementation owns it; application callers add no second load map or
+version fence.
 
 The future cache layers share this module's operational and telemetry vocabulary, but not one
 storage-shaped interface or one resource pool. `MemoryCache<K, V>` is the in-memory primitive used
@@ -111,9 +112,9 @@ sizing harness use the same arithmetic.
 |-------|------------|
 | `MemoryCache<K, V>` | Read-through `get`; batch `getAll`; uncounted `peek`; `evict` by key and `evictPartition` by caller-supplied membership; `bytes()`/`entryCount()` for the budget. Values are immutable and keyed by durable identity, so there is no generic replacement, publication fence, or in-flight map. Eviction is an infrequent O(n) memory-hygiene scan. Pointer version ordering deliberately is not part of this generic contract. |
 | `ExpiringCache<K, V>` | Read-through `get` for answers that expire, loaded from a source that may be slow. Each value is held for a duration derived from it when it loads. A miss loads on the calling thread, keeping its request context; callers that miss the same key together each load. A load that throws or returns null is not held. |
-| `CaffeineExpiringCache` | The implementation, on a synchronous Caffeine cache read with `getIfPresent` and filled with `put`, so no load runs under the map's locks and a slow load holds up no other key. |
+| `CaffeineExpiringCache` | The non-coalescing policy over shared Caffeine expiry, telemetry and lifecycle support. It reads with `getIfPresent` and fills with `put`, so no load runs under the map's locks and a slow load holds up no other key. |
 | `CoalescingExpiringCache<K, V>` | Read-through `get` for expiring external answers whose same-key loads must be shared, plus explicit invalidation and approximate entry count. A load that throws or returns null is not held. |
-| `CaffeineCoalescingExpiringCache` | The coalescing implementation. Caffeine serializes one non-null load per key while unrelated keys load independently; the configured function fixes each value's expiry when it is admitted. |
+| `CaffeineCoalescingExpiringCache` | The coalescing policy over the same shared Caffeine support. Per-key futures outside Caffeine share an in-flight load without holding a Caffeine map-bin lock during source I/O; invalidation fences that key against late stale admission. |
 | `CaffeineMemoryCache` | The one `MemoryCache` implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Refuses a non-positive budget at construction. |
 | `CacheWeights` | Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (`WeightedValue` first, then protobuf, text, `byte[]`, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte. |
 | `CacheFamily` | The independently budgeted in-memory families that use this module. Pointer planning state is not a `MemoryCache` family: it is a complete index with a separate admission budget and no entry eviction. `OBJECT` is decoded metadata, `HINT` is decoded engine-specific metadata, and `MANIFEST_COMMITMENT` is validated content-addressed Owner manifest indexes. Disk blob caching has its own volume budget. |
@@ -131,9 +132,12 @@ that takes seconds without holding up other keys. Same-key misses are not merged
 one load per concurrent miss, and none while a value is held.
 
 A coalescing expiring-cache loader also runs on a caller thread, but concurrent callers for the same
-key wait for and reuse its non-null answer. Use that contract only where sharing the source result
-is safe and suppressing a same-key request stampede is required. Explicit invalidation is local to
-the process; TTL bounds changes made by another process or directly in the source.
+key wait for and reuse its in-flight answer. The per-key coordination is separate from Caffeine's
+storage map, so a slow load does not hold a map-bin lock or block an unrelated colliding key.
+Invalidation prevents an already-running load for that key from being admitted afterward. Use that
+contract only where sharing the source result is safe and suppressing a same-key request stampede
+is required. Explicit invalidation is local to the process; TTL bounds changes made by another
+process or directly in the source.
 
 Budgets resolve from the container rather than from a compiled-in figure. The JVM already sizes its
 heap from the container memory limit, so `floecat.cache.heap-share` (0.5) of the maximum heap
@@ -163,9 +167,9 @@ A cache built on the `core/cache` contract publishes the same series, tagged by 
 those are comparable and a new one brings its telemetry with it. The disk blob cache adds mapping,
 corruption and sweep signals because those are file-lifecycle events rather than heap-cache events.
 
-The vended-credential and Secrets Manager result caches report hit, miss, load-time and error
-series only: they are bounded by entry count rather than weight, and have no enabled or entries
-gauge. The Secrets Manager result series use `cache="secrets-manager-result"`.
+The vended-credential cache reports hit, miss, load-time and error series only. The Secrets Manager
+result cache reports those series plus the enabled gauge; it is bounded by entry count rather than
+weight and has no entries gauge. Its series use `cache="secrets-manager-result"`.
 
 | question | series |
 |---|---|

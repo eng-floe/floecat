@@ -22,6 +22,7 @@ import ai.floedb.floecat.telemetry.Observability;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /** Wires the AWS secrets result cache into the service's common cache metric family. */
 @ApplicationScoped
@@ -30,8 +31,11 @@ public class SecretsManagerCacheTelemetry {
   @Produces
   @Singleton
   @SecretsManagerResultCache
-  CacheEvents resultCacheEvents(Observability observability) {
+  CacheEvents resultCacheEvents(
+      Observability observability,
+      @ConfigProperty(name = "floecat.storage.aws.secrets.cache.enabled", defaultValue = "true")
+          boolean enabled) {
     return MetadataCaches.cacheEvents(
-        observability, "secrets-manager-read", "secrets-manager-result");
+        observability, "secrets-manager-read", "secrets-manager-result", enabled);
   }
 }

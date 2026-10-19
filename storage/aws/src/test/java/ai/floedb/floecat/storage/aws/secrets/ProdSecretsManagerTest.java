@@ -89,6 +89,29 @@ class ProdSecretsManagerTest {
   }
 
   @Test
+  void disabledResultCacheBypassesCachingAndRetainsNothing() {
+    ClientHandle client =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("alpha".getBytes()));
+    ProdSecretsManager manager =
+        new ProdSecretsManager(
+            client.secretsClient,
+            ClientHandle.sts().stsClient,
+            false,
+            0,
+            Duration.ZERO,
+            System::nanoTime);
+
+    assertArrayEquals(
+        "alpha".getBytes(), manager.get("acct", "connectors", "secret").orElseThrow());
+    assertArrayEquals(
+        "alpha".getBytes(), manager.get("acct", "connectors", "secret").orElseThrow());
+
+    assertEquals(2, client.getSecretValueCalls.get());
+    assertEquals(0, manager.resultCacheSize());
+    manager.shutdown();
+  }
+
+  @Test
   void getCachesResourceNotFoundAsMissing() {
     ClientHandle client =
         ClientHandle.secretsFailure(

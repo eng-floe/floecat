@@ -468,6 +468,7 @@ Notable `application.properties` keys:
 | `floecat.auth.mode` | Auth enforcement mode (`oidc`, `dev`). |
 | `floecat.auth.platform-admin.role` | IdP role name granted permission to manage accounts (default `platform-admin`). |
 | `floecat.secrets.aws.role-arn` | Optional role to assume per account when using AWS Secrets Manager. |
+| `floecat.storage.aws.secrets.cache.enabled` | Startup-scoped Secrets Manager result-cache switch (default `true`); disabled reads bypass the cache and retain no result payloads. |
 | `floecat.secrets.cache.ttl` | Per-process positive and negative Secrets Manager result-cache TTL (default `PT30S`). |
 | `floecat.secrets.cache.max-entries` | Maximum entries in the per-process Secrets Manager result cache (default `1024`). |
 
