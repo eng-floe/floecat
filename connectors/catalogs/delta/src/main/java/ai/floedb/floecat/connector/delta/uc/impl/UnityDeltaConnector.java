@@ -20,12 +20,12 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.client.unity.TemporaryTableCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogException;
+import ai.floedb.floecat.client.unity.UnityCatalogSchemaJson;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.LogSafeText;
 import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
-import com.fasterxml.jackson.databind.JsonNode;
 import io.delta.kernel.engine.Engine;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -164,7 +164,7 @@ public final class UnityDeltaConnector extends DeltaConnector {
         table.storageLocation(),
         schemaJson,
         List.of(),
-        ColumnIdAlgorithm.CID_PATH_ORDINAL,
+        ColumnIdAlgorithm.CID_CANONICAL_MAP,
         descriptorProperties);
   }
 
@@ -638,37 +638,14 @@ public final class UnityDeltaConnector extends DeltaConnector {
   }
 
   private static String buildSchemaJson(UnityCatalogTable table) {
-    var fields = M.createArrayNode();
-    for (UnityCatalogTable.Column column : table.columns()) {
-      var field = M.createObjectNode();
-      field.put("name", column.name());
-      JsonNode type = typeFromTypeJson(column.typeJson());
-      if (type == null) {
-        // Both spellings can be absent; an empty string keeps the schema JSON well-formed for
-        // DeltaSchemaMapper, which a literal null field value would not be.
-        String declared = column.typeText() != null ? column.typeText() : column.typeName();
-        field.put("type", declared == null ? "" : declared);
-      } else {
-        field.set("type", type);
-      }
-      field.put("nullable", column.nullable());
-      fields.add(field);
-    }
-    var schema = M.createObjectNode();
-    schema.put("type", "struct");
-    schema.set("fields", fields);
-    return schema.toString();
-  }
-
-  private static JsonNode typeFromTypeJson(String typeJson) {
-    if (typeJson == null || typeJson.isBlank()) {
-      return null;
-    }
     try {
-      JsonNode type = M.readTree(typeJson).get("type");
-      return type == null || type.isNull() ? null : type;
-    } catch (Exception ignored) {
-      return null;
+      return UnityCatalogSchemaJson.fromColumns(table.columns());
+    } catch (IllegalArgumentException failure) {
+      throw new SourceCatalogAccessException(
+          SourceCatalogAccessException.Denial.UNSUPPORTED,
+          failure.getMessage()
+              + ": table="
+              + LogSafeText.bounded(table.name(), MAX_LOGGED_NAME_CHARS));
     }
   }
 

@@ -496,22 +496,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   @Override
   public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId) {
     Set<Long> snapshotIds = new LinkedHashSet<>();
-    String token = "";
-    do {
-      var response =
-          snapshot(ctx)
-              .listSnapshots(
-                  ListSnapshotsRequest.newBuilder()
-                      .setTableId(tableId)
-                      .setPage(PageRequest.newBuilder().setPageSize(500).setPageToken(token))
-                      .build());
-      for (Snapshot snapshot : response.getSnapshotsList()) {
-        if (snapshot.getSnapshotId() >= 0) {
-          snapshotIds.add(snapshot.getSnapshotId());
-        }
-      }
-      token = response.hasPage() ? response.getPage().getNextPageToken() : "";
-    } while (!token.isBlank());
+    listAllSnapshots(ctx, tableId).stream()
+        .map(Snapshot::getSnapshotId)
+        .filter(snapshotId -> snapshotId >= 0)
+        .forEach(snapshotIds::add);
     return snapshotIds;
   }
 
@@ -520,6 +508,22 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     Set<Long> snapshotIds = new LinkedHashSet<>();
     Map<Long, ColumnIdentityMap> maps = new LinkedHashMap<>();
     long highWaterMark = 0L;
+    for (Snapshot snapshot : listAllSnapshots(ctx, tableId)) {
+      if (snapshot.getSnapshotId() < 0) {
+        continue;
+      }
+      snapshotIds.add(snapshot.getSnapshotId());
+      if (snapshot.hasColumnIdentityMap()) {
+        ColumnIdentityMap identityMap = snapshot.getColumnIdentityMap();
+        highWaterMark = Math.max(highWaterMark, identityMap.getHighWaterMark());
+        maps.put(snapshot.getSnapshotId(), identityMap);
+      }
+    }
+    return new SnapshotIdentityHistory(snapshotIds, maps, highWaterMark);
+  }
+
+  private List<Snapshot> listAllSnapshots(ReconcileContext ctx, ResourceId tableId) {
+    List<Snapshot> snapshots = new java.util.ArrayList<>();
     String token = "";
     do {
       var response =
@@ -529,20 +533,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       .setTableId(tableId)
                       .setPage(PageRequest.newBuilder().setPageSize(500).setPageToken(token))
                       .build());
-      for (Snapshot snapshot : response.getSnapshotsList()) {
-        if (snapshot.getSnapshotId() < 0) {
-          continue;
-        }
-        snapshotIds.add(snapshot.getSnapshotId());
-        if (snapshot.hasColumnIdentityMap()) {
-          ColumnIdentityMap identityMap = snapshot.getColumnIdentityMap();
-          highWaterMark = Math.max(highWaterMark, identityMap.getHighWaterMark());
-          maps.put(snapshot.getSnapshotId(), identityMap);
-        }
-      }
+      snapshots.addAll(response.getSnapshotsList());
       token = response.hasPage() ? response.getPage().getNextPageToken() : "";
     } while (!token.isBlank());
-    return new SnapshotIdentityHistory(snapshotIds, maps, highWaterMark);
+    return List.copyOf(snapshots);
   }
 
   @Override
@@ -584,6 +578,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (snapshotId < 0) {
       return Optional.empty();
     }
+    ColumnIdentityMap identityMap = identityMapForSnapshot(ctx, tableId, snapshotId);
     return withSourceConnector(
         ctx,
         tableId,
@@ -601,7 +596,13 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
               planned.isPresent(),
               planned.map(plan -> plan.dataFiles().size()).orElse(0),
               planned.map(plan -> plan.deleteFiles().size()).orElse(0));
-          return planned;
+          return planned.map(
+              plan ->
+                  new FloecatConnector.SnapshotFilePlan(
+                      plan.dataFiles(),
+                      plan.deleteFiles(),
+                      ColumnIdentityExecutionSchema.attach(
+                          plan.executionSchemaJson(), identityMap)));
         });
   }
 
@@ -611,17 +612,27 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (baseSnapshotId < 0 || targetSnapshotId < 0 || targetSnapshotId == baseSnapshotId) {
       return Optional.empty();
     }
+    ColumnIdentityMap identityMap = identityMapForSnapshot(ctx, tableId, targetSnapshotId);
     return withSourceConnector(
         ctx,
         tableId,
         Optional.empty(),
         (source, sourceCtx) ->
-            source.planSnapshotFileDelta(
-                sourceCtx.sourceNamespace(),
-                sourceCtx.sourceTable(),
-                tableId,
-                baseSnapshotId,
-                targetSnapshotId));
+            source
+                .planSnapshotFileDelta(
+                    sourceCtx.sourceNamespace(),
+                    sourceCtx.sourceTable(),
+                    tableId,
+                    baseSnapshotId,
+                    targetSnapshotId)
+                .map(
+                    delta ->
+                        new FloecatConnector.SnapshotFileDelta(
+                            delta.addedDataFiles(),
+                            delta.removedDataFilePaths(),
+                            delta.deleteArtifactsChanged(),
+                            ColumnIdentityExecutionSchema.attach(
+                                delta.executionSchemaJson(), identityMap))));
   }
 
   @Override
@@ -667,7 +678,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       ctx.executionJobId(),
                       ctx.executionLeaseEpoch(),
                       () -> false,
-                      ColumnIdentityMap.getDefaultInstance()),
+                      identityMapForSnapshot(ctx, request.tableId(), request.snapshotId())),
                   (completedFileStats, completedPageIndexEntries) -> {
                     fileStats.addAll(completedFileStats);
                     pageIndexEntries.addAll(completedPageIndexEntries);
@@ -677,7 +688,11 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
           stats.addAll(capture.statsRecords());
           stats.addAll(fileStats);
           if (!request.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
-            return CaptureEngineResult.of(stats, pageIndexEntries, capture.stagedIndexArtifacts());
+            return CaptureEngineResult.of(
+                stats,
+                pageIndexEntries,
+                capture.stagedIndexArtifacts(),
+                capture.realizedStatsSelectors());
           }
           return CaptureEngineResult.of(
               stats,
@@ -688,8 +703,16 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                   request.plannedFilePaths(),
                   fileStats,
                   pageIndexEntries,
-                  request.managedIndexSidecarObjectPrefix()));
+                  request.managedIndexSidecarObjectPrefix()),
+              capture.realizedStatsSelectors());
         });
+  }
+
+  private ColumnIdentityMap identityMapForSnapshot(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId) {
+    return fetchSnapshot(ctx, tableId, snapshotId)
+        .map(Snapshot::getColumnIdentityMap)
+        .orElse(ColumnIdentityMap.getDefaultInstance());
   }
 
   @Override

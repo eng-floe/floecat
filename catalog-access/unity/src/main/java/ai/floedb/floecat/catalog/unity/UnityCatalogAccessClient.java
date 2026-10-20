@@ -22,10 +22,11 @@ import ai.floedb.floecat.catalog.delta.DeltaLogStorageProbe;
 import ai.floedb.floecat.client.unity.TemporaryTableCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogException;
+import ai.floedb.floecat.client.unity.UnityCatalogSchemaJson;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
+import ai.floedb.floecat.client.unity.UnityCatalogTypeText;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -35,7 +36,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.regex.Pattern;
 
 final class UnityCatalogAccessClient implements CatalogClient {
   private static final ObjectMapper JSON = new ObjectMapper();
@@ -647,19 +647,16 @@ final class UnityCatalogAccessClient implements CatalogClient {
   /**
    * A column's Iceberg type, or {@code null} when it has none.
    *
-   * <p>Prefers {@code type_json}, which carries the nested shape for a struct, array or map;
-   * without it, only the declared primitive name is available. Nested ids are drawn from the same
-   * counter as the top-level fields, because Iceberg requires them unique across the whole schema
-   * rather than per level.
+   * <p>Uses the shared Unity parser: supplied {@code type_json} is authoritative, and absent JSON
+   * is reconstructed from {@code type_text}. Nested ids share the top-level counter because Iceberg
+   * requires them unique across the whole schema.
    */
   static JsonNode columnType(UnityCatalogTable.Column column, int[] nextId) {
-    JsonNode declared = typeFromJson(column.typeJson());
-    JsonNode fromJson = declared == null ? null : icebergTypeNode(declared, nextId);
-    if (fromJson != null) {
-      return fromJson;
+    try {
+      return icebergTypeNode(UnityCatalogSchemaJson.field(column).get("type"), nextId);
+    } catch (IllegalArgumentException unsupported) {
+      return null;
     }
-    String primitive = icebergType(column);
-    return primitive == null ? null : JSON.getNodeFactory().textNode(primitive);
   }
 
   /**
@@ -762,49 +759,12 @@ final class UnityCatalogAccessClient implements CatalogClient {
       case "timestamp_ntz" -> "timestamp";
       case "string" -> "string";
       case "binary" -> "binary";
-      default -> name.startsWith("decimal") ? decimalType(name) : null;
+      default ->
+          name.startsWith("decimal")
+              ? UnityCatalogTypeText.toDeltaType(name).asText().replace(",", ", ")
+              : null;
     };
   }
-
-  /**
-   * The Iceberg primitive name for a Unity column, or {@code null} when there is not one.
-   *
-   * <p>Iceberg has no byte or short, so both widen to {@code int}, which cannot lose a value.
-   * Delta's {@code TIMESTAMP} is an instant, which is Iceberg's {@code timestamptz}, while {@code
-   * TIMESTAMP_NTZ} is the local-time {@code timestamp}; swapping those two shifts every value by
-   * the session offset without erroring. Decimal carries precision and scale, which only {@code
-   * type_text} states.
-   */
-  static String icebergType(UnityCatalogTable.Column column) {
-    String name =
-        column.typeName() == null ? "" : column.typeName().trim().toUpperCase(Locale.ROOT);
-    return switch (name) {
-      case "BOOLEAN" -> "boolean";
-      case "BYTE", "TINYINT", "SHORT", "SMALLINT", "INT", "INTEGER" -> "int";
-      case "LONG", "BIGINT" -> "long";
-      case "FLOAT", "REAL" -> "float";
-      case "DOUBLE" -> "double";
-      case "DATE" -> "date";
-      case "TIMESTAMP" -> "timestamptz";
-      case "TIMESTAMP_NTZ" -> "timestamp";
-      case "STRING", "VARCHAR", "CHAR" -> "string";
-      case "BINARY" -> "binary";
-      case "DECIMAL", "DEC", "NUMERIC" -> decimalType(column.typeText());
-      default -> null;
-    };
-  }
-
-  /** {@code decimal(p,s)} from the declared text; without both, Iceberg cannot type the column. */
-  private static String decimalType(String typeText) {
-    if (typeText == null) {
-      return null;
-    }
-    var matcher = DECIMAL_TYPE.matcher(typeText.trim());
-    return matcher.matches() ? "decimal(" + matcher.group(1) + ", " + matcher.group(2) + ")" : null;
-  }
-
-  private static final Pattern DECIMAL_TYPE =
-      Pattern.compile("(?i)^decimal\\s*\\(\\s*(\\d{1,2})\\s*,\\s*(\\d{1,2})\\s*\\)$");
 
   /**
    * Both load paths funnel through a schema builder, so the guard belongs here rather than twice.
@@ -826,95 +786,13 @@ final class UnityCatalogAccessClient implements CatalogClient {
 
   private String schemaJson(CatalogObjectName name, UnityCatalogTable table) {
     requireColumns(name, table, "table");
-    var fields = JSON.createArrayNode();
-    for (UnityCatalogTable.Column column : table.columns()) {
-      // The field Unity sent, kept whole where it parses, rather than three keys copied out of it.
-      // Its "metadata" carries delta.columnMapping.id and delta.columnMapping.physicalName on a
-      // column-mapped table -- the ordinary shape for a managed Unity table -- and those are read
-      // downstream: DeltaSchemaMapper takes the id as the field id, and
-      // DeltaSchemaNormalizer.defaultNameMappingJson builds the logical-to-physical Parquet name
-      // mapping from the physical name. Rebuilding the field dropped both, so a renamed or
-      // column-mapped column resolved against the wrong Parquet column or not at all.
-      ObjectNode parsed = fieldFromJson(column.typeJson());
-      var field = JSON.createObjectNode();
-      // Name and nullability come from the column record, not from type_json: those are what the
-      // listing and the detail read agree on, and a type_json that disagrees is not the authority
-      // on them. Written in a fixed order so the emitted schema does not depend on how the
-      // workspace happened to order its keys.
-      field.put("name", column.name());
-      if (parsed == null) {
-        String declared = column.typeText() != null ? column.typeText() : column.typeName();
-        if (declared == null || declared.isBlank()) {
-          // Refused rather than published as an empty type, which is the same policy viewSchemaJson
-          // applies to a type it cannot represent: a schema that parses and lies is worse than one
-          // that is missing, because the failure then surfaces in DeltaSchemaMapper or at scan time
-          // with nothing pointing back at the upstream column. Defensive -- Unity rejects a column
-          // with no type_json on create -- but this is the one place that would let such a column
-          // through.
-          throw new CatalogAccessException(
-              CatalogAccessException.Code.UNSUPPORTED,
-              "Unity Catalog column states no type: column="
-                  + column.name()
-                  + " table="
-                  + fullName(name));
-        }
-        field.put("type", declared);
-      } else {
-        field.set("type", parsed.get("type"));
-      }
-      field.put("nullable", column.nullable());
-      if (parsed != null) {
-        parsed
-            .properties()
-            .forEach(
-                entry -> {
-                  if (!field.has(entry.getKey())) {
-                    field.set(entry.getKey(), entry.getValue());
-                  }
-                });
-      }
-      fields.add(field);
-    }
-    var schema = JSON.createObjectNode();
-    schema.put("type", "struct");
-    schema.set("fields", fields);
-    return schema.toString();
-  }
-
-  /**
-   * Unity's {@code type_json} as an object, when it is one that carries a type.
-   *
-   * <p>Returned whole so anything beside the type -- {@code metadata} above all -- survives into
-   * the schema this provider publishes. A copy, so mutating it cannot reach the parsed tree.
-   */
-  private static ObjectNode fieldFromJson(String value) {
-    if (value == null || value.isBlank()) {
-      return null;
-    }
     try {
-      JsonNode parsed = JSON.readTree(value);
-      if (!parsed.isObject()) {
-        return null;
-      }
-      JsonNode type = parsed.get("type");
-      if (type == null || type.isNull()) {
-        return null;
-      }
-      return ((ObjectNode) parsed).deepCopy();
-    } catch (Exception notParseable) {
-      return null;
-    }
-  }
-
-  private static JsonNode typeFromJson(String value) {
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    try {
-      JsonNode type = JSON.readTree(value).get("type");
-      return type == null || type.isNull() ? null : type;
-    } catch (Exception ignored) {
-      return null;
+      return UnityCatalogSchemaJson.fromColumns(table.columns());
+    } catch (IllegalArgumentException failure) {
+      throw new CatalogAccessException(
+          CatalogAccessException.Code.UNSUPPORTED,
+          failure.getMessage() + " table=" + fullName(name),
+          failure);
     }
   }
 

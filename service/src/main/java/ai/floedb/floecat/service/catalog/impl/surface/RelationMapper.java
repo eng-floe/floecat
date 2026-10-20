@@ -161,7 +161,12 @@ final class RelationMapper {
     if (!graphSchema.isEmpty()) {
       return SchemaDescriptor.newBuilder().addAllColumns(graphSchema).build();
     }
-    return schemaMapper.map(table, table.getSchemaJson());
+    return schemaMapper.map(
+        table,
+        table.getSchemaJson(),
+        table.hasColumnIdentityMap()
+            ? table.getColumnIdentityMap()
+            : ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
   }
 
   private NameRef canonicalName(ResourceId id, String fallbackDisplayName) {

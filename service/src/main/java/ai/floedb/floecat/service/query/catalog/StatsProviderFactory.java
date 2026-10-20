@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.RelationStats;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.query.QueryContextStore;
@@ -155,7 +156,7 @@ public final class StatsProviderFactory {
     private final SnapshotRepository snapshotRepository;
     private final SnapshotSelectionResolver selectionResolver;
     private final String correlationId;
-    private final boolean allowUnpinnedLatestSnapshotFallback;
+    private final boolean useCurrentSnapshotSelection;
     private final Duration syncLatencyBudget;
     private final boolean syncEnabled;
 
@@ -166,7 +167,7 @@ public final class StatsProviderFactory {
         SnapshotRepository snapshotRepository,
         QueryContext ctx,
         String correlationId,
-        boolean allowUnpinnedLatestSnapshotFallback,
+        boolean useCurrentSnapshotSelection,
         Duration syncLatencyBudget,
         boolean syncEnabled,
         int maxParallelStatsWarms,
@@ -180,7 +181,7 @@ public final class StatsProviderFactory {
       this.statsFanout = MetadataFanout.concurrent(maxParallelStatsWarms);
       this.statsWarmLimiter = statsWarmLimiter;
       this.selectionResolver = new SnapshotSelectionResolver(queryStore, ctx, correlationId);
-      this.allowUnpinnedLatestSnapshotFallback = allowUnpinnedLatestSnapshotFallback;
+      this.useCurrentSnapshotSelection = useCurrentSnapshotSelection;
     }
 
     // Generation policy: these lookups scope stats to the pin's SNAPSHOT and read the pin's frozen
@@ -192,8 +193,8 @@ public final class StatsProviderFactory {
     // difference affects estimation only, never correctness.
     @Override
     public Optional<StatsProvider.TableStatsView> tableStats(ResourceId tableId) {
-      if (allowUnpinnedLatestSnapshotFallback) {
-        return latestSnapshotTableStats(tableId);
+      if (useCurrentSnapshotSelection) {
+        return currentSnapshotTableStats(tableId);
       }
       Optional<StatsProvider.TableStatsView> pinnedStats =
           selectionResolver.withResolvedSnapshot(
@@ -234,8 +235,8 @@ public final class StatsProviderFactory {
       return out;
     }
 
-    private Optional<StatsProvider.TableStatsView> latestSnapshotTableStats(ResourceId tableId) {
-      if (!allowUnpinnedLatestSnapshotFallback || tableId == null || snapshotRepository == null) {
+    private Optional<StatsProvider.TableStatsView> currentSnapshotTableStats(ResourceId tableId) {
+      if (!useCurrentSnapshotSelection || tableId == null || snapshotRepository == null) {
         return Optional.empty();
       }
       OptionalLong latestSnapshotId = resolveLatestSnapshotId(tableId);
@@ -293,7 +294,11 @@ public final class StatsProviderFactory {
             .resolveTableFactsInGeneration(
                 request,
                 selectionResolver.resolvedStatsGenerationRef(tableId),
-                allowUnpinnedLatestSnapshotFallback || selectionResolver.selectsCurrent(tableId))
+                useCurrentSnapshotSelection || selectionResolver.selectsCurrent(tableId))
+            .filter(
+                facts ->
+                    hasExpectedColumnIdentity(
+                        tableId, snapshotId, facts.columnIdentityFingerprint()))
             .map(
                 facts ->
                     new TableStatsViewImpl(
@@ -325,6 +330,10 @@ public final class StatsProviderFactory {
         return result
             .stats()
             .filter(TargetStatsRecord::hasScalar)
+            .filter(
+                record ->
+                    hasExpectedColumnIdentity(
+                        tableId, snapshotId, record.getColumnIdentityFingerprint()))
             .map(CachedStatsProvider::toColumnStatsView);
       } catch (RuntimeException e) {
         rethrowSnapshotExpired(e);
@@ -343,6 +352,17 @@ public final class StatsProviderFactory {
       if (status != null && status.errorCode() == ErrorCode.MC_SNAPSHOT_EXPIRED) {
         throw failure;
       }
+    }
+
+    private boolean hasExpectedColumnIdentity(
+        ResourceId tableId, long snapshotId, String actualFingerprint) {
+      Optional<String> expectedFingerprint =
+          useCurrentSnapshotSelection && snapshotRepository != null
+              ? snapshotRepository
+                  .getById(tableId, snapshotId)
+                  .flatMap(ColumnIdentityMaps::fingerprint)
+              : selectionResolver.resolvedColumnIdentityFingerprint(tableId);
+      return ColumnIdentityMaps.matchesFingerprint(expectedFingerprint, actualFingerprint);
     }
 
     private String connectorTypeFor(ResourceId tableId) {

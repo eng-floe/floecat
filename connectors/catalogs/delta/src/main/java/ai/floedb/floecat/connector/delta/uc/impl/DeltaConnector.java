@@ -38,13 +38,12 @@ import ai.floedb.floecat.connector.common.ndv.NdvProvider;
 import ai.floedb.floecat.connector.common.ndv.ParquetAvgWidthProvider;
 import ai.floedb.floecat.connector.common.ndv.ParquetNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
-import ai.floedb.floecat.connector.common.resolver.ColumnIdComputer;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
-import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind;
+import ai.floedb.floecat.delta.identity.DeltaCanonicalIdentity;
 import ai.floedb.floecat.delta.identity.DeltaColumnMapping;
 import ai.floedb.floecat.delta.identity.DeltaHistorySource;
 import ai.floedb.floecat.delta.identity.DeltaIdentityService;
@@ -53,6 +52,9 @@ import ai.floedb.floecat.delta.identity.DeltaSchemaMapper;
 import ai.floedb.floecat.delta.identity.IdentityResult;
 import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.delta.identity.PersistedIdentityLookup;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.schema.identity.ColumnPath;
+import ai.floedb.floecat.schema.identity.SchemaIdentityState;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.delta.kernel.Snapshot;
@@ -89,6 +91,7 @@ import io.delta.kernel.utils.CloseableIterator;
 import io.delta.kernel.utils.FileStatus;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -105,17 +108,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.LongFunction;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.apache.parquet.io.InputFile;
 import org.jboss.logging.Logger;
 
-abstract class DeltaConnector implements CanonicalIdentityConnector {
+abstract class DeltaConnector implements FloecatConnector {
 
   protected static final ObjectMapper M = new ObjectMapper();
   private static final String DELTA_CHECK_CONSTRAINT_PREFIX = "delta.constraints.";
-  private static final Pattern EARLIEST_AVAILABLE_VERSION_PATTERN =
-      Pattern.compile("earliest available version is\\s+(\\d+)", Pattern.CASE_INSENSITIVE);
   private static final int MAX_DELTA_CHANGE_READ_PARALLELISM = 16;
   private static final int TARGET_COMMITS_PER_CHANGE_READER = 64;
   private static final Logger LOG = Logger.getLogger(DeltaConnector.class);
@@ -324,15 +324,26 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     if (snapshot == null) {
       return List.of();
     }
-    return buildTargetStats(
-        storageLocation,
-        destinationTableId,
-        includeColumns,
-        columnSelectorPolicy,
-        snapshotId,
-        snapshot,
-        includeTargetKinds,
-        Set.of());
+    throw new UnsupportedOperationException(
+        "Delta statistics are keyed by canonical column IDs, which only the snapshot's persisted"
+            + " identity map defines; call captureSnapshotTargetStatsDirect with that map");
+  }
+
+  /**
+   * The snapshot's persisted identity map, which the caller must supply.
+   *
+   * <p>Deriving one here is not an option: for an unmapped table the canonical IDs depend on the
+   * whole reconciled version chain, so a locally reconstructed map would issue IDs that disagree
+   * with every previously captured statistic.
+   */
+  private static ColumnIdentityMap requireIdentityMap(
+      ColumnIdentityMap columnIdentityMap, long snapshotId) {
+    if (columnIdentityMap == null
+        || columnIdentityMap.equals(ColumnIdentityMap.getDefaultInstance())) {
+      throw new IllegalArgumentException(
+          "Delta capture requires the persisted column identity map for snapshot " + snapshotId);
+    }
+    return columnIdentityMap;
   }
 
   @Override
@@ -363,6 +374,8 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     if (snapshot == null) {
       return Optional.empty();
     }
+    ColumnIdentityMap effectiveIdentityMap = requireIdentityMap(columnIdentityMap, snapshotId);
+    var validatedIdentity = DeltaCanonicalIdentity.resolve(snapshot, effectiveIdentityMap);
 
     final StructType kernelSchema = snapshot.getSchema();
     final Map<String, LogicalType> nameToType = DeltaSchemaMapper.deltaStatsTypeMap(kernelSchema);
@@ -432,14 +445,10 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
             .orElse(0);
     Set<String> realizedStatsSelectors = new java.util.TreeSet<>();
     if (requestedKinds.contains(StatsTargetKind.COLUMN)) {
-      var columnIds =
-          LogicalSchemaMapper.buildColumnOrdinals(
-              ColumnIdAlgorithm.CID_PATH_ORDINAL,
-              TableFormat.TF_DELTA,
-              snapshotSchemaJson(snapshot));
+      var columnIds = validatedIdentity.canonicalIdsByStatsKey();
       for (String name : includeNames) {
         realizedStatsSelectors.add(name);
-        long columnId = columnIds.getOrDefault(name, 0);
+        long columnId = columnIds.getOrDefault(name, 0L);
         if (columnId > 0L) {
           realizedStatsSelectors.add("#" + columnId);
         }
@@ -454,6 +463,7 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
                 columnSelectorPolicy,
                 snapshotId,
                 snapshot,
+                validatedIdentity,
                 requestedKinds,
                 Set.of(),
                 false),
@@ -483,6 +493,8 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     if (snapshot == null) {
       return FileGroupCaptureResult.empty();
     }
+    ColumnIdentityMap effectiveIdentityMap = requireIdentityMap(columnIdentityMap, snapshotId);
+    var validatedIdentity = DeltaCanonicalIdentity.resolve(snapshot, effectiveIdentityMap);
     List<TargetStatsRecord> stats =
         buildTargetStats(
             storageLocation,
@@ -491,10 +503,12 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
             columnSelectorPolicy,
             snapshotId,
             snapshot,
+            validatedIdentity,
             includeTargetKinds == null || includeTargetKinds.isEmpty()
                 ? Set.of(StatsTargetKind.FILE)
                 : includeTargetKinds,
-            plannedFilePaths);
+            plannedFilePaths,
+            true);
     Set<StatsTargetKind> requestedKinds =
         includeTargetKinds == null || includeTargetKinds.isEmpty()
             ? Set.of(StatsTargetKind.FILE)
@@ -520,6 +534,7 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     List<ParquetPageIndexEntry> selectedPageIndexes =
         selectPageIndexEntries(
             snapshot,
+            effectiveIdentityMap,
             indexColumns,
             columnSelectorPolicy,
             plannedFilePaths,
@@ -548,11 +563,18 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     }
     return Optional.of(
         selectPageIndexEntries(
-            snapshot, selectors, columnSelectorPolicy, plannedFilePaths, entries, rowGroups));
+            snapshot,
+            columnIdentityMap,
+            selectors,
+            columnSelectorPolicy,
+            plannedFilePaths,
+            entries,
+            rowGroups));
   }
 
   private List<ParquetPageIndexEntry> selectPageIndexEntries(
       Snapshot snapshot,
+      ColumnIdentityMap columnIdentityMap,
       Set<String> selectors,
       ColumnSelectorPolicy columnSelectorPolicy,
       Set<String> plannedFilePaths,
@@ -561,12 +583,14 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     var schemaDescriptor =
         new LogicalSchemaMapper()
             .mapRaw(
-                ColumnIdAlgorithm.CID_PATH_ORDINAL,
+                ColumnIdAlgorithm.CID_CANONICAL_MAP,
                 TableFormat.TF_DELTA,
                 snapshotSchemaJson(snapshot),
-                Set.of());
+                Set.of(),
+                columnIdentityMap);
     Map<Long, ai.floedb.floecat.query.rpc.SchemaColumn> columnsById = new LinkedHashMap<>();
     Map<String, ai.floedb.floecat.query.rpc.SchemaColumn> columnsByPath = new LinkedHashMap<>();
+    Set<String> ambiguousPaths = new HashSet<>();
     Map<String, List<ai.floedb.floecat.query.rpc.SchemaColumn>> columnsByName =
         new LinkedHashMap<>();
     for (var column : schemaDescriptor.getColumnsList()) {
@@ -574,25 +598,37 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
         continue;
       }
       columnsById.put(column.getId(), column);
-      columnsByPath.put(column.getPhysicalPath(), column);
+      if (columnsByPath.putIfAbsent(column.getPhysicalPath(), column) != null) {
+        ambiguousPaths.add(column.getPhysicalPath());
+      }
       columnsByName.computeIfAbsent(column.getName(), ignored -> new ArrayList<>()).add(column);
     }
-    Map<String, SyntheticPageIndexColumn> syntheticColumnsByPath =
-        deltaSyntheticPageIndexColumns(snapshot.getSchema());
-    Map<Long, SyntheticPageIndexColumn> syntheticColumnsById = new LinkedHashMap<>();
+    // Dotted paths are not unique: a literal field `a.b` and a nested `a` -> `b` share one. Such a
+    // path names no column, and a Parquet path shared that way cannot attribute a footer column, so
+    // those columns get no page index rather than another column's (or a synthetic all-null) one.
+    columnsByPath.keySet().removeAll(ambiguousPaths);
+    Map<Long, SyntheticPageIndexColumn> syntheticColumnsById =
+        deltaSyntheticPageIndexColumns(
+            snapshot.getSchema(), ColumnIdentityMaps.restore(columnIdentityMap));
+    Set<String> ambiguousParquetPaths = new HashSet<>();
     Map<String, ai.floedb.floecat.query.rpc.SchemaColumn> columnsByParquetPath =
         new LinkedHashMap<>();
-    columnsById
-        .values()
-        .forEach(
-            column -> {
-              SyntheticPageIndexColumn synthetic =
-                  syntheticColumnsByPath.get(column.getPhysicalPath());
-              if (synthetic != null) {
-                syntheticColumnsById.put(column.getId(), synthetic);
-                columnsByParquetPath.put(synthetic.parquetPath(), column);
-              }
-            });
+    syntheticColumnsById.forEach(
+        (columnId, synthetic) -> {
+          if (columnsByParquetPath.putIfAbsent(synthetic.parquetPath(), columnsById.get(columnId))
+              != null) {
+            ambiguousParquetPaths.add(synthetic.parquetPath());
+          }
+        });
+    columnsByParquetPath.keySet().removeAll(ambiguousParquetPaths);
+    Set<Long> unattributableColumnIds = new HashSet<>();
+    syntheticColumnsById.forEach(
+        (columnId, synthetic) -> {
+          if (ambiguousParquetPaths.contains(synthetic.parquetPath())) {
+            unattributableColumnIds.add(columnId);
+          }
+        });
+    syntheticColumnsById.keySet().removeAll(unattributableColumnIds);
     Map<Integer, ai.floedb.floecat.query.rpc.SchemaColumn> columnsByFormatFieldId =
         new LinkedHashMap<>();
     columnsById.values().stream()
@@ -631,6 +667,9 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
         }
         selected = columnsById.get(columnId);
       } else {
+        if (ambiguousPaths.contains(normalized)) {
+          continue;
+        }
         selected = columnsByPath.get(normalized);
         if (selected == null) {
           List<ai.floedb.floecat.query.rpc.SchemaColumn> named =
@@ -641,10 +680,15 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
       if (selected == null) {
         throw new IllegalArgumentException("Unknown Delta column selector: " + normalized);
       }
+      if (unattributableColumnIds.contains(selected.getId())) {
+        continue;
+      }
       LinkedHashSet<String> aliases =
           aliasesByColumnId.computeIfAbsent(selected.getId(), ignored -> new LinkedHashSet<>());
       aliases.add("#" + selected.getId());
-      aliases.add(selected.getPhysicalPath());
+      if (!ambiguousPaths.contains(selected.getPhysicalPath())) {
+        aliases.add(selected.getPhysicalPath());
+      }
       aliases.add(normalized);
     }
 
@@ -807,22 +851,22 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     return List.copyOf(synthetic);
   }
 
-  private static Map<String, SyntheticPageIndexColumn> deltaSyntheticPageIndexColumns(
-      StructType schema) {
-    Map<String, SyntheticPageIndexColumn> columns = new LinkedHashMap<>();
-    collectDeltaSyntheticPageIndexColumns(schema, "", "", 0, columns);
-    return Map.copyOf(columns);
+  private static Map<Long, SyntheticPageIndexColumn> deltaSyntheticPageIndexColumns(
+      StructType schema, SchemaIdentityState identity) {
+    Map<Long, SyntheticPageIndexColumn> columns = new LinkedHashMap<>();
+    collectDeltaSyntheticPageIndexColumns(schema, ColumnPath.ROOT, "", 0, identity, columns);
+    return columns;
   }
 
   private static void collectDeltaSyntheticPageIndexColumns(
       StructType schema,
-      String logicalPrefix,
+      ColumnPath prefix,
       String parquetPrefix,
       int inheritedDefinitionLevel,
-      Map<String, SyntheticPageIndexColumn> columns) {
+      SchemaIdentityState identity,
+      Map<Long, SyntheticPageIndexColumn> columns) {
     for (StructField field : schema.fields()) {
-      String logicalPath =
-          logicalPrefix.isEmpty() ? field.getName() : logicalPrefix + "." + field.getName();
+      ColumnPath path = prefix.field(field.getName());
       String physicalName = DeltaColumnMapping.physicalName(field.getMetadata());
       if (physicalName == null || physicalName.isBlank()) {
         physicalName = field.getName();
@@ -833,12 +877,12 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
       DataType dataType = field.getDataType();
       if (dataType instanceof StructType structType) {
         collectDeltaSyntheticPageIndexColumns(
-            structType, logicalPath, parquetPath, definitionLevel, columns);
+            structType, path, parquetPath, definitionLevel, identity, columns);
       } else if (!(dataType instanceof ArrayType) && !(dataType instanceof MapType)) {
         SyntheticPageIndexColumn column =
             syntheticDeltaPrimitive(parquetPath, definitionLevel, dataType);
         if (column != null) {
-          columns.put(logicalPath, column);
+          identity.byPath(path).ifPresent(entry -> columns.put(entry.canonicalId(), column));
         }
       }
     }
@@ -1223,7 +1267,7 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
         mapDeltaConstraints(
             schema,
             fallbackTablePropertiesForConstraints(namespaceFq, tableName),
-            snapshotBundle.schemaJson());
+            snapshotBundle.columnIdentityMap());
     if (constraints.isEmpty()) {
       return Optional.empty();
     }
@@ -1312,7 +1356,7 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
           storageLocation,
           describeTableSchemaJson(storageLocation),
           List.of(),
-          ColumnIdAlgorithm.CID_PATH_ORDINAL,
+          ColumnIdAlgorithm.CID_CANONICAL_MAP,
           props);
     } catch (Exception e) {
       throw new RuntimeException("describe failed", e);
@@ -1436,20 +1480,16 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     return List.copyOf(versions);
   }
 
-  static List<ConstraintDefinition> mapDeltaConstraints(StructType schema, String schemaJson) {
-    return mapDeltaConstraints(schema, Map.of(), schemaJson);
-  }
-
   static List<ConstraintDefinition> mapDeltaConstraints(
-      StructType schema, Map<String, String> tableProperties, String schemaJson) {
+      StructType schema, Map<String, String> tableProperties, ColumnIdentityMap identityMap) {
     if (schema == null) {
       return List.of();
     }
-    Map<String, Integer> ordinals =
-        LogicalSchemaMapper.buildColumnOrdinals(
-            ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schemaJson);
+    Map<ai.floedb.floecat.schema.identity.ColumnPath, Long> canonicalIds =
+        DeltaCanonicalIdentity.canonicalIdsByPath(identityMap);
     List<ConstraintDefinition> out = new ArrayList<>();
-    collectDeltaNotNullConstraints(schema.fields(), "", out, ordinals);
+    collectDeltaNotNullConstraints(
+        schema.fields(), ai.floedb.floecat.schema.identity.ColumnPath.ROOT, out, canonicalIds);
     out.addAll(mapDeltaCheckConstraints(tableProperties));
     return List.copyOf(out);
   }
@@ -1486,27 +1526,7 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
       ColumnSelectorPolicy columnSelectorPolicy,
       long version,
       Snapshot snapshot,
-      Set<StatsTargetKind> includeTargetKinds,
-      Set<String> plannedFilePaths) {
-    return buildTargetStats(
-        storageLocation,
-        destinationTableId,
-        includeColumns,
-        columnSelectorPolicy,
-        version,
-        snapshot,
-        includeTargetKinds,
-        plannedFilePaths,
-        true);
-  }
-
-  private List<TargetStatsRecord> buildTargetStats(
-      String storageLocation,
-      ResourceId destinationTableId,
-      Set<String> includeColumns,
-      ColumnSelectorPolicy columnSelectorPolicy,
-      long version,
-      Snapshot snapshot,
+      DeltaCanonicalIdentity.ValidatedIdentity validatedIdentity,
       Set<StatsTargetKind> includeTargetKinds,
       Set<String> plannedFilePaths,
       boolean allowFooterFallback) {
@@ -1518,8 +1538,8 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     }
 
     final StructType kernelSchema = snapshot.getSchema();
+    final Map<String, Long> canonicalIds = validatedIdentity.canonicalIdsByStatsKey();
     final Map<String, LogicalType> nameToType = DeltaSchemaMapper.deltaStatsTypeMap(kernelSchema);
-    final String schemaJson = snapshotSchemaJson(snapshot);
     final Set<String> includeNames =
         FloecatConnector.resolveIncludedColumns(
             List.copyOf(nameToType.keySet()), includeColumns, columnSelectorPolicy);
@@ -1543,9 +1563,7 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
         ConnectorStatsViewBuilder.toTableValueStats(
             version, snapshot.getTimestamp(engine), TableFormat.TF_DELTA, result);
 
-    var positions =
-        LogicalSchemaMapper.buildColumnOrdinals(
-            ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schemaJson);
+    var positions = validatedIdentity.ordinalsByStatsKey();
 
     List<FloecatConnector.ColumnStatsView> cStats =
         emitColumns
@@ -1555,6 +1573,7 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
                 name -> name,
                 name -> positions.getOrDefault(name, 0),
                 name -> 0,
+                name -> canonicalIds.getOrDefault(name, 0L),
                 name -> {
                   var lt = logicalTypes.get(name);
                   return (lt != null) ? lt : nameToType.get(name);
@@ -1572,6 +1591,7 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
                   name -> name,
                   name -> positions.getOrDefault(name, 0),
                   name -> 0,
+                  name -> canonicalIds.getOrDefault(name, 0L),
                   name -> {
                     var lt = logicalTypes.get(name);
                     return (lt != null) ? lt : nameToType.get(name);
@@ -1606,14 +1626,17 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
     if (emitColumns) {
       materialized.addAll(
           StatsProtoEmitter.toTargetColumnStatsFromViews(
-              destinationTableId, version, ColumnIdAlgorithm.CID_PATH_ORDINAL, cStats));
+              destinationTableId, version, ColumnIdAlgorithm.CID_CANONICAL_MAP, cStats));
     }
     if (emitFiles) {
       materialized.addAll(
           StatsProtoEmitter.toTargetFileStatsFromViews(
-              destinationTableId, version, ColumnIdAlgorithm.CID_PATH_ORDINAL, files));
+              destinationTableId, version, ColumnIdAlgorithm.CID_CANONICAL_MAP, files));
     }
-    return List.copyOf(materialized);
+    String fingerprint = validatedIdentity.state().fingerprint();
+    return materialized.stream()
+        .map(record -> record.toBuilder().setColumnIdentityFingerprint(fingerprint).build())
+        .toList();
   }
 
   protected Snapshot resolveSnapshot(Table table, long snapshotId, long asOfTime) {
@@ -1669,24 +1692,20 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
 
   private static void collectDeltaNotNullConstraints(
       List<StructField> fields,
-      String prefix,
+      ai.floedb.floecat.schema.identity.ColumnPath prefix,
       List<ConstraintDefinition> out,
-      Map<String, Integer> ordinals) {
+      Map<ai.floedb.floecat.schema.identity.ColumnPath, Long> canonicalIds) {
     for (StructField field : fields) {
-      String path = prefix.isEmpty() ? field.getName() : prefix + "." + field.getName();
+      ai.floedb.floecat.schema.identity.ColumnPath path = prefix.field(field.getName());
       boolean fieldIsNonNull = !field.isNullable();
       boolean isStruct = field.getDataType() instanceof StructType;
       if (fieldIsNonNull && !isStruct) {
-        int ordinal = ordinals.getOrDefault(path, 0);
-        long columnId =
-            (ordinal > 0)
-                ? ColumnIdComputer.compute(
-                    ColumnIdAlgorithm.CID_PATH_ORDINAL, path, null, ordinal, 0)
-                : 0L;
-        // Name encodes columnId when available (stable for column renames iff path+ordinal
-        // unchanged — same invariant as the column_id itself), or path for nested struct leaves
-        // where no stable ID is computable without catalog support.
-        String constraintName = (columnId != 0L) ? "nn_" + columnId : "nn_" + path;
+        Long columnId = canonicalIds.get(path);
+        if (columnId == null) {
+          throw new IllegalArgumentException(
+              "Column identity map does not cover Delta constraint path " + path);
+        }
+        String constraintName = "nn_" + columnId;
         out.add(
             ConstraintDefinition.newBuilder()
                 .setName(constraintName)
@@ -1695,7 +1714,7 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
                 .addColumns(
                     ConstraintColumnRef.newBuilder()
                         .setColumnId(columnId)
-                        .setColumnName(path)
+                        .setColumnName(path.display())
                         .setOrdinal(1)
                         .build())
                 .build());
@@ -1704,7 +1723,7 @@ abstract class DeltaConnector implements CanonicalIdentityConnector {
         // Only descend into a struct when the struct itself is non-nullable; a non-nullable child
         // inside a nullable parent struct is conditionally present, not flat-relational NOT NULL.
         collectDeltaNotNullConstraints(
-            ((StructType) field.getDataType()).fields(), path, out, ordinals);
+            ((StructType) field.getDataType()).fields(), path, out, canonicalIds);
       }
     }
   }

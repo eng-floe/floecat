@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -26,6 +27,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -45,6 +47,23 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class ObjectCacheTest {
+
+  @Test
+  void canonicalSchemaWithoutIdentityMapFailsFast() {
+    ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
+    UserTableNode table =
+        table(
+            "account",
+            "table",
+            TableFormat.TF_DELTA,
+            ColumnIdAlgorithm.CID_CANONICAL_MAP,
+            List.of());
+
+    assertThatThrownBy(
+            () -> cache.mappedSchema(table, "{}", ColumnIdentityMap.getDefaultInstance()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Canonical column identity map is required");
+  }
 
   @Test
   void mappedSchemaIdentityIncludesEveryMappingInput() {
@@ -83,9 +102,15 @@ class ObjectCacheTest {
             + "\"required\":true,\"type\":\"long\"}]}";
 
     SchemaDescriptor first =
-        cache.mappedSchema(table("account", "first", TableFormat.TF_ICEBERG, List.of()), schema);
+        cache.mappedSchema(
+            table("account", "first", TableFormat.TF_ICEBERG, List.of()),
+            schema,
+            ColumnIdentityMap.getDefaultInstance());
     SchemaDescriptor second =
-        cache.mappedSchema(table("account", "second", TableFormat.TF_ICEBERG, List.of()), schema);
+        cache.mappedSchema(
+            table("account", "second", TableFormat.TF_ICEBERG, List.of()),
+            schema,
+            ColumnIdentityMap.getDefaultInstance());
 
     assertThat(second).isSameAs(first);
   }
@@ -121,6 +146,31 @@ class ObjectCacheTest {
         "correlation", pin(table.id(), "definition-b", "constraints", "schema"), graphView);
 
     assertThat(loads).hasValue(2);
+  }
+
+  @Test
+  void resolvedCanonicalSnapshotWithoutIdentityMapFailsFast() {
+    ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
+    UserTableNode table =
+        table(
+            "account",
+            "table",
+            TableFormat.TF_DELTA,
+            ColumnIdAlgorithm.CID_CANONICAL_MAP,
+            List.of());
+    CatalogGraphView graphView = mock(CatalogGraphView.class);
+    when(graphView.schemaFor(anyString(), eq(table.id()), any(), anyString(), anyString()))
+        .thenReturn(
+            new CatalogGraphView.SchemaResolution(
+                table, "{}", ColumnIdentityMap.getDefaultInstance()));
+
+    assertThatThrownBy(
+            () ->
+                cache.resolvedSnapshotSchema(
+                    "correlation",
+                    pin(table.id(), "definition", "constraints", "schema"),
+                    graphView))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -191,7 +241,7 @@ class ObjectCacheTest {
         () -> {
           firstLoads.incrementAndGet();
           return Optional.of(
-              new ObjectCache.SnapshotFacts(OptionalLong.of(1), OptionalLong.empty()));
+              new ObjectCache.SnapshotFacts(OptionalLong.of(1), OptionalLong.empty(), ""));
         });
     cache.snapshotFacts(
         second,
@@ -200,7 +250,7 @@ class ObjectCacheTest {
         () -> {
           secondLoads.incrementAndGet();
           return Optional.of(
-              new ObjectCache.SnapshotFacts(OptionalLong.of(2), OptionalLong.empty()));
+              new ObjectCache.SnapshotFacts(OptionalLong.of(2), OptionalLong.empty(), ""));
         });
 
     cache.evictAccount("first");
@@ -212,7 +262,7 @@ class ObjectCacheTest {
         () -> {
           firstLoads.incrementAndGet();
           return Optional.of(
-              new ObjectCache.SnapshotFacts(OptionalLong.of(3), OptionalLong.empty()));
+              new ObjectCache.SnapshotFacts(OptionalLong.of(3), OptionalLong.empty(), ""));
         });
     cache.snapshotFacts(
         second,
@@ -221,7 +271,7 @@ class ObjectCacheTest {
         () -> {
           secondLoads.incrementAndGet();
           return Optional.of(
-              new ObjectCache.SnapshotFacts(OptionalLong.of(4), OptionalLong.empty()));
+              new ObjectCache.SnapshotFacts(OptionalLong.of(4), OptionalLong.empty(), ""));
         });
 
     assertThat(firstLoads).hasValue(2);
@@ -242,7 +292,7 @@ class ObjectCacheTest {
                 () ->
                     Optional.of(
                         new ObjectCache.SnapshotFacts(
-                            OptionalLong.of(loads.incrementAndGet()), OptionalLong.empty()))))
+                            OptionalLong.of(loads.incrementAndGet()), OptionalLong.empty(), ""))))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(1L);
@@ -254,7 +304,8 @@ class ObjectCacheTest {
                 "generation-1",
                 () ->
                     Optional.of(
-                        new ObjectCache.SnapshotFacts(OptionalLong.of(7L), OptionalLong.of(70L)))))
+                        new ObjectCache.SnapshotFacts(
+                            OptionalLong.of(7L), OptionalLong.of(70L), ""))))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(7L);
@@ -268,7 +319,7 @@ class ObjectCacheTest {
                 () ->
                     Optional.of(
                         new ObjectCache.SnapshotFacts(
-                            OptionalLong.of(loads.incrementAndGet()), OptionalLong.empty()))))
+                            OptionalLong.of(loads.incrementAndGet()), OptionalLong.empty(), ""))))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(2L);
@@ -297,17 +348,17 @@ class ObjectCacheTest {
   @Test
   void snapshotFactsRequireExplicitAbsence() {
     assertThatNullPointerException()
-        .isThrownBy(() -> new ObjectCache.SnapshotFacts(null, OptionalLong.empty()))
+        .isThrownBy(() -> new ObjectCache.SnapshotFacts(null, OptionalLong.empty(), ""))
         .withMessage("rowCount");
     assertThatNullPointerException()
-        .isThrownBy(() -> new ObjectCache.SnapshotFacts(OptionalLong.empty(), null))
+        .isThrownBy(() -> new ObjectCache.SnapshotFacts(OptionalLong.empty(), null, ""))
         .withMessage("totalSizeBytes");
   }
 
   private static Optional<ObjectCache.SnapshotFacts> facts(AtomicInteger loads, long rowCount) {
     loads.incrementAndGet();
     return Optional.of(
-        new ObjectCache.SnapshotFacts(OptionalLong.of(rowCount), OptionalLong.empty()));
+        new ObjectCache.SnapshotFacts(OptionalLong.of(rowCount), OptionalLong.empty(), ""));
   }
 
   private static long rowCount(Optional<ObjectCache.SnapshotFacts> facts) {
@@ -399,7 +450,8 @@ class ObjectCacheTest {
         .thenAnswer(
             ignored -> {
               loads.incrementAndGet();
-              return new CatalogGraphView.SchemaResolution(table, schemaJson);
+              return new CatalogGraphView.SchemaResolution(
+                  table, schemaJson, ColumnIdentityMap.getDefaultInstance());
             });
     return graphView;
   }

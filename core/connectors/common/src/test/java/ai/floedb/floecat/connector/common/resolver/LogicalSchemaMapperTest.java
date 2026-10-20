@@ -19,6 +19,7 @@ package ai.floedb.floecat.connector.common.resolver;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
@@ -26,12 +27,15 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
-import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class LogicalSchemaMapperTest {
 
   private LogicalSchemaMapper mapper = new LogicalSchemaMapper();
+
+  private SchemaDescriptor map(Table table, String schemaJson) {
+    return mapper.map(table, schemaJson, ColumnIdentityMap.getDefaultInstance());
+  }
 
   private Table baseTable(String schemaJson, UpstreamRef upstream) {
     return Table.newBuilder()
@@ -61,7 +65,7 @@ class LogicalSchemaMapperTest {
 
     Table t = baseTable(json, upstream);
 
-    SchemaDescriptor desc = mapper.map(t, json);
+    SchemaDescriptor desc = map(t, json);
 
     assertEquals(2, desc.getColumnsCount());
 
@@ -94,7 +98,7 @@ class LogicalSchemaMapperTest {
         """;
 
     UpstreamRef upstream = UpstreamRef.newBuilder().setFormat(TableFormat.TF_UNSPECIFIED).build();
-    SchemaDescriptor desc = mapper.map(baseTable(json, upstream), json);
+    SchemaDescriptor desc = map(baseTable(json, upstream), json);
 
     SchemaColumn tags = desc.getColumns(0);
     assertEquals("ARRAY", typeTag(tags));
@@ -126,7 +130,7 @@ class LogicalSchemaMapperTest {
     UpstreamRef upstream = UpstreamRef.newBuilder().setFormat(TableFormat.TF_UNSPECIFIED).build();
     Table t = baseTable(json, upstream);
 
-    SchemaDescriptor desc = mapper.map(t, json);
+    SchemaDescriptor desc = map(t, json);
     assertEquals(1, desc.getColumnsCount());
     assertEquals("DECIMAL(39,0)", typeTag(desc.getColumns(0)));
   }
@@ -161,7 +165,7 @@ class LogicalSchemaMapperTest {
 
     Table t = baseTable(icebergJson, upstream);
 
-    SchemaDescriptor desc = mapper.map(t, icebergJson);
+    SchemaDescriptor desc = map(t, icebergJson);
 
     assertEquals(3, desc.getColumnsCount()); // id, info, info.city
 
@@ -194,19 +198,19 @@ class LogicalSchemaMapperTest {
   // DELTA schema
   // -------------------------------------------------------------------------
   @Test
-  void deltaSchemaParsesStructs() {
+  void deltaSchemaRequiresCanonicalIdentityMap() {
     String deltaJson =
         """
-        {
+        {"type":"struct",
           "fields":[
             {"name":"id","type":"long","nullable":false},
             {"name":"location","type":{
                  "type":"struct",
                  "fields":[
-                   {"name":"lat","type":"double"},
-                   {"name":"lon","type":"double"}
+                   {"name":"lat","type":"double","nullable":true},
+                   {"name":"lon","type":"double","nullable":true}
                  ]
-              }}
+              },"nullable":true}
           ]
         }
         """;
@@ -214,49 +218,13 @@ class LogicalSchemaMapperTest {
     UpstreamRef upstream =
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_DELTA)
-            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_PATH_ORDINAL)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_CANONICAL_MAP)
             .build();
 
     Table t = baseTable(deltaJson, upstream);
-
-    SchemaDescriptor desc = mapper.map(t, deltaJson);
-
-    // All columns should have deterministic, non-zero ids for CID_PATH_ORDINAL
-    for (var c : desc.getColumnsList()) {
-      assertNotEquals(0L, c.getId(), "expected non-zero id for " + c.getPhysicalPath());
-    }
-
-    assertEquals(4, desc.getColumnsCount()); // id, location, location.lat, location.lon
-
-    SchemaColumn id = desc.getColumns(0);
-    assertEquals("id", id.getName());
-    assertEquals(0, id.getFieldId());
-    assertTrue(id.getLeaf());
-    assertEquals(1, id.getOrdinal());
-    assertEquals("id", id.getPhysicalPath());
-
-    SchemaColumn location = desc.getColumns(1);
-    assertEquals("location", location.getName());
-    assertEquals("location", location.getPhysicalPath());
-    assertFalse(location.getLeaf());
-    assertEquals(2, location.getOrdinal());
-
-    SchemaColumn lat = desc.getColumns(2);
-    assertEquals("lat", lat.getName());
-    assertEquals("location.lat", lat.getPhysicalPath());
-    assertEquals(0, lat.getFieldId());
-    // Ordinals are 1-based within the parent (matching Iceberg semantics).
-    assertEquals(1, lat.getOrdinal());
-    assertTrue(lat.getLeaf());
-
-    SchemaColumn lon = desc.getColumns(3);
-    assertEquals("lon", lon.getName());
-    assertEquals("location.lon", lon.getPhysicalPath());
-    assertEquals(0, lon.getFieldId());
-    assertEquals(2, lon.getOrdinal());
-    assertTrue(lon.getLeaf());
-
-    assertNotEquals(lat.getId(), lon.getId());
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> map(t, deltaJson));
+    assertEquals("Canonical column identity map is required", error.getMessage());
   }
 
   // -------------------------------------------------------------------------
@@ -276,7 +244,7 @@ class LogicalSchemaMapperTest {
 
     Table t = baseTable(genericJson, upstream);
 
-    SchemaDescriptor desc = mapper.map(t, genericJson);
+    SchemaDescriptor desc = map(t, genericJson);
 
     assertEquals(2, desc.getColumnsCount());
 
@@ -330,7 +298,7 @@ class LogicalSchemaMapperTest {
             .build();
 
     Table t = baseTable(icebergJson, upstream);
-    SchemaDescriptor desc = mapper.map(t, icebergJson);
+    SchemaDescriptor desc = map(t, icebergJson);
 
     assertEquals(3, desc.getColumnsCount()); // arr, arr[] (element node), arr[].x
     SchemaColumn arr = desc.getColumns(0);
@@ -386,8 +354,8 @@ class LogicalSchemaMapperTest {
 
     Table t = baseTable(json, upstream);
 
-    SchemaDescriptor d1 = mapper.map(t, json);
-    SchemaDescriptor d2 = mapper.map(t, json);
+    SchemaDescriptor d1 = map(t, json);
+    SchemaDescriptor d2 = map(t, json);
 
     assertEquals(d1.getColumnsCount(), d2.getColumnsCount());
     for (int i = 0; i < d1.getColumnsCount(); i++) {
@@ -397,33 +365,6 @@ class LogicalSchemaMapperTest {
       assertEquals(a.getOrdinal(), b.getOrdinal());
       assertEquals(a.getId(), b.getId(), "id must be deterministic");
     }
-  }
-
-  @Test
-  void buildColumnOrdinalsUsesPhysicalPathsForNestedFields() {
-    String deltaJson =
-        """
-        {"fields":[
-          {"name":"id","type":"long","nullable":false},
-          {"name":"location","type":{
-            "type":"struct",
-            "fields":[
-              {"name":"lat","type":"double","nullable":true},
-              {"name":"lon","type":"double","nullable":true}
-            ]
-          },"nullable":true}
-        ]}
-        """;
-
-    Map<String, Integer> ordinals =
-        LogicalSchemaMapper.buildColumnOrdinals(
-            ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, deltaJson);
-
-    assertEquals(1, ordinals.get("id"));
-    assertEquals(2, ordinals.get("location"));
-    // Nested ordinals are 1-based within the parent (matching Iceberg semantics).
-    assertEquals(1, ordinals.get("location.lat"));
-    assertEquals(2, ordinals.get("location.lon"));
   }
 
   @Test
@@ -438,8 +379,7 @@ class LogicalSchemaMapperTest {
     UpstreamRef upstream = UpstreamRef.newBuilder().setFormat(TableFormat.TF_UNSPECIFIED).build();
     Table t = baseTable(json, upstream);
 
-    IllegalArgumentException err =
-        assertThrows(IllegalArgumentException.class, () -> mapper.map(t, json));
+    IllegalArgumentException err = assertThrows(IllegalArgumentException.class, () -> map(t, json));
     assertTrue(err.getMessage().contains("Failed to parse generic schema JSON"));
   }
 
@@ -449,8 +389,7 @@ class LogicalSchemaMapperTest {
     UpstreamRef upstream = UpstreamRef.newBuilder().setFormat(TableFormat.TF_UNSPECIFIED).build();
     Table t = baseTable(json, upstream);
 
-    IllegalArgumentException err =
-        assertThrows(IllegalArgumentException.class, () -> mapper.map(t, json));
+    IllegalArgumentException err = assertThrows(IllegalArgumentException.class, () -> map(t, json));
     assertTrue(err.getMessage().contains("Failed to parse generic schema JSON"));
   }
 

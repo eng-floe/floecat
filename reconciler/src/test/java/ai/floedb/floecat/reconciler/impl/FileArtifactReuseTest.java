@@ -45,10 +45,18 @@ class FileArtifactReuseTest {
             List.of(),
             "content-a");
 
-    assertThat(FileArtifactReuse.sourceFingerprint(base, "schema-a"))
-        .isNotEqualTo(FileArtifactReuse.sourceFingerprint(withDv, "schema-a"))
-        .isNotEqualTo(FileArtifactReuse.sourceFingerprint(changedContent, "schema-a"))
-        .isNotEqualTo(FileArtifactReuse.sourceFingerprint(base, "schema-b"));
+    assertThat(
+            FileArtifactReuse.sourceFingerprint(
+                base, "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[]}"))
+        .isNotEqualTo(
+            FileArtifactReuse.sourceFingerprint(
+                withDv, "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[]}"))
+        .isNotEqualTo(
+            FileArtifactReuse.sourceFingerprint(
+                changedContent, "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[]}"))
+        .isNotEqualTo(
+            FileArtifactReuse.sourceFingerprint(
+                base, "{\"type\":\"struct\",\"schema-id\":2,\"fields\":[]}"));
     assertThat(FileArtifactReuse.indexSourceFingerprint(base))
         .isEqualTo(FileArtifactReuse.indexSourceFingerprint(withDv))
         .isNotEqualTo(FileArtifactReuse.indexSourceFingerprint(changedContent));
@@ -103,9 +111,11 @@ class FileArtifactReuseTest {
             List.of(secondDelete, firstDelete),
             base.contentIdentity());
 
-    assertThat(FileArtifactReuse.sourceFingerprint(ordered, "schema"))
-        .isEqualTo(FileArtifactReuse.sourceFingerprint(reversed, "schema"))
-        .isNotEqualTo(FileArtifactReuse.sourceFingerprint(base, "schema"));
+    assertThat(FileArtifactReuse.sourceFingerprint(ordered, "{\"type\":\"struct\",\"fields\":[]}"))
+        .isEqualTo(
+            FileArtifactReuse.sourceFingerprint(reversed, "{\"type\":\"struct\",\"fields\":[]}"))
+        .isNotEqualTo(
+            FileArtifactReuse.sourceFingerprint(base, "{\"type\":\"struct\",\"fields\":[]}"));
     assertThat(FileArtifactReuse.indexSourceFingerprint(ordered))
         .isEqualTo(FileArtifactReuse.indexSourceFingerprint(base));
   }
@@ -125,8 +135,12 @@ class FileArtifactReuseTest {
 
     assertThat(FileArtifactReuse.statsCaptureSignature(statsOnly))
         .isEqualTo(FileArtifactReuse.statsCaptureSignature(statsAndIndex));
-    assertThat(FileArtifactReuse.indexCaptureSignature(statsOnly, "schema"))
-        .isNotEqualTo(FileArtifactReuse.indexCaptureSignature(statsAndIndex, "schema"));
+    assertThat(
+            FileArtifactReuse.indexCaptureSignature(
+                statsOnly, "{\"type\":\"struct\",\"fields\":[]}"))
+        .isNotEqualTo(
+            FileArtifactReuse.indexCaptureSignature(
+                statsAndIndex, "{\"type\":\"struct\",\"fields\":[]}"));
   }
 
   @Test
@@ -139,10 +153,18 @@ class FileArtifactReuseTest {
             List.of(new ReconcileCapturePolicy.Column("#1", false, true)),
             Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
 
-    assertThat(FileArtifactReuse.indexCaptureSignature(defaultIndex, "schema-a"))
-        .isNotEqualTo(FileArtifactReuse.indexCaptureSignature(defaultIndex, "schema-b"));
-    assertThat(FileArtifactReuse.indexCaptureSignature(explicitIndex, "schema-a"))
-        .isNotEqualTo(FileArtifactReuse.indexCaptureSignature(explicitIndex, "schema-b"));
+    assertThat(
+            FileArtifactReuse.indexCaptureSignature(
+                defaultIndex, "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[]}"))
+        .isNotEqualTo(
+            FileArtifactReuse.indexCaptureSignature(
+                defaultIndex, "{\"type\":\"struct\",\"schema-id\":2,\"fields\":[]}"));
+    assertThat(
+            FileArtifactReuse.indexCaptureSignature(
+                explicitIndex, "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[]}"))
+        .isNotEqualTo(
+            FileArtifactReuse.indexCaptureSignature(
+                explicitIndex, "{\"type\":\"struct\",\"schema-id\":2,\"fields\":[]}"));
   }
 
   @Test

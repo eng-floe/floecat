@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutor;
 import ai.floedb.floecat.reconciler.impl.RemoteLeasedJob;
 import ai.floedb.floecat.reconciler.impl.RemoteSnapshotFinalizeReconcileExecutor;
@@ -36,7 +37,10 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -44,6 +48,7 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -59,6 +64,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
   @Inject LeasedSnapshotFinalizeInputService finalizeInputService;
   @Inject LeasedSnapshotFinalizeExecutionService finalizeExecutionService;
+  @Inject SnapshotRepository snapshotRepo;
+  @Inject CatalogGraphView graphView;
   @Inject BlobStore blobStore;
 
   @ConfigProperty(
@@ -520,7 +527,45 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       return 0L;
     }
     return persistence.persistEmptySnapshotCompletionMarker(
-        tableId, snapshotTask.snapshotId(), lease.fullRescan);
+        tableId,
+        snapshotTask.snapshotId(),
+        lease.fullRescan,
+        columnIdentityFingerprint(tableId, snapshotTask.snapshotId()));
+  }
+
+  private Optional<String> columnIdentityFingerprint(ResourceId tableId, long snapshotId) {
+    UserTableNode table =
+        graphView
+            .resolve(tableId, ai.floedb.floecat.scanner.utils.CatalogContext.floecatInternal())
+            .filter(UserTableNode.class::isInstance)
+            .map(UserTableNode.class::cast)
+            .orElseThrow(
+                () ->
+                    new IllegalStateException(
+                        "Snapshot finalization requires a user table for " + tableId.getId()));
+    if (table.columnIdAlgorithm()
+        != ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP) {
+      return Optional.empty();
+    }
+    var snapshot =
+        snapshotRepo
+            .getById(tableId, snapshotId)
+            .orElseThrow(
+                () ->
+                    new IllegalStateException(
+                        "Snapshot finalization requires snapshot "
+                            + snapshotId
+                            + " for canonical identity table "
+                            + tableId.getId()));
+    Optional<String> fingerprint = ColumnIdentityMaps.fingerprint(snapshot);
+    if (fingerprint.isEmpty()) {
+      throw new IllegalStateException(
+          "Snapshot finalization requires a canonical column identity map for table "
+              + tableId.getId()
+              + " snapshot "
+              + snapshotId);
+    }
+    return fingerprint;
   }
 
   private List<String> fileGroupChildDescriptions(

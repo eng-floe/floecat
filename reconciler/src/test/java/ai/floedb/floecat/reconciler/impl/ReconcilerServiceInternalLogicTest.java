@@ -17,12 +17,14 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -33,14 +35,125 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBase {
+
+  @Test
+  void canonicalDeltaTableCannotInheritAnExistingMapWhenBundleOmitsIt() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl").build();
+    Snapshot existing =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(123L)
+            .setColumnIdentityMap(ColumnIdentityMap.newBuilder().setFingerprint("old").build())
+            .build();
+    var bundle =
+        new FloecatConnector.SnapshotBundle(
+            123L,
+            122L,
+            Instant.now().toEpochMilli(),
+            "{}",
+            null,
+            0L,
+            null,
+            Map.of(),
+            0,
+            null,
+            ColumnIdentityMap.getDefaultInstance());
+    ReconcileContext ctx =
+        new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
+
+    assertThatThrownBy(
+            () ->
+                queuedWorkerSupport()
+                    .buildSnapshot(
+                        ctx,
+                        tableId,
+                        QueuedReconcileWorkerSupport.IdentityEnumerationContext.canonical(),
+                        bundle,
+                        existing))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("without a column identity map");
+  }
+
+  @Test
+  void canonicalDeltaTableCannotPersistAnInvalidIdentityMap() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl").build();
+    ColumnIdentityMap invalidMap =
+        ColumnIdentityMap.newBuilder()
+            .setFormatVersion(ColumnIdentityMaps.FORMAT_VERSION)
+            .setSourceVersion(123L)
+            .setHistoryTier(
+                ai.floedb.floecat.catalog.rpc.ColumnIdentityHistoryTier
+                    .COLUMN_IDENTITY_HISTORY_TIER_VERSIONED_LOG)
+            .setMode(
+                ai.floedb.floecat.catalog.rpc.ColumnIdentityMode
+                    .COLUMN_IDENTITY_MODE_STRUCTURED_PATH)
+            .setFingerprint("sha256:tampered")
+            .setStateChecksum("sha256:tampered")
+            .build();
+    var bundle =
+        new FloecatConnector.SnapshotBundle(
+            123L,
+            122L,
+            Instant.now().toEpochMilli(),
+            "{}",
+            null,
+            0L,
+            null,
+            Map.of(),
+            0,
+            null,
+            invalidMap);
+    ReconcileContext ctx =
+        new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
+
+    assertThatThrownBy(
+            () ->
+                queuedWorkerSupport()
+                    .buildSnapshot(
+                        ctx,
+                        tableId,
+                        QueuedReconcileWorkerSupport.IdentityEnumerationContext.canonical(),
+                        bundle,
+                        null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("fingerprint does not match");
+  }
+
+  @Test
+  void deltaFormatSelectsCanonicalIdentityAlgorithm() {
+    FloecatConnector.TableDescriptor descriptor =
+        new FloecatConnector.TableDescriptor(
+            "ns",
+            "tbl",
+            "s3://table",
+            "{}",
+            List.of(),
+            ColumnIdAlgorithm.CID_PATH_ORDINAL,
+            Map.of());
+    assertThat(
+            QueuedReconcileWorkerSupport.withFormatCanonicalIdentity(deltaConnector(), descriptor)
+                .columnIdAlgorithm())
+        .isEqualTo(ColumnIdAlgorithm.CID_CANONICAL_MAP);
+  }
+
+  private static FloecatConnector deltaConnector() {
+    FloecatConnector connector = mock(FloecatConnector.class);
+    when(connector.format()).thenReturn(ConnectorFormat.CF_DELTA);
+    return connector;
+  }
 
   @Test
   void buildSnapshotRetainsExistingDataWhenBundleOmitsFields() {
@@ -76,7 +189,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .buildSnapshot(
                 ctx,
                 tableId,
-                org.mockito.Mockito.mock(ai.floedb.floecat.connector.spi.FloecatConnector.class),
+                QueuedReconcileWorkerSupport.IdentityEnumerationContext.disabled(Set.of()),
                 bundle,
                 existing)
             .orElseThrow();
@@ -112,7 +225,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .buildSnapshot(
                 ctx,
                 tableId,
-                org.mockito.Mockito.mock(ai.floedb.floecat.connector.spi.FloecatConnector.class),
+                QueuedReconcileWorkerSupport.IdentityEnumerationContext.disabled(Set.of()),
                 bundle,
                 null)
             .orElseThrow();

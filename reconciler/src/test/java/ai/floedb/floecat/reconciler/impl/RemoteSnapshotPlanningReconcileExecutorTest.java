@@ -32,6 +32,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
@@ -107,15 +108,39 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   @Test
   void appendOnlySchemaComparisonIgnoresJsonFormattingButRejectsSchemaChanges() {
     String base = "{\"type\":\"struct\",\"fields\":[]}";
+    String withIdentity =
+        ColumnIdentityExecutionSchema.attach(
+            base, ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build());
 
     assertTrue(
         RemoteSnapshotPlanningReconcileExecutor.schemasEquivalent(
             base, "{\n  \"fields\": [],\n  \"type\": \"struct\"\n}"));
+    assertTrue(RemoteSnapshotPlanningReconcileExecutor.schemasEquivalent(base, withIdentity));
     assertFalse(
         RemoteSnapshotPlanningReconcileExecutor.schemasEquivalent(
             base, "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}"));
     assertFalse(RemoteSnapshotPlanningReconcileExecutor.schemasEquivalent(base, "not-json"));
     assertFalse(RemoteSnapshotPlanningReconcileExecutor.schemasEquivalent("not-json", "not-json"));
+  }
+
+  @Test
+  void appendOnlyIdentityComparisonRequiresStableCanonicalIdentity() {
+    String schema = "{\"type\":\"struct\",\"fields\":[]}";
+    ColumnIdentityMap identity =
+        ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build();
+
+    assertTrue(
+        RemoteSnapshotPlanningReconcileExecutor.identityFingerprintsEquivalent(
+            ColumnIdentityMap.getDefaultInstance(), schema));
+    assertTrue(
+        RemoteSnapshotPlanningReconcileExecutor.identityFingerprintsEquivalent(
+            identity, ColumnIdentityExecutionSchema.attach(schema, identity)));
+    assertFalse(
+        RemoteSnapshotPlanningReconcileExecutor.identityFingerprintsEquivalent(
+            identity,
+            ColumnIdentityExecutionSchema.attach(
+                schema,
+                ColumnIdentityMap.newBuilder().setFingerprint("sha256:different").build())));
   }
 
   @Test
@@ -371,7 +396,12 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
         .thenReturn(Optional.empty());
     String baseSchemaJson = "{\"type\":\"struct\",\"fields\":[]}";
-    String executionSchemaJson = "{\n  \"fields\": [],\n  \"type\": \"struct\"\n}";
+    String executionSchemaJson =
+        ColumnIdentityExecutionSchema.attach(
+            "{\n  \"fields\": [],\n  \"type\": \"struct\"\n}",
+            ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build());
+    ColumnIdentityMap identityMap =
+        ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build();
 
     ReconcileFileExecutionPlan priorPlan =
         ReconcileFileExecutionPlan.of(
@@ -437,6 +467,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                     .setTableId(tableId())
                     .setSnapshotId(baseSnapshotId)
                     .setSchemaJson(baseSchemaJson)
+                    .setColumnIdentityMap(identityMap)
                     .setReuseManifestRef(
                         SnapshotReuseManifestRef.newBuilder()
                             .setFormatVersion(1)

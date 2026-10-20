@@ -265,11 +265,7 @@ public interface CatalogGraphView {
   record QualifiedRelation(NameRef name, ResourceId resourceId) {}
 
   record SchemaResolution(
-      UserTableNode table, String schemaJson, ColumnIdentityMap columnIdentityMap) {
-    public SchemaResolution(UserTableNode table, String schemaJson) {
-      this(table, schemaJson, ColumnIdentityMap.getDefaultInstance());
-    }
-  }
+      UserTableNode table, String schemaJson, ColumnIdentityMap columnIdentityMap) {}
 
   /** A lightweight namespace identity; {@code pathSegments} contains parent names only. */
   record NamespaceRef(ResourceId id, String name, ResourceId catalogId, List<String> pathSegments) {
