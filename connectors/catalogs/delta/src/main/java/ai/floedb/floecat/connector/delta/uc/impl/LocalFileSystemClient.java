@@ -38,7 +38,7 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 
-final class LocalFileSystemClient implements FileIO {
+class LocalFileSystemClient implements FileIO {
   private final Path root;
 
   LocalFileSystemClient(Path root) {
@@ -180,7 +180,7 @@ final class LocalFileSystemClient implements FileIO {
     return FileStatus.of(s3Path, size, mod);
   }
 
-  private Path toLocalPath(String path) {
+  protected final Path toLocalPath(String path) {
     String resolved = resolvePath(path);
     S3Location loc = parseS3Location(resolved);
     Path bucketRoot = root.resolve(loc.bucket());

@@ -48,6 +48,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -399,6 +400,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   if (spec.hasMetadataLocation() && !spec.getMetadataLocation().isBlank()) {
                     snapBuilder.setMetadataLocation(spec.getMetadataLocation());
                   }
+                  applyColumnIdentity(spec, snapBuilder, corr);
                   var snap = snapBuilder.build();
 
                   if (idempotencyKey == null) {
@@ -713,7 +715,8 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           "manifest_list",
           "summary",
           "schema_id",
-          "metadata_location");
+          "metadata_location",
+          "column_identity_map");
 
   private Snapshot applySnapshotSpecPatch(
       Snapshot current, SnapshotSpec spec, FieldMask mask, String corr) {
@@ -784,6 +787,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           }
           builder.setMetadataLocation(spec.getMetadataLocation());
         }
+        case "column_identity_map" -> applyColumnIdentity(spec, builder, corr);
         default ->
             throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_PATH_INVALID, Map.of("path", path));
       }
@@ -839,7 +843,26 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     if (spec.hasMetadataLocation()) {
       c.scalar("metadata_location", spec.getMetadataLocation());
     }
+    if (spec.hasColumnIdentityMap()) {
+      c.scalar(
+          "column_identity_map",
+          java.util.Base64.getEncoder().encodeToString(spec.getColumnIdentityMap().toByteArray()));
+    }
     return c.bytes();
+  }
+
+  private static void applyColumnIdentity(
+      SnapshotSpec spec, Snapshot.Builder builder, String correlationId) {
+    if (!spec.hasColumnIdentityMap()) {
+      return;
+    }
+    try {
+      ColumnIdentityMaps.restoreForSnapshot(spec.getColumnIdentityMap(), spec.getSnapshotId());
+    } catch (IllegalArgumentException invalid) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, SNAPSHOT_COLUMN_IDENTITY_INVALID, Map.of("reason", invalid.getMessage()));
+    }
+    builder.setColumnIdentityMap(spec.getColumnIdentityMap());
   }
 
   private static void canonicalResourceId(Canonicalizer c, String key, ResourceId id) {

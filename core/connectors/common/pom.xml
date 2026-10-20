@@ -71,6 +71,11 @@
       <artifactId>floecat-schema-identity</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-delta-identity</artifactId>
+      <version>${project.version}</version>
+    </dependency>
 
     <!-- Heavy libraries connectors-common really uses -->
     <dependency>

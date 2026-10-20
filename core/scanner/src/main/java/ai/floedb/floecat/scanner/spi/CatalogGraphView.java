@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.scanner.spi;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -263,7 +264,12 @@ public interface CatalogGraphView {
 
   record QualifiedRelation(NameRef name, ResourceId resourceId) {}
 
-  record SchemaResolution(UserTableNode table, String schemaJson) {}
+  record SchemaResolution(
+      UserTableNode table, String schemaJson, ColumnIdentityMap columnIdentityMap) {
+    public SchemaResolution(UserTableNode table, String schemaJson) {
+      this(table, schemaJson, ColumnIdentityMap.getDefaultInstance());
+    }
+  }
 
   /** A lightweight namespace identity; {@code pathSegments} contains parent names only. */
   record NamespaceRef(ResourceId id, String name, ResourceId catalogId, List<String> pathSegments) {

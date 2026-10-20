@@ -300,7 +300,9 @@ public class ReconcilerService {
               targets,
               FloecatConnector.SnapshotSelectionKind.CURRENT,
               Set.of(),
-              0);
+              0,
+              Map.of(),
+              0L);
       case LATEST_N ->
           new FloecatConnector.SnapshotEnumerationOptions(
               fullRescan,
@@ -308,7 +310,9 @@ public class ReconcilerService {
               targets,
               FloecatConnector.SnapshotSelectionKind.LATEST_N,
               Set.of(),
-              effective.latestN());
+              effective.latestN(),
+              Map.of(),
+              0L);
       case EXPLICIT ->
           new FloecatConnector.SnapshotEnumerationOptions(
               fullRescan,
@@ -316,7 +320,9 @@ public class ReconcilerService {
               targets,
               FloecatConnector.SnapshotSelectionKind.EXPLICIT,
               Set.copyOf(effective.snapshotIds()),
-              0);
+              0,
+              Map.of(),
+              0L);
       case ALL, UNSPECIFIED ->
           fullRescan
               ? FloecatConnector.SnapshotEnumerationOptions.full(true, targets)

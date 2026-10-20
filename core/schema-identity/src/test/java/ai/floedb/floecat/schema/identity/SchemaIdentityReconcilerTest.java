@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
@@ -352,6 +353,28 @@ class SchemaIdentityReconcilerTest {
         .extracting(SchemaIdentityEntry::canonicalId)
         .containsExactly(4L, 5L);
     assertThat(reset.highWaterMark()).isEqualTo(5L);
+  }
+
+  @Test
+  void preferredNewerIdentityPreservesBackfillContinuityWithoutLoweringCounter() {
+    var previous =
+        reconcile(
+            40L, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1), field("b", 2));
+
+    var backfill =
+        SchemaIdentityReconciler.reconcile(
+            ResolvedSchema.of(List.of(field("a", 1), field("b", 2), field("d", 3))),
+            60L,
+            IdentityMode.STRUCTURED_PATH,
+            Optional.of(previous),
+            3L,
+            PreferredCanonicalIds.byPath(Map.of(ColumnPath.ROOT.field("d"), 3L)),
+            HistoryTier.VERSIONED_LOG);
+
+    assertThat(backfill.entries())
+        .extracting(SchemaIdentityEntry::canonicalId)
+        .containsExactly(1L, 2L, 3L);
+    assertThat(backfill.highWaterMark()).isEqualTo(3L);
   }
 
   private static SchemaIdentityState reconcile(

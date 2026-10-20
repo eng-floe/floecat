@@ -20,7 +20,9 @@ import ai.floedb.floecat.connector.common.ParquetFooterStats;
 import ai.floedb.floecat.connector.common.PlannedFile;
 import ai.floedb.floecat.connector.common.Planner;
 import ai.floedb.floecat.connector.common.ndv.NdvProvider;
-import ai.floedb.floecat.connector.delta.identity.DeltaResolvedSchema;
+import ai.floedb.floecat.delta.identity.DeltaColumnMapping;
+import ai.floedb.floecat.delta.identity.DeltaResolvedSchema;
+import ai.floedb.floecat.delta.identity.DeltaSchemaMapper;
 import ai.floedb.floecat.types.LogicalCoercions;
 import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalKind;
@@ -137,7 +139,7 @@ final class DeltaPlanner implements Planner<String> {
 
     final StructType schema = snapshot.getSchema();
     this.deltaSchema = DeltaColumnMapping.resolveSchema(snapshot);
-    nameToLogical.putAll(DeltaTypeMapper.deltaStatsTypeMap(schema));
+    nameToLogical.putAll(DeltaSchemaMapper.deltaStatsTypeMap(schema));
     if (nameToType != null && !nameToType.isEmpty()) {
       nameToLogical.putAll(nameToType);
     }
