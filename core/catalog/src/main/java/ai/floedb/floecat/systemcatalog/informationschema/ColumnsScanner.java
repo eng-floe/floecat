@@ -23,7 +23,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
-import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.columnar.AbstractArrowBatchBuilder;
@@ -38,7 +37,6 @@ import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -234,43 +232,45 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
     String schemaName = namespace.schemaName();
 
-    // Synthetic element/key/value placeholder rows are stats plumbing, not user columns.
-    List<SchemaColumn> columns =
-        SchemaColumns.withoutSyntheticNodes(
-            ctx.graph().tableSchema(table.id(), ctx.catalogContext()));
+    return numberedColumns(
+        SchemaColumns.topLevelOnly(ctx.graph().tableSchema(table.id(), ctx.catalogContext())),
+        (col, position) ->
+            new SystemObjectRow(
+                new Object[] {
+                  catalogName,
+                  schemaName,
+                  table.displayName(),
+                  col.getName(),
+                  typeStringOrNull(col),
+                  position
+                }))
+        .stream();
+  }
 
-    if (table instanceof UserTableNode) {
-      return columns.stream()
-          .sorted(Comparator.comparingInt(SchemaColumn::getFieldId))
-          .map(
-              col ->
-                  new SystemObjectRow(
-                      new Object[] {
-                        catalogName,
-                        schemaName,
-                        table.displayName(),
-                        col.getName(),
-                        typeStringOrNull(col),
-                        col.getFieldId()
-                      }));
-    }
-
-    // System tables (no field ids) – preserve declared order
-    List<SystemObjectRow> rows = new ArrayList<>(columns.size());
-    int ordinal = 1;
+  /**
+   * A relation's user-facing columns paired with their ordinal_position.
+   *
+   * <p>ordinal_position is a POSITION, not an identity: the SQL standard defines it as the column's
+   * 1-based place in the table, so it must not carry a format-native field id. Field ids do not
+   * survive the trip -- format-native and canonical IDs may have gaps and need not ascend in
+   * declaration order. Using them here renders a column list that disagrees with the table's real
+   * shape.
+   *
+   * <p>Callers supply only the columns exposed by the relation: table callers remove flattened
+   * nested schema rows, while views already carry a top-level output-column list. Both the row and
+   * the Arrow path number those columns here rather than each keeping its own counter. They answer
+   * the same query, so a reader that saw them disagree would have no way to tell which was right;
+   * sharing the walk makes agreement structural instead of a thing tests have to keep
+   * rediscovering.
+   */
+  private static <T> List<T> numberedColumns(
+      List<SchemaColumn> columns, java.util.function.BiFunction<SchemaColumn, Integer, T> toRow) {
+    List<T> out = new ArrayList<>(columns.size());
+    int position = 1;
     for (SchemaColumn col : columns) {
-      rows.add(
-          new SystemObjectRow(
-              new Object[] {
-                catalogName,
-                schemaName,
-                table.displayName(),
-                col.getName(),
-                typeStringOrNull(col),
-                ordinal++
-              }));
+      out.add(toRow.apply(col, position++));
     }
-    return rows.stream();
+    return out;
   }
 
   private Stream<SystemObjectRow> scanView(
@@ -285,23 +285,19 @@ public final class ColumnsScanner implements SystemObjectScanner {
             catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
 
     String schemaName = namespace.schemaName();
-    List<SchemaColumn> cols = view.outputColumns();
-
-    List<SystemObjectRow> rows = new ArrayList<>(cols.size());
-    for (int i = 0; i < cols.size(); i++) {
-      SchemaColumn col = cols.get(i);
-      rows.add(
-          new SystemObjectRow(
-              new Object[] {
-                catalogName,
-                schemaName,
-                view.displayName(),
-                col.getName(),
-                typeStringOrNull(col),
-                i + 1
-              }));
-    }
-    return rows.stream();
+    return numberedColumns(
+        view.outputColumns(),
+        (col, position) ->
+            new SystemObjectRow(
+                new Object[] {
+                  catalogName,
+                  schemaName,
+                  view.displayName(),
+                  col.getName(),
+                  typeStringOrNull(col),
+                  position
+                }))
+        .stream();
   }
 
   private static String blankToNull(String value) {
@@ -335,54 +331,29 @@ public final class ColumnsScanner implements SystemObjectScanner {
     String schemaName = namespace.schemaName();
 
     if (node instanceof TableNode table) {
-      // Synthetic element/key/value placeholder rows are stats plumbing, not user columns.
-      List<SchemaColumn> columns =
-          SchemaColumns.withoutSyntheticNodes(
-              ctx.graph().tableSchema(table.id(), ctx.catalogContext()));
-      if (table instanceof UserTableNode) {
-        return columns.stream()
-            .sorted(Comparator.comparingInt(SchemaColumn::getFieldId))
-            .map(
-                col ->
-                    ColumnEntry.of(
-                        catalogName,
-                        schemaName,
-                        table.displayName(),
-                        col.getName(),
-                        typeStringOrNull(col),
-                        col.getFieldId()))
-            .toList();
-      }
-      List<ColumnEntry> entries = new ArrayList<>(columns.size());
-      int ordinal = 1;
-      for (SchemaColumn col : columns) {
-        entries.add(
-            ColumnEntry.of(
-                catalogName,
-                schemaName,
-                table.displayName(),
-                col.getName(),
-                typeStringOrNull(col),
-                ordinal++));
-      }
-      return entries;
+      return numberedColumns(
+          SchemaColumns.topLevelOnly(ctx.graph().tableSchema(table.id(), ctx.catalogContext())),
+          (col, position) ->
+              ColumnEntry.of(
+                  catalogName,
+                  schemaName,
+                  table.displayName(),
+                  col.getName(),
+                  typeStringOrNull(col),
+                  position));
     }
 
     if (node instanceof ViewNode view) {
-      List<SchemaColumn> cols = view.outputColumns();
-      List<ColumnEntry> entries = new ArrayList<>(cols.size());
-      for (int i = 0; i < cols.size(); i++) {
-        SchemaColumn col = cols.get(i);
-        entries.add(
-            ColumnEntry.of(
-                catalogName,
-                schemaName,
-                view.displayName(),
-                col.getName(),
-                typeStringOrNull(col),
-                i + 1));
-      }
-      return entries;
+      return numberedColumns(
+          view.outputColumns(),
+          (col, position) ->
+              ColumnEntry.of(
+                  catalogName,
+                  schemaName,
+                  view.displayName(),
+                  col.getName(),
+                  typeStringOrNull(col),
+                  position));
     }
 
     return List.of();
