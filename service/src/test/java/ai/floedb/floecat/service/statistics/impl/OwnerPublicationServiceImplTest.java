@@ -45,6 +45,14 @@ import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestKind;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.schema.identity.ColumnPath;
+import ai.floedb.floecat.schema.identity.HistoryTier;
+import ai.floedb.floecat.schema.identity.IdentityMode;
+import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
+import ai.floedb.floecat.schema.identity.ResolvedSchema;
+import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
+import ai.floedb.floecat.schema.identity.SchemaNode;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.reconciler.impl.SnapshotFinalizePersistenceService;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
@@ -63,6 +71,7 @@ import com.google.protobuf.ByteString;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.Optional;
+import java.util.OptionalInt;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -424,8 +433,13 @@ class OwnerPublicationServiceImplTest {
   @Test
   void completeRegistersCanonicalReferencesAndActivatesOnce() {
     var service = service();
+    var columnIdentityMap = columnIdentityMap();
+    var request =
+        complete(service).toBuilder()
+            .setSnapshot(snapshotSpec().toBuilder().setColumnIdentityMap(columnIdentityMap).build())
+            .build();
 
-    var response = service.completeOwnerPublication(complete(service)).await().indefinitely();
+    var response = service.completeOwnerPublication(request).await().indefinitely();
 
     assertTrue(response.getActivated());
     assertEquals(2, response.getAggregateStatsPublished());
@@ -444,6 +458,7 @@ class OwnerPublicationServiceImplTest {
         .advanceOwnerPublication(any(), any(Snapshot.class), anyString());
     var publishedSnapshot = ArgumentCaptor.<Snapshot>captor();
     verify(service.snapshots).prepareCreatePublicationUpdates(publishedSnapshot.capture());
+    assertEquals(columnIdentityMap, publishedSnapshot.getValue().getColumnIdentityMap());
     SnapshotReuseManifestRef reuseManifest = publishedSnapshot.getValue().getReuseManifestRef();
     verify(service.reuseLeases)
         .renew(
@@ -463,6 +478,28 @@ class OwnerPublicationServiceImplTest {
     assertEquals(1, reuseManifest.getFormatVersion());
     assertEquals(SnapshotReuseManifestKind.SRMK_OWNER_V2, reuseManifest.getKind());
     assertEquals(32, reuseManifest.getPayloadSha256().size());
+  }
+
+  @Test
+  void completeRejectsAnInvalidColumnIdentityMap() {
+    var service = service();
+    var request =
+        complete(service).toBuilder()
+            .setSnapshot(
+                snapshotSpec().toBuilder()
+                    .setColumnIdentityMap(
+                        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.newBuilder()
+                            .setFormatVersion(1)
+                            .setSourceVersion(SNAPSHOT)))
+            .build();
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.completeOwnerPublication(request).await().indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(service.snapshots, never()).prepareCreatePublicationUpdates(any());
   }
 
   @Test
@@ -1566,6 +1603,23 @@ class OwnerPublicationServiceImplTest {
         .setUpstreamCreatedAt(com.google.protobuf.Timestamp.newBuilder().setSeconds(1))
         .setSchemaJson("{}")
         .build();
+  }
+
+  private static ai.floedb.floecat.catalog.rpc.ColumnIdentityMap columnIdentityMap() {
+    var schema =
+        ResolvedSchema.of(
+            java.util.List.of(
+                new SchemaNode(
+                    ColumnPath.ROOT.field("id"), 1, true, OptionalInt.empty(), Optional.empty())));
+    return ColumnIdentityMaps.toProto(
+        SchemaIdentityReconciler.reconcile(
+            schema,
+            SNAPSHOT,
+            IdentityMode.STRUCTURED_PATH,
+            Optional.empty(),
+            0L,
+            PreferredCanonicalIds.NONE,
+            HistoryTier.VERSIONED_LOG));
   }
 
   private static SnapshotCaptureManifest.Builder baseManifest(String generationId) {

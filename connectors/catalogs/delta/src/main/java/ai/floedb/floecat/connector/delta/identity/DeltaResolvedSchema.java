@@ -65,6 +65,11 @@ public record DeltaResolvedSchema(ResolvedSchema schema, ColumnMappingMode effec
    * names are free to differ from anything the log records. Under {@code NAME} the footer carries
    * physical names, and without mapping it carries logical ones, both of which the statistics-name
    * lookup already handles.
+   *
+   * <p>Collection-interior footer paths are deliberately not normalized here. Delta log statistics
+   * do not describe array elements or map keys/values, and Parquet repeated-leaf counts do not have
+   * the row-count semantics expected by the scalar-column statistics model. Callers therefore
+   * restrict footer results to the same struct-only column set used for Delta log statistics.
    */
   public Optional<SchemaNode> nodeForFooterColumn(List<String> parquetPath, Integer fieldId) {
     return switch (effectiveMappingMode) {
