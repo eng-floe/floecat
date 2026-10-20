@@ -110,7 +110,8 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
             Optional.empty(),
             List.of(),
             Map.of(),
-            Map.of());
+            Map.of(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
 
     graphView.addRelation(ns.id(), table);
     graphView.setTableSchema(tableId, buildSchema(fieldIds, types));

@@ -27,6 +27,11 @@
   <artifactId>floecat-connectors-spi</artifactId>
 
   <dependencies>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-core-engine-utils</artifactId>
+      <version>${project.version}</version>
+    </dependency>
     <!-- Proto DTOs (ResourceId, schema, scan specs, etc.) -->
     <dependency>
       <groupId>ai.floedb.floecat</groupId>

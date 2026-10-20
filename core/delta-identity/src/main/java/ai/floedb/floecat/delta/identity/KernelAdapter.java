@@ -35,6 +35,7 @@ import io.delta.kernel.types.StructType;
 import io.delta.kernel.utils.FileStatus;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -66,6 +67,62 @@ public final class KernelAdapter {
     } catch (KernelException failure) {
       throw classify(failure);
     }
+  }
+
+  /** Resolves identity facts when a catalog exposes only its current schema and properties. */
+  public static DeltaIdentitySnapshot currentSchemaIdentity(
+      long version, String schemaJson, Map<String, String> properties) {
+    ColumnMappingMode mappingMode = ColumnMappingMode.fromTableProperties(properties);
+    Set<String> writerFeatures = new LinkedHashSet<>();
+    Set<String> readerFeatures = new LinkedHashSet<>();
+    if (mappingMode.isEnabled()) {
+      readerFeatures.add("columnMapping");
+      writerFeatures.add("columnMapping");
+    }
+    if (Boolean.parseBoolean(
+        properties.getOrDefault(DeltaColumnMapping.ICEBERG_COMPAT_V2_ENABLED, "false"))) {
+      writerFeatures.add("icebergCompatV2");
+    }
+    int minReaderVersion = writerFeatures.isEmpty() ? 1 : 3;
+    int minWriterVersion = writerFeatures.isEmpty() ? 2 : 7;
+    return currentSchemaIdentity(
+        version,
+        schemaJson,
+        properties,
+        minReaderVersion,
+        minWriterVersion,
+        readerFeatures,
+        writerFeatures);
+  }
+
+  /** Resolves identity facts from a catalog schema and an explicitly supplied Delta protocol. */
+  public static DeltaIdentitySnapshot currentSchemaIdentity(
+      long version,
+      String schemaJson,
+      Map<String, String> properties,
+      int minReaderVersion,
+      int minWriterVersion,
+      Set<String> readerFeatures,
+      Set<String> writerFeatures) {
+    Protocol protocol =
+        new Protocol(
+            minReaderVersion,
+            minWriterVersion,
+            Set.copyOf(readerFeatures),
+            Set.copyOf(writerFeatures));
+    ColumnMappingMode mode =
+        ColumnMappingMode.effectiveFromTableProperties(
+            properties, () -> protocol.supportsFeature(TableFeatures.COLUMN_MAPPING_RW_FEATURE));
+    long highWaterMark = mode.isEnabled() ? DeltaColumnMapping.maxColumnId(properties) : 0L;
+    boolean requireNestedIds =
+        Boolean.parseBoolean(
+                properties.getOrDefault(DeltaColumnMapping.ICEBERG_COMPAT_V2_ENABLED, "false"))
+            && protocol.supportsFeature(TableFeatures.ICEBERG_COMPAT_V2_W_FEATURE);
+    return new DeltaIdentitySnapshot(
+        version,
+        DeltaColumnMapping.resolveSchema(
+            deserializeSchema(schemaJson), mode, highWaterMark, requireNestedIds),
+        highWaterMark);
   }
 
   static List<Long> metadataVersions(
@@ -168,15 +225,7 @@ public final class KernelAdapter {
     if (snapshot instanceof SnapshotImpl snapshotImpl) {
       return snapshotImpl.getProtocol();
     }
-    if (snapshot instanceof ProtocolSnapshot protocolSnapshot) {
-      return protocolSnapshot.protocol();
-    }
     throw new IllegalArgumentException(
         "A Delta snapshot with column mapping configured must expose its protocol");
-  }
-
-  /** Test seam for protocol-bearing snapshots that are not Kernel implementations. */
-  public interface ProtocolSnapshot {
-    Protocol protocol();
   }
 }

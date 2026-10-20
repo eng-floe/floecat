@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.query.catalog;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
@@ -483,16 +484,14 @@ final class RelationBundleBuilder {
       Optional<TablePin> pin,
       CatalogContext catalogContext) {
     if (pin.isEmpty()) {
-      if (userTable.columnIdAlgorithm()
-          == ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP) {
+      if (userTable.columnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP) {
         return SchemaDescriptor.newBuilder()
-            .addAllColumns(graphView.tableSchema(userTable.id(), catalogContext))
+            .addAllColumns(
+                Optional.ofNullable(graphView.tableSchema(userTable.id(), catalogContext))
+                    .orElseGet(List::of))
             .build();
       }
-      return objects.mappedSchema(
-          userTable,
-          userTable.schemaJson(),
-          ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
+      return objects.mappedSchema(userTable, userTable.schemaJson(), userTable.columnIdentityMap());
     }
     // The stream's producer-thread pre-pass validated this pin before the relation entered worker
     // fan-out. Objects owns the cache-first resolution so every caller gets the same behavior.

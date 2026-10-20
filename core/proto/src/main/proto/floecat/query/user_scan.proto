@@ -21,6 +21,7 @@ option java_package = "ai.floedb.floecat.query.rpc";
 option java_outer_classname = "QueryScanProto";
 
 import "floecat/common/common.proto";
+import "floecat/catalog/column_identity.proto";
 import "floecat/common/predicate.proto";
 import "floecat/catalog/partition.proto";
 import "floecat/execution/scan.proto";
@@ -79,6 +80,10 @@ message TableInfo {
   // credential scope and expiry so clients can renew through StorageAuthorities.VendStorageCredentials.
   // The existing s3.* entries in properties remain available for initial compatibility.
   ai.floedb.floecat.storage.ResolveStorageAuthorityResponse resolved_storage = 7;
+
+  // Authoritative canonical identities for the pinned snapshot. Query engines use this map for
+  // statistics lookup and to resolve current logical fields to source-native physical fields.
+  ai.floedb.floecat.catalog.ColumnIdentityMap column_identity_map = 8;
 }
 
 message ScanHandle {

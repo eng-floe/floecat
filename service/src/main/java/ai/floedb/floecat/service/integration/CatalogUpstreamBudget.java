@@ -28,10 +28,9 @@ import java.util.function.Supplier;
  * scan planning -- is held for the sum. Sharing one budget across those calls is what stops any of
  * them being the one that blocks indefinitely.
  *
- * <p>Used by validation, discovery and storage-credential vending. {@code CatalogOverlayReconciler}
- * is deliberately not on it yet: it walks an entire catalog, so it needs a per-call budget like the
- * listing paths rather than one window over the whole walk, and giving it a single deadline would
- * cap a legitimately long reconcile.
+ * <p>Used by validation, discovery, storage-credential vending, and each table's overlay identity
+ * read. Overlay reconciliation starts a fresh budget per table so a legitimately long catalog walk
+ * is not capped by one global deadline.
  *
  * <p>The window is this budget's alone. It deliberately does not consult the caller's own gRPC
  * deadline: see {@link #remainingNanos()} for why reading one here is unsafe. The scoped {@link

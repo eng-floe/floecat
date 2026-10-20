@@ -32,6 +32,7 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.catalog.access.CatalogCapabilities;
 import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.catalog.access.CatalogClient;
@@ -42,6 +43,8 @@ import ai.floedb.floecat.catalog.access.CatalogViewDefinition;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import ai.floedb.floecat.catalog.delta.DeltaIdentityHistoryProvider;
+import ai.floedb.floecat.catalog.delta.DeltaSourceVersion;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -49,6 +52,9 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.delta.identity.CurrentSchemaDeltaHistorySource;
+import ai.floedb.floecat.delta.identity.DeltaHistorySource;
+import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
@@ -75,12 +81,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -88,6 +96,8 @@ import org.junit.jupiter.api.Test;
 class CatalogOverlayReconcilerTest {
   private static final String SCHEMA_JSON =
       "{\"type\":\"struct\",\"schema-id\":0,\"fields\":[{\"id\":1,\"name\":\"id\",\"required\":false,\"type\":\"long\"}]}";
+  private static final String DELTA_SCHEMA_JSON =
+      "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":true,\"metadata\":{}}]}";
 
   private CatalogOverlayReconciler reconciler;
   private CatalogIntegrationRepository integrations;
@@ -155,6 +165,8 @@ class CatalogOverlayReconcilerTest {
     // the failure this protocol calls silent and total -- so the fences here are real and the
     // assertions read the marker versions they move.
     reconciler.markerStore = markerStoreOver(pointers);
+    reconciler.fileIoProperties =
+        mock(ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver.class);
   }
 
   @Test
@@ -254,6 +266,15 @@ class CatalogOverlayReconcilerTest {
     var failure = assertThrows(IllegalStateException.class, reconciler::validateConfiguration);
 
     assertTrue(failure.getMessage().contains("lock-wait must be positive"));
+  }
+
+  @Test
+  void rejectsNonPositiveDeltaIdentityTimeoutAtStartup() {
+    reconciler.deltaIdentityTimeout = Duration.ZERO;
+
+    var failure = assertThrows(IllegalStateException.class, reconciler::validateConfiguration);
+
+    assertTrue(failure.getMessage().contains("delta-identity-timeout must be positive"));
   }
 
   @Test
@@ -524,6 +545,7 @@ class CatalogOverlayReconcilerTest {
 
   @Test
   void promotesLegacyDeltaIdentityAndTracksSourceFormatChanges() {
+    client.provideDeltaHistory = true;
     NamespacePath sales = NamespacePath.of("sales");
     client.children.put(NamespacePath.root(), List.of(sales));
     client.children.put(sales, List.of());
@@ -533,10 +555,10 @@ class CatalogOverlayReconcilerTest {
             new CatalogObjectName(sales, "orders"),
             ExternalObjectIdentity.stable("delta-table-uuid"),
             "DELTA",
-            SCHEMA_JSON,
+            DELTA_SCHEMA_JSON,
             List.of(),
             Optional.of("s3://warehouse/orders/_delta_log"),
-            Optional.of("s3://warehouse/orders"),
+            Optional.empty(),
             Map.of()));
 
     reconciler.reconcile(
@@ -553,6 +575,8 @@ class CatalogOverlayReconcilerTest {
     assertEquals(
         ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
         table.getUpstream().getColumnIdAlgorithm());
+    assertTrue(table.hasColumnIdentityMap());
+    assertEquals(1, table.getColumnIdentityMap().getEntriesCount());
 
     MutationMeta tableMeta = tables.metaFor(table.getResourceId());
     Table legacy =
@@ -586,6 +610,196 @@ class CatalogOverlayReconcilerTest {
     assertEquals(
         ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
         tables.getById(table.getResourceId()).orElseThrow().getUpstream().getColumnIdAlgorithm());
+  }
+
+  @Test
+  void deltaTableWithoutHistoryIsSkippedInsteadOfSynthesized() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(
+        orders,
+        new CatalogTable(
+            orders,
+            ExternalObjectIdentity.stable("shared-delta-table"),
+            "DELTA",
+            DELTA_SCHEMA_JSON,
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of("delta.sharing.version", "42")));
+
+    var result = reconcile();
+
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    assertEquals(1, result.objectsSkipped());
+    assertEquals(0, result.tablesCreated());
+    assertTrue(
+        tables.getByName("acct", "catalog", namespace.getResourceId().getId(), "orders").isEmpty());
+  }
+
+  @Test
+  void branchLocalDeltaHistoryFailureSkipsOnlyThatTable() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName denied = new CatalogObjectName(sales, "denied");
+    CatalogObjectName readable = new CatalogObjectName(sales, "readable");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(denied, sharedDeltaTable(denied, "denied-id", 42L));
+    client.tables.put(readable, sharedDeltaTable(readable, "readable-id", 42L));
+    client.deltaHistoryFailures.put(
+        denied,
+        new CatalogAccessException(
+            CatalogAccessException.Code.PERMISSION_DENIED, "history denied for this table"));
+
+    var result = reconcile();
+
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    assertEquals(1, result.objectsSkipped());
+    assertEquals(1, result.tablesCreated());
+    assertTrue(
+        tables.getByName("acct", "catalog", namespace.getResourceId().getId(), "denied").isEmpty());
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "readable")
+            .isPresent());
+  }
+
+  @Test
+  void catalogWideDeltaHistoryFailureAbortsThePass() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+    client.deltaHistoryFailures.put(
+        orders,
+        new CatalogAccessException(
+            CatalogAccessException.Code.UNAVAILABLE, "history service unavailable"));
+
+    CatalogAccessException failure = assertThrows(CatalogAccessException.class, this::reconcile);
+
+    assertEquals(CatalogAccessException.Code.UNAVAILABLE, failure.code());
+  }
+
+  @Test
+  void unexpectedDeltaHistoryFailureAbortsThePass() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+    client.deltaHistoryFailures.put(orders, new IllegalStateException("unexpected provider bug"));
+
+    assertThrows(IllegalStateException.class, this::reconcile);
+  }
+
+  @Test
+  void deltaHistoryReadUsesAPerTableUpstreamBudget() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+    reconciler.deltaIdentityTimeout = Duration.ofNanos(1L);
+    AtomicLong budgetClock = new AtomicLong();
+    reconciler.nanoTime = () -> budgetClock.getAndAdd(2L);
+
+    CatalogAccessException failure = assertThrows(CatalogAccessException.class, this::reconcile);
+
+    assertEquals(CatalogAccessException.Code.TIMEOUT, failure.code());
+    assertEquals(0, client.deltaHistoryCalls.get());
+  }
+
+  @Test
+  void dataOnlyDeltaHeadAdvancePersistsTheNewIdentityCursor() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(
+        orders,
+        new CatalogTable(
+            orders,
+            ExternalObjectIdentity.stable("shared-delta-table"),
+            "DELTA",
+            DELTA_SCHEMA_JSON,
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of("delta.sharing.version", "42")));
+    assertEquals(1, reconcile().tablesCreated());
+
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table before =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    MutationMeta beforeMeta = tables.metaFor(before.getResourceId());
+    client.tables.put(
+        orders,
+        new CatalogTable(
+            orders,
+            ExternalObjectIdentity.stable("shared-delta-table"),
+            "DELTA",
+            DELTA_SCHEMA_JSON,
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of("delta.sharing.version", "43")));
+
+    CatalogOverlayReconciler.Result result = reconcile();
+    Table after = tables.getById(before.getResourceId()).orElseThrow();
+
+    assertEquals(1, result.tablesUpdated());
+    assertTrue(
+        tables.metaFor(after.getResourceId()).getPointerVersion() > beforeMeta.getPointerVersion());
+    assertEquals(43L, after.getColumnIdentityMap().getSourceVersion());
+  }
+
+  @Test
+  void corruptPersistedOverlayIdentitySkipsOnlyThatTable() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(
+        orders,
+        new CatalogTable(
+            orders,
+            ExternalObjectIdentity.stable("delta-table-uuid"),
+            "DELTA",
+            DELTA_SCHEMA_JSON,
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of()));
+
+    reconcile();
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table table =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    MutationMeta meta = tables.metaFor(table.getResourceId());
+    Table corrupt =
+        table.toBuilder()
+            .setColumnIdentityMap(
+                table.getColumnIdentityMap().toBuilder().setStateChecksum("corrupt"))
+            .build();
+    assertTrue(tables.update(corrupt, meta.getPointerVersion()));
+
+    var result = reconcile();
+
+    assertEquals(1, result.objectsSkipped());
+    assertEquals(corrupt, tables.getById(table.getResourceId()).orElseThrow());
   }
 
   @Test
@@ -2019,14 +2233,31 @@ class CatalogOverlayReconcilerTest {
         Map.of());
   }
 
+  private static CatalogTable sharedDeltaTable(
+      CatalogObjectName name, String stableIdentity, long version) {
+    return new CatalogTable(
+        name,
+        ExternalObjectIdentity.stable(stableIdentity),
+        "DELTA",
+        DELTA_SCHEMA_JSON,
+        List.of(),
+        Optional.empty(),
+        Optional.empty(),
+        Map.of("delta.sharing.version", Long.toString(version)));
+  }
+
   private static ResourceId id(String value, ResourceKind kind) {
     return ResourceId.newBuilder().setAccountId("acct").setId(value).setKind(kind).build();
   }
 
-  private static final class FakeCatalogClient implements CatalogClient {
+  private static final class FakeCatalogClient
+      implements CatalogClient, DeltaIdentityHistoryProvider {
     private final Map<NamespacePath, List<NamespacePath>> children = new HashMap<>();
     private final Map<CatalogObjectName, CatalogTable> tables = new java.util.LinkedHashMap<>();
     private final Map<CatalogObjectName, CatalogView> views = new HashMap<>();
+    private boolean provideDeltaHistory;
+    private final Map<CatalogObjectName, RuntimeException> deltaHistoryFailures = new HashMap<>();
+    private final AtomicInteger deltaHistoryCalls = new AtomicInteger();
 
     @Override
     public CatalogCapabilities capabilities() {
@@ -2146,6 +2377,26 @@ class CatalogOverlayReconcilerTest {
     @Override
     public Optional<VendedStorageCredentials> vendStorageCredentials(CatalogObjectName table) {
       return Optional.empty();
+    }
+
+    @Override
+    public Optional<DeltaHistorySource> deltaIdentityHistory(
+        CatalogTable table, OptionalLong predecessorVersion) {
+      deltaHistoryCalls.incrementAndGet();
+      RuntimeException failure = deltaHistoryFailures.get(table.name());
+      if (failure != null) {
+        throw failure;
+      }
+      if (!provideDeltaHistory) {
+        return Optional.empty();
+      }
+      DeltaSourceVersion version = DeltaSourceVersion.fromProperties(table.properties());
+      return Optional.of(
+          new CurrentSchemaDeltaHistorySource(
+              table.name().toString(),
+              KernelAdapter.currentSchemaIdentity(
+                  version.value(), table.schemaJson(), table.properties()),
+              version.anchored()));
     }
 
     @Override

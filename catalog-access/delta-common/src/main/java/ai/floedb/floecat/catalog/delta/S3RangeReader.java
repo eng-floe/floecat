@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.connector.delta.uc.impl;
+package ai.floedb.floecat.catalog.delta;
 
 import ai.floedb.floecat.aws.RefreshingAwsClient;
 import java.io.IOException;
@@ -24,7 +24,7 @@ import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
-final class S3RangeReader {
+public final class S3RangeReader {
 
   private static final int DEFAULT_CHUNK_SIZE = 16 * 1024 * 1024;
 
@@ -42,11 +42,12 @@ final class S3RangeReader {
   private long totalWindows = 0;
   private boolean closed = false;
 
-  S3RangeReader(RefreshingAwsClient<S3Client> s3, String bucket, String key) throws IOException {
+  public S3RangeReader(RefreshingAwsClient<S3Client> s3, String bucket, String key)
+      throws IOException {
     this(s3, bucket, key, DEFAULT_CHUNK_SIZE);
   }
 
-  S3RangeReader(RefreshingAwsClient<S3Client> s3, String bucket, String key, int chunkSize)
+  public S3RangeReader(RefreshingAwsClient<S3Client> s3, String bucket, String key, int chunkSize)
       throws IOException {
     this.s3 = s3;
     this.bucket = bucket;
@@ -80,11 +81,11 @@ final class S3RangeReader {
     }
   }
 
-  long length() {
+  public long length() {
     return fileLength;
   }
 
-  int readAt(long position, byte[] dest, int off, int len) throws IOException {
+  public int readAt(long position, byte[] dest, int off, int len) throws IOException {
     if (len == 0) {
       return 0;
     }

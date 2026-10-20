@@ -27,7 +27,11 @@ import ai.floedb.floecat.catalog.access.CatalogTraversalFailures;
 import ai.floedb.floecat.catalog.access.CatalogView;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
+import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import ai.floedb.floecat.catalog.delta.DeltaIdentityHistoryProvider;
+import ai.floedb.floecat.catalog.delta.DeltaLogEngineFactory;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -38,9 +42,13 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.resolver.IcebergSchemaMapper;
-import ai.floedb.floecat.connector.spi.LogSafeText;
+import ai.floedb.floecat.delta.identity.DeltaIdentityService;
+import ai.floedb.floecat.delta.identity.DeltaLogHistorySource;
+import ai.floedb.floecat.delta.identity.IdentityResult;
+import ai.floedb.floecat.delta.identity.PersistedIdentityLookup;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
@@ -55,7 +63,9 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
+import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.util.LogSafeText;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.runtime.Startup;
 import jakarta.annotation.PostConstruct;
@@ -77,6 +87,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
@@ -86,6 +97,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -116,6 +128,7 @@ public class CatalogOverlayReconciler {
   private static final int MAX_NAMESPACES = 100_000;
   private static final long RECONCILE_LOCK_POLL_MILLIS = 10L;
   private static final int MAX_UNCONFIRMED_PUBLICATIONS = 16;
+  private static final DeltaIdentityService DELTA_IDENTITY = new DeltaIdentityService();
 
   @Inject CatalogIntegrationAccess access;
   @Inject CatalogIntegrationRepository integrations;
@@ -127,6 +140,7 @@ public class CatalogOverlayReconciler {
   @Inject TableRootRepository tableRoots;
   @Inject TableRootWriter rootWriter;
   @Inject MarkerStore markerStore;
+  @Inject ServerSideFileIoPropertiesResolver fileIoProperties;
 
   @ConfigProperty(
       name = "floecat.catalog-overlay.reconcile.max-parallel-loads",
@@ -135,6 +149,13 @@ public class CatalogOverlayReconciler {
 
   @ConfigProperty(name = "floecat.catalog-overlay.reconcile.lock-wait", defaultValue = "100ms")
   Duration reconcileLockWait = Duration.ofMillis(100);
+
+  @ConfigProperty(
+      name = "floecat.catalog-overlay.reconcile.delta-identity-timeout",
+      defaultValue = "30s")
+  Duration deltaIdentityTimeout = Duration.ofSeconds(30);
+
+  LongSupplier nanoTime = System::nanoTime;
 
   // One entry per active or waiting overlay. This is instance-local load control; the repository
   // fences remain the correctness boundary when different service instances reconcile the same
@@ -155,6 +176,10 @@ public class CatalogOverlayReconciler {
       throw new IllegalStateException(
           "floecat.catalog-overlay.reconcile.lock-wait must be positive");
     }
+    if (deltaIdentityTimeout.isNegative() || deltaIdentityTimeout.isZero()) {
+      throw new IllegalStateException(
+          "floecat.catalog-overlay.reconcile.delta-identity-timeout must be positive");
+    }
   }
 
   public Result reconcile(
@@ -174,7 +199,6 @@ public class CatalogOverlayReconciler {
       MutationMeta integrationMeta) {
     requireBinding(overlay, integration);
     PointerConditions fence = fence(overlay, overlayMeta, integration, integrationMeta);
-    Discovery discovery;
     try (CatalogClientSession session = new CatalogClientSession(access.open(integration))) {
       CatalogClient client = session.client();
       cancellableCall(
@@ -182,44 +206,46 @@ public class CatalogOverlayReconciler {
             client.validate();
             return null;
           });
-      discovery = discover(session, overlay);
-    }
+      Discovery discovery = discover(session, overlay);
 
-    var result = new MutableResult();
-    Map<NamespacePath, Namespace> localNamespaces =
-        reconcileNamespaces(
-            overlay, integration, fence, discovery.materializedNamespaces(), result);
-    LocalInventory localInventory = localInventory(overlay, localNamespaces);
-    // Every path that made the pass partial, not just the branch ones. A cycle in which each
-    // loadTable failed skippably populates only unobserved, and reporting zero there would be
-    // indistinguishable from a clean no-op pass -- which is the confusion these counters exist to
-    // remove.
-    // Unioned, because all three sets are keyed by namespace: summing them counted a namespace
-    // whose table and view listings both failed twice, which made the number neither a branch count
-    // nor a failure count.
-    Set<NamespacePath> skippedBranches = new HashSet<>();
-    addAllCancellable(skippedBranches, discovery.skippedPrefixes());
-    addAllCancellable(skippedBranches, discovery.skippedTablePrefixes());
-    addAllCancellable(skippedBranches, discovery.skippedViewPrefixes());
-    result.branchesSkipped = skippedBranches.size();
-    result.objectsSkipped =
-        discovery.unobservedTables().size() + discovery.unobservedViews().size();
-    retireStaleRelations(overlay, fence, discovery, localInventory, result);
-    reconcileTables(
-        overlay,
-        overlayMeta,
-        integration,
-        integrationMeta,
-        fence,
-        discovery.tables(),
-        localNamespaces,
-        localInventory,
-        result);
-    reconcileViews(
-        overlay, integration, fence, discovery.views(), localNamespaces, localInventory, result);
-    retireNamespaces(overlay, fence, discovery, localNamespaces, result);
-    assertFence(overlay, overlayMeta, integration, integrationMeta);
-    return result.freeze();
+      var result = new MutableResult();
+      Map<NamespacePath, Namespace> localNamespaces =
+          reconcileNamespaces(
+              overlay, integration, fence, discovery.materializedNamespaces(), result);
+      LocalInventory localInventory = localInventory(overlay, localNamespaces);
+      // Every path that made the pass partial, not just the branch ones. A cycle in which each
+      // loadTable failed skippably populates only unobserved, and reporting zero there would be
+      // indistinguishable from a clean no-op pass -- which is the confusion these counters exist to
+      // remove.
+      // Unioned, because all three sets are keyed by namespace: summing them counted a namespace
+      // whose table and view listings both failed twice, which made the number neither a branch
+      // count
+      // nor a failure count.
+      Set<NamespacePath> skippedBranches = new HashSet<>();
+      addAllCancellable(skippedBranches, discovery.skippedPrefixes());
+      addAllCancellable(skippedBranches, discovery.skippedTablePrefixes());
+      addAllCancellable(skippedBranches, discovery.skippedViewPrefixes());
+      result.branchesSkipped = skippedBranches.size();
+      result.objectsSkipped =
+          discovery.unobservedTables().size() + discovery.unobservedViews().size();
+      retireStaleRelations(overlay, fence, discovery, localInventory, result);
+      reconcileTables(
+          overlay,
+          overlayMeta,
+          integration,
+          integrationMeta,
+          fence,
+          client,
+          discovery.tables(),
+          localNamespaces,
+          localInventory,
+          result);
+      reconcileViews(
+          overlay, integration, fence, discovery.views(), localNamespaces, localInventory, result);
+      retireNamespaces(overlay, fence, discovery, localNamespaces, result);
+      assertFence(overlay, overlayMeta, integration, integrationMeta);
+      return result.freeze();
+    }
   }
 
   /** Removes every materialized descendant after the overlay deletion fence is installed. */
@@ -707,6 +733,7 @@ public class CatalogOverlayReconciler {
       CatalogIntegration integration,
       MutationMeta integrationMeta,
       PointerConditions fence,
+      CatalogClient client,
       Map<CatalogObjectName, CatalogTable> discovered,
       Map<NamespacePath, Namespace> localNamespaces,
       LocalInventory inventory,
@@ -725,7 +752,22 @@ public class CatalogOverlayReconciler {
             source.identity().stable()
                 ? inventory.tablesByIdentity().get(source.identity().value())
                 : inventory.tablesByName().get(name);
-        Table desired = tableFor(overlay, integration, namespace, source, current);
+        Table mappedDesired;
+        try {
+          mappedDesired = tableFor(overlay, integration, namespace, source, current, client);
+        } catch (TableIdentityException invalidIdentity) {
+          LOG.warnf(
+              invalidIdentity,
+              "overlay %s skipping table %s (table_id=%s) because Delta column identity"
+                  + " reconciliation failed: %s",
+              overlay.getResourceId().getId(),
+              LogSafeText.bounded(String.valueOf(name), MAX_LOGGED_CHARS),
+              current == null ? "<new>" : current.getResourceId().getId(),
+              LogSafeText.bounded(invalidIdentity.getMessage(), MAX_LOGGED_CHARS));
+          result.objectsSkipped++;
+          continue;
+        }
+        Table desired = mappedDesired;
         MutationMeta definitionMeta;
         if (current == null) {
           definitionMeta =
@@ -916,7 +958,8 @@ public class CatalogOverlayReconciler {
       CatalogIntegration integration,
       Namespace namespace,
       CatalogTable source,
-      Table current) {
+      Table current,
+      CatalogClient client) {
     ResourceId id =
         current == null
             ? randomId(overlay.getResourceId().getAccountId(), ResourceKind.RK_TABLE)
@@ -935,16 +978,126 @@ public class CatalogOverlayReconciler {
             .addAllPartitionKeys(source.partitionKeys())
             .setColumnIdAlgorithm(columnIdAlgorithm(source.format()))
             .build();
-    return Table.newBuilder()
-        .setResourceId(id)
-        .setDisplayName(normalizeName(source.name().name()))
-        .setCatalogId(overlay.getCatalogId())
-        .setNamespaceId(namespace.getResourceId())
-        .setCreatedAt(current == null ? now() : current.getCreatedAt())
-        .setSchemaJson(source.schemaJson())
-        .setUpstream(upstream)
-        .putAllProperties(properties)
-        .build();
+    var builder =
+        Table.newBuilder()
+            .setResourceId(id)
+            .setDisplayName(normalizeName(source.name().name()))
+            .setCatalogId(overlay.getCatalogId())
+            .setNamespaceId(namespace.getResourceId())
+            .setCreatedAt(current == null ? now() : current.getCreatedAt())
+            .setSchemaJson(source.schemaJson())
+            .setUpstream(upstream)
+            .putAllProperties(properties);
+    if (upstream.getFormat() == TableFormat.TF_DELTA) {
+      builder.setColumnIdentityMap(
+          reconcileDeltaIdentity(source, current, client, builder.build()));
+    }
+    return builder.build();
+  }
+
+  private ColumnIdentityMap reconcileDeltaIdentity(
+      CatalogTable source, Table current, CatalogClient client, Table desired) {
+    CatalogUpstreamBudget budget = CatalogUpstreamBudget.start(deltaIdentityTimeout, nanoTime);
+    try {
+      Optional<ColumnIdentityMap> tableMap =
+          current != null && current.hasColumnIdentityMap()
+              ? Optional.of(current.getColumnIdentityMap())
+              : Optional.empty();
+      OptionalLong predecessorVersion = persistedSourceVersion(tableMap, source.name());
+      PersistedIdentityLookup persisted = PersistedIdentityLookup.forTableMap(tableMap);
+      Optional<String> tablePath = source.storageLocation();
+      if (tablePath.isPresent()) {
+        String path = tablePath.orElseThrow();
+        return budget.call(
+            () -> {
+              Map<String, String> properties = fileIoProperties.resolve(desired, path);
+              VendedStorageCredentials credentials =
+                  new VendedStorageCredentials(properties, path, Optional.empty());
+              try (var opened = DeltaLogEngineFactory.open(credentials)) {
+                var deltaTable = io.delta.kernel.Table.forPath(opened.engine(), path);
+                var history =
+                    new DeltaLogHistorySource(
+                        source.name().toString(), path, deltaTable, opened.engine());
+                return reconciledHeadMap(history, persisted);
+              } catch (RuntimeException failure) {
+                throw failure;
+              } catch (Exception failure) {
+                throw new CatalogAccessException(
+                    CatalogAccessException.Code.INTERNAL,
+                    "Delta identity engine cleanup failed for table " + source.name(),
+                    failure);
+              }
+            });
+      }
+      if (client instanceof DeltaIdentityHistoryProvider provider) {
+        return budget.call(
+            () -> {
+              var history =
+                  provider
+                      .deltaIdentityHistory(source, predecessorVersion)
+                      .orElseThrow(
+                          () ->
+                              new TableIdentityException(
+                                  "SOURCE_ERROR for table "
+                                      + source.name()
+                                      + ": catalog exposes no ordered Delta identity history"));
+              return reconciledHeadMap(history, persisted);
+            });
+      }
+      throw new TableIdentityException(
+          "SOURCE_ERROR for table "
+              + source.name()
+              + ": Delta transaction-log location is unavailable");
+    } catch (CancellationException | TableIdentityException failure) {
+      throw failure;
+    } catch (CatalogAccessException failure) {
+      if (!CatalogTraversalFailures.describesOneBranch(failure)) {
+        throw failure;
+      }
+      throw new TableIdentityException(
+          "SOURCE_ERROR for table " + source.name() + ": " + failure.getMessage(), failure);
+    }
+  }
+
+  private static OptionalLong persistedSourceVersion(
+      Optional<ColumnIdentityMap> tableMap, CatalogObjectName tableName) {
+    if (tableMap.isEmpty()) {
+      return OptionalLong.empty();
+    }
+    try {
+      return OptionalLong.of(ColumnIdentityMaps.restore(tableMap.orElseThrow()).sourceVersion());
+    } catch (IllegalArgumentException invalid) {
+      throw new TableIdentityException(
+          "INVALID_PERSISTED_STATE for table " + tableName + ": " + invalid.getMessage(), invalid);
+    }
+  }
+
+  private static ColumnIdentityMap reconciledHeadMap(
+      ai.floedb.floecat.delta.identity.DeltaHistorySource history,
+      PersistedIdentityLookup persisted) {
+    long headVersion = history.headVersion();
+    IdentityResult result = DELTA_IDENTITY.reconcileCurrent(history, persisted);
+    if (!result.failures().isEmpty()) {
+      IdentityResult.Failure failure = result.failures().getFirst();
+      throw new TableIdentityException(
+          failure.kind()
+              + " for table "
+              + failure.table()
+              + " snapshot "
+              + failure.snapshotVersion()
+              + ": "
+              + failure.message());
+    }
+    ColumnIdentityMap headMap = result.maps().get(headVersion);
+    if (headMap == null) {
+      throw new TableIdentityException(
+          "SOURCE_ERROR for table "
+              + history.tableName()
+              + " snapshot "
+              + headVersion
+              + ": identity reconciliation returned no head map");
+    }
+    return headMap;
   }
 
   private View viewFor(
@@ -1808,6 +1961,16 @@ public class CatalogOverlayReconciler {
           viewsDeleted,
           branchesSkipped,
           objectsSkipped);
+    }
+  }
+
+  private static final class TableIdentityException extends RuntimeException {
+    private TableIdentityException(String message) {
+      super(message);
+    }
+
+    private TableIdentityException(String message, Throwable cause) {
+      super(message, cause);
     }
   }
 }

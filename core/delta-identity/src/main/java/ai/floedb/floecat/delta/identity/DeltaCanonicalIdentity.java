@@ -101,7 +101,11 @@ public final class DeltaCanonicalIdentity {
 
   /** Resolves and validates once for all schema and statistics consumers. */
   public static ValidatedIdentity resolve(Snapshot snapshot, ColumnIdentityMap identityMap) {
-    DeltaIdentitySnapshot source = DeltaIdentitySnapshot.from(snapshot);
+    return resolve(DeltaIdentitySnapshot.from(snapshot), identityMap);
+  }
+
+  public static ValidatedIdentity resolve(
+      DeltaIdentitySnapshot source, ColumnIdentityMap identityMap) {
     SchemaIdentityState state = validateSnapshot(source, identityMap);
     LegacyDottedKeyIndex<Long> ids = LegacyDottedKeyIndex.create();
     LegacyDottedKeyIndex<Integer> ordinals = LegacyDottedKeyIndex.create();

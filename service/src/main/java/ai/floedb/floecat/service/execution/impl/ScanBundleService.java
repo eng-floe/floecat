@@ -554,6 +554,9 @@ public class ScanBundleService {
     if (resolvedTableProperties.response() != null) {
       builder.setResolvedStorage(resolvedTableProperties.response());
     }
+    if (snapshot.hasColumnIdentityMap()) {
+      builder.setColumnIdentityMap(snapshot.getColumnIdentityMap());
+    }
 
     return builder.build();
   }

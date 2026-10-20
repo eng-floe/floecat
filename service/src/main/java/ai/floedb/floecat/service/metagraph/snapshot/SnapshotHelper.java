@@ -406,7 +406,7 @@ public class SnapshotHelper {
               "snapshot_id", Long.toString(snapshot.getSnapshotId())));
     }
     ColumnIdentityMap identityMap =
-        snapshot == null ? ColumnIdentityMap.getDefaultInstance() : snapshot.getColumnIdentityMap();
+        snapshot == null ? tbl.columnIdentityMap() : snapshot.getColumnIdentityMap();
 
     return new SchemaResolution(tbl, schemaJson, identityMap);
   }

@@ -66,6 +66,21 @@ class SchemaIdentityReconcilerTest {
   }
 
   @Test
+  void mappedDropAndLaterReaddWithNewNativeIdAllocatesNewIdentity() {
+    var present =
+        reconcile(10, IdentityMode.NATIVE_FIELD_ID, Optional.empty(), nativeField("x", 1, 7));
+    var dropped = reconcile(11, IdentityMode.NATIVE_FIELD_ID, Optional.of(present));
+    var readded =
+        reconcile(12, IdentityMode.NATIVE_FIELD_ID, Optional.of(dropped), nativeField("x", 1, 8));
+
+    assertThat(present.entries().getFirst().canonicalId()).isEqualTo(1L);
+    assertThat(dropped.entries()).isEmpty();
+    assertThat(dropped.highWaterMark()).isEqualTo(1L);
+    assertThat(readded.entries().getFirst().canonicalId()).isEqualTo(2L);
+    assertThat(readded.entries().getFirst().nativeFieldId()).hasValue(8);
+  }
+
+  @Test
   void reorderAndUnrelatedAddPreserveExistingIdentities() {
     var first =
         reconcile(20, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1), field("b", 2));
@@ -141,6 +156,57 @@ class SchemaIdentityReconcilerTest {
   }
 
   @Test
+  void mappedCollectionInteriorsSurviveParentRenameReorderAndUnrelatedAddition() {
+    ColumnPath items = ColumnPath.ROOT.field("items");
+    ColumnPath attributes = items.arrayElement().field("attributes");
+    var first =
+        reconcile(
+            3,
+            IdentityMode.NATIVE_FIELD_ID,
+            Optional.empty(),
+            nativeNode(items, 1, 10),
+            node(items.arrayElement(), 1),
+            nativeNode(attributes, 1, 20),
+            node(attributes.mapKey(), 1),
+            node(attributes.mapValue(), 2));
+
+    ColumnPath renamedItems = ColumnPath.ROOT.field("renamed_items");
+    ColumnPath renamedAttributes = renamedItems.arrayElement().field("attributes");
+    var evolved =
+        reconcile(
+            4,
+            IdentityMode.NATIVE_FIELD_ID,
+            Optional.of(first),
+            nativeField("unrelated", 1, 30),
+            nativeNode(renamedItems, 2, 10),
+            node(renamedItems.arrayElement(), 1),
+            nativeNode(renamedAttributes, 1, 20),
+            node(renamedAttributes.mapKey(), 1),
+            node(renamedAttributes.mapValue(), 2));
+
+    long arrayElementId = first.byPath(items.arrayElement()).orElseThrow().canonicalId();
+    long mapKeyId = first.byPath(attributes.mapKey()).orElseThrow().canonicalId();
+    long mapValueId = first.byPath(attributes.mapValue()).orElseThrow().canonicalId();
+
+    assertThat(arrayElementId).isEqualTo(9154591074475197868L);
+    assertThat(mapKeyId).isEqualTo(5861230635089355623L);
+    assertThat(mapValueId).isEqualTo(5441291700115779020L);
+    assertThat(List.of(arrayElementId, mapKeyId, mapValueId)).doesNotHaveDuplicates();
+    assertThat(evolved.byPath(renamedItems.arrayElement()).orElseThrow().canonicalId())
+        .isEqualTo(arrayElementId);
+    assertThat(evolved.byPath(renamedAttributes.mapKey()).orElseThrow().canonicalId())
+        .isEqualTo(mapKeyId);
+    assertThat(evolved.byPath(renamedAttributes.mapValue()).orElseThrow().canonicalId())
+        .isEqualTo(mapValueId);
+    assertThat(evolved.byPath(renamedItems).orElseThrow().canonicalId())
+        .isEqualTo(first.byPath(items).orElseThrow().canonicalId());
+    assertThat(evolved.byPath(renamedAttributes).orElseThrow().canonicalId())
+        .isEqualTo(first.byPath(attributes).orElseThrow().canonicalId());
+    assertThat(evolved.byPath(ColumnPath.ROOT.field("unrelated")).orElseThrow().canonicalId())
+        .isGreaterThan(first.highWaterMark());
+  }
+
+  @Test
   void derivedCollectionIdentitySupportsMoreThanTwelveLevelsAndMappedRename() {
     ColumnPath root = ColumnPath.ROOT.field("items");
     ColumnPath deep = root;
@@ -210,6 +276,28 @@ class SchemaIdentityReconcilerTest {
         .isEqualTo("sha256:aef445f2dd509c4a33e88d9f689798896ea902a8a741667e3fc51640d8f89176");
     assertThat(result.stateChecksum())
         .isEqualTo("sha256:6e670fd6e82ed45100654f195bf2c328b7ee6a6183991e74092e9a2efd64909e");
+  }
+
+  @Test
+  void nestedFingerprintHasCrossLanguageGoldenVector() {
+    ColumnPath record = ColumnPath.ROOT.field("record");
+    ColumnPath items = ColumnPath.ROOT.field("items");
+    ColumnPath attributes = items.arrayElement().field("attributes");
+    var result =
+        reconcile(
+            7,
+            IdentityMode.NATIVE_FIELD_ID,
+            Optional.empty(),
+            nativeNode(record, 1, 10),
+            nativeNode(record.field("name"), 1, 11),
+            nativeNode(items, 2, 20),
+            node(items.arrayElement(), 1),
+            nativeNode(attributes, 1, 21),
+            node(attributes.mapKey(), 1),
+            node(attributes.mapValue(), 2));
+
+    assertThat(result.fingerprint())
+        .isEqualTo("sha256:f565ca9e2d4b40d4ed9fa5aef827ccf33a18e8173283b311da03e4e1f929942e");
   }
 
   @Test

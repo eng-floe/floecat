@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.connector.delta.uc.impl;
+package ai.floedb.floecat.catalog.delta;
 
 import ai.floedb.floecat.aws.RefreshingAwsClient;
 import io.delta.kernel.defaults.engine.fileio.FileIO;
@@ -40,7 +40,7 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.S3Object;
 
-final class S3V2FileSystemClient implements FileIO {
+public final class S3V2FileSystemClient implements FileIO {
   private final RefreshingAwsClient<S3Client> s3;
 
   /**
@@ -55,7 +55,7 @@ final class S3V2FileSystemClient implements FileIO {
    * no such credential arrives: one does, minus its ARN, and a grant that is genuinely
    * access-point-only fails at storage rather than here.
    */
-  S3V2FileSystemClient(RefreshingAwsClient<S3Client> s3) {
+  public S3V2FileSystemClient(RefreshingAwsClient<S3Client> s3) {
     this.s3 = s3;
   }
 

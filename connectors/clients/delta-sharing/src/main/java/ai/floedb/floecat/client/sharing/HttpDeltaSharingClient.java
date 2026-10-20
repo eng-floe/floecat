@@ -18,11 +18,13 @@ package ai.floedb.floecat.client.sharing;
 import ai.floedb.floecat.client.sharing.DeltaSharingException.Failure;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.AccessMode;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.CredentialCloud;
+import ai.floedb.floecat.client.sharing.DeltaSharingModel.HistoricalProtocol;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.Protocol;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.Schema;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.Share;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.Table;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableDescription;
+import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableHistory;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TableMetadata;
 import ai.floedb.floecat.client.sharing.DeltaSharingModel.TemporaryCredentials;
 import ai.floedb.floecat.http.guards.HttpEndpointGuards;
@@ -230,7 +232,21 @@ public final class HttpDeltaSharingClient implements DeltaSharingClient {
 
   @Override
   public TableDescription describeTable(String share, String schema, String table) {
-    String path = tablePath(share, schema, table) + "/metadata";
+    return describeTableAtPath(share, schema, table, tablePath(share, schema, table) + "/metadata");
+  }
+
+  @Override
+  public TableDescription describeTableAtVersion(
+      String share, String schema, String table, long version) {
+    if (version < 0L) {
+      throw new IllegalArgumentException("Delta Sharing table version must not be negative");
+    }
+    return describeTableAtPath(
+        share, schema, table, tablePath(share, schema, table) + "/metadata?version=" + version);
+  }
+
+  private TableDescription describeTableAtPath(
+      String share, String schema, String table, String path) {
     String target = share + "." + schema + "." + table;
     NdjsonResponse response = sendNdjson(HttpRequest.newBuilder().GET(), path, target, true);
     List<JsonNode> actions = response.actions();
@@ -271,6 +287,73 @@ public final class HttpDeltaSharingClient implements DeltaSharingClient {
     // The header first: it states the current version for an ordinary metadata request, and the
     // action's own version is populated only for a versioned or change-feed query.
     return new TableDescription(protocol, metadata, response.version().or(metadata::version));
+  }
+
+  @Override
+  public TableHistory tableChanges(
+      String share, String schema, String table, long startingVersion, long endingVersion) {
+    requireVersionRange(startingVersion, endingVersion);
+    String path =
+        tablePath(share, schema, table)
+            + "/changes?startingVersion="
+            + startingVersion
+            + "&endingVersion="
+            + endingVersion
+            + "&includeHistoricalMetadata=true&includeHistoricalProtocol=true";
+    String target = share + "." + schema + "." + table + " changes";
+    return parseHistory(sendNdjson(HttpRequest.newBuilder().GET(), path, target, true), target);
+  }
+
+  @Override
+  public TableHistory queryHistory(
+      String share, String schema, String table, long startingVersion, long endingVersion) {
+    requireVersionRange(startingVersion, endingVersion);
+    String path = tablePath(share, schema, table) + "/query";
+    String target = share + "." + schema + "." + table + " query history";
+    String body =
+        "{\"startingVersion\":"
+            + startingVersion
+            + ",\"endingVersion\":"
+            + endingVersion
+            + ",\"includeHistoricalProtocol\":true}";
+    HttpRequest.Builder request =
+        HttpRequest.newBuilder()
+            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+            .header("Content-Type", "application/json; charset=utf-8");
+    return parseHistory(sendNdjson(request, path, target, true), target);
+  }
+
+  private static void requireVersionRange(long startingVersion, long endingVersion) {
+    if (startingVersion < 0L || endingVersion < startingVersion) {
+      throw new IllegalArgumentException(
+          "Invalid Delta Sharing version range " + startingVersion + ".." + endingVersion);
+    }
+  }
+
+  private static TableHistory parseHistory(NdjsonResponse response, String target) {
+    if (response.actions().size() < 2
+        || !response.actions().get(0).hasNonNull("protocol")
+        || !response.actions().get(1).hasNonNull("metaData")) {
+      throw new DeltaSharingException(
+          Failure.INVALID_RESPONSE,
+          200,
+          "Delta Sharing history for "
+              + target
+              + " did not begin with head protocol and metaData actions");
+    }
+    List<HistoricalProtocol> protocols = new ArrayList<>();
+    List<TableMetadata> metadata = new ArrayList<>();
+    for (JsonNode action : response.actions().subList(2, response.actions().size())) {
+      if (action.hasNonNull("protocol")) {
+        JsonNode protocol = action.get("protocol");
+        protocols.add(
+            new HistoricalProtocol(
+                parseProtocol(protocol, target), tableVersion(protocol, target)));
+      } else if (action.hasNonNull("metaData")) {
+        metadata.add(parseMetadata(action.get("metaData"), target));
+      }
+    }
+    return new TableHistory(protocols, metadata, response.version());
   }
 
   @Override
@@ -781,22 +864,8 @@ public final class HttpDeltaSharingClient implements DeltaSharingClient {
   private static Protocol parseProtocol(JsonNode node, String target) {
     JsonNode delta = node.path("deltaProtocol");
     JsonNode source = delta.isObject() ? delta : node;
-    // The fifth array field in this parser and the only one that was not held to the rule, because
-    // nothing reads what it produces: the Protocol record is written and never consulted. That is
-    // what made it easy to leave out, and what would make a feature-negotiation reader added later
-    // treat an unsupported feature as absent -- the same silence a scalar read as empty produces
-    // everywhere else here.
-    requireArrayWhereStated(source, "readerFeatures", target);
-    List<String> features = new ArrayList<>();
-    for (JsonNode feature : source.path("readerFeatures")) {
-      if (!feature.isTextual() || feature.asText().isBlank()) {
-        throw new DeltaSharingException(
-            Failure.INVALID_RESPONSE,
-            200,
-            "Delta Sharing stated a readerFeatures entry that is not a feature name for " + target);
-      }
-      features.add(feature.asText());
-    }
+    List<String> features = parseFeatures(source, "readerFeatures", target);
+    List<String> writerFeatures = parseFeatures(source, "writerFeatures", target);
     // Numbers and numeric strings both, since a server sending "2" is stating a version and
     // refusing it would fail a working share over a field no consumer reads. Anything that is not
     // a version at all is refused, rather than defaulting silently to 1.
@@ -807,7 +876,31 @@ public final class HttpDeltaSharingClient implements DeltaSharingClient {
           200,
           "Delta Sharing stated a minReaderVersion that is not a version for " + target);
     }
-    return new Protocol(version.asInt(1), features);
+    JsonNode writerVersion = source.path("minWriterVersion");
+    if (!writerVersion.isMissingNode()
+        && !writerVersion.isNull()
+        && !isIntegerValued(writerVersion)) {
+      throw new DeltaSharingException(
+          Failure.INVALID_RESPONSE,
+          200,
+          "Delta Sharing stated a minWriterVersion that is not a version for " + target);
+    }
+    return new Protocol(version.asInt(1), writerVersion.asInt(2), features, writerFeatures);
+  }
+
+  private static List<String> parseFeatures(JsonNode source, String key, String target) {
+    requireArrayWhereStated(source, key, target);
+    List<String> features = new ArrayList<>();
+    for (JsonNode feature : source.path(key)) {
+      if (!feature.isTextual() || feature.asText().isBlank()) {
+        throw new DeltaSharingException(
+            Failure.INVALID_RESPONSE,
+            200,
+            "Delta Sharing stated a " + key + " entry that is not a feature name for " + target);
+      }
+      features.add(feature.asText());
+    }
+    return List.copyOf(features);
   }
 
   /** Whether a node states an integer, as a number or as a string holding one. */

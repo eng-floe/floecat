@@ -203,6 +203,89 @@ class HttpDeltaSharingClientTest {
     }
   }
 
+  @Test
+  void metadataAtVersionRequestsThatExactVersion() throws Exception {
+    startServer(
+        exchange -> {
+          assertThat(exchange.getRequestHeaders().getFirst("delta-sharing-capabilities"))
+              .isEqualTo("responseformat=delta");
+          respond(
+              exchange,
+              200,
+              "{\"protocol\":{\"minReaderVersion\":1}}\n"
+                  + "{\"metaData\":{\"format\":{\"provider\":\"parquet\"},"
+                  + "\"schemaString\":\"{\\\"type\\\":\\\"struct\\\"}\"}}");
+        });
+
+    try (DeltaSharingClient client = client()) {
+      client.describeTableAtVersion("s", "sc", "t", 7L);
+    }
+
+    assertThat(requestPaths.getFirst()).contains("/metadata?version=7");
+  }
+
+  @Test
+  void changesRequestsVersionedHistoricalMetadataAndProtocol() throws Exception {
+    startServer(
+        exchange -> {
+          assertThat(exchange.getRequestMethod()).isEqualTo("GET");
+          respond(
+              exchange,
+              200,
+              "{\"protocol\":{\"version\":4,\"deltaProtocol\":{\"minReaderVersion\":3}}}\n"
+                  + "{\"metaData\":{\"deltaMetadata\":{\"format\":{\"provider\":\"parquet\"},"
+                  + "\"schemaString\":\"{\\\"type\\\":\\\"struct\\\"}\"}}}\n"
+                  + "{\"protocol\":{\"version\":5,\"deltaProtocol\":{\"minReaderVersion\":3,"
+                  + "\"readerFeatures\":[\"columnMapping\"]}}}\n"
+                  + "{\"metaData\":{\"version\":6,\"deltaMetadata\":{"
+                  + "\"format\":{\"provider\":\"parquet\"},"
+                  + "\"schemaString\":\"{\\\"type\\\":\\\"struct\\\"}\"}}}");
+        });
+
+    try (DeltaSharingClient client = client()) {
+      var history = client.tableChanges("s", "sc", "t", 4L, 9L);
+      assertThat(history.protocols())
+          .singleElement()
+          .satisfies(p -> assertThat(p.version()).contains(5L));
+      assertThat(history.metadata())
+          .singleElement()
+          .satisfies(m -> assertThat(m.version()).contains(6L));
+    }
+    assertThat(requestPaths.getFirst())
+        .contains(
+            "/changes?startingVersion=4&endingVersion=9",
+            "includeHistoricalMetadata=true",
+            "includeHistoricalProtocol=true");
+  }
+
+  @Test
+  void queryHistoryPostsTheRequestedRangeAndAcceptsUnversionedMetadata() throws Exception {
+    startServer(
+        exchange -> {
+          assertThat(exchange.getRequestMethod()).isEqualTo("POST");
+          assertThat(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8))
+              .isEqualTo(
+                  "{\"startingVersion\":2,\"endingVersion\":7,"
+                      + "\"includeHistoricalProtocol\":true}");
+          respond(
+              exchange,
+              200,
+              "{\"protocol\":{\"minReaderVersion\":1}}\n"
+                  + "{\"metaData\":{\"format\":{\"provider\":\"parquet\"},"
+                  + "\"schemaString\":\"{\\\"type\\\":\\\"struct\\\"}\"}}\n"
+                  + "{\"protocol\":{\"minReaderVersion\":1}}\n"
+                  + "{\"metaData\":{\"format\":{\"provider\":\"parquet\"},"
+                  + "\"schemaString\":\"{\\\"type\\\":\\\"struct\\\"}\"}}");
+        });
+
+    try (DeltaSharingClient client = client()) {
+      var history = client.queryHistory("s", "sc", "t", 2L, 7L);
+      assertThat(history.protocols().getFirst().version()).isEmpty();
+      assertThat(history.metadata().getFirst().version()).isEmpty();
+    }
+    assertThat(requestPaths.getFirst()).endsWith("/shares/s/schemas/sc/tables/t/query");
+  }
+
   /**
    * The shape a server answers with when it honours the {@code responseformat=delta} capability
    * this client sends on every metadata request, taken from the protocol's own example: the table's

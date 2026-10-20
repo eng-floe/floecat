@@ -78,9 +78,30 @@ public final class DeltaIdentityService {
       Optional<ColumnIdentityMap> exact =
           exactSnapshot.isPresent() ? exactSnapshot : exactTableMap(persisted, version);
       if (exact.isPresent()) {
-        validatePersisted(history.tableName(), version, snapshot, exact.orElseThrow());
-        maps.put(version, exact.orElseThrow());
-        return;
+        try {
+          validatePersisted(history.tableName(), version, snapshot, exact.orElseThrow());
+          maps.put(version, exact.orElseThrow());
+          return;
+        } catch (InvalidPersistedIdentityException mismatch) {
+          if (exactSnapshot.isPresent() || history.historyTier().provesContinuity()) {
+            throw mismatch;
+          }
+          // The map itself was restored successfully, but a current-schema-only catalog now
+          // describes a different schema or mode. That is an unprovable history boundary, not
+          // corrupt persisted state, so allocate a new generation above the old high-water mark.
+          maps.put(
+              version,
+              bindSourceAnchor(
+                  startGeneration(
+                      snapshot,
+                      version,
+                      exact.orElseThrow(),
+                      persisted.highWaterMark(),
+                      PreferredCanonicalIds.NONE,
+                      history.historyTier()),
+                  history));
+          return;
+        }
       }
 
       Optional<Map.Entry<Long, ColumnIdentityMap>> successor = persisted.ceiling(version + 1L);
@@ -366,15 +387,14 @@ public final class DeltaIdentityService {
     boolean generationBoundary = state.mode() != selectedMode;
 
     if (!generationBoundary && history.historyTier() == HistoryTier.UNORDERED_QUERY_HISTORY) {
+      // Unordered history proves only what some intermediate version looked like: mapping turned
+      // off ends a native generation, and a missing path proves that column was dropped and
+      // re-added.
       DeltaHistorySource.UnorderedHistory unordered = history.unorderedHistory();
       generationBoundary =
           selectedMode == IdentityMode.NATIVE_FIELD_ID
-              && (unordered.metadata().stream()
-                      .map(DeltaHistorySource.HistoricalMetadata::configuration)
-                      .map(ColumnMappingMode::fromTableProperties)
-                      .anyMatch(mode -> !mode.isEnabled())
-                  || unordered.protocols().stream()
-                      .anyMatch(protocol -> !protocol.supportsColumnMapping()));
+              ? mappingDisabled(unordered)
+              : dropsRetainedPath(unordered, selected, state);
     }
 
     if (!generationBoundary && selectedMode == IdentityMode.NATIVE_FIELD_ID) {
@@ -394,6 +414,27 @@ public final class DeltaIdentityService {
             preferred,
             history.historyTier())
         : reconcile(selected, version, previous, highWaterMark, preferred, provenance);
+  }
+
+  private static boolean mappingDisabled(DeltaHistorySource.UnorderedHistory unordered) {
+    return unordered.metadata().stream()
+            .map(DeltaHistorySource.HistoricalMetadata::configuration)
+            .map(ColumnMappingMode::fromTableProperties)
+            .anyMatch(mode -> !mode.isEnabled())
+        || unordered.protocols().stream().anyMatch(protocol -> !protocol.supportsColumnMapping());
+  }
+
+  private static boolean dropsRetainedPath(
+      DeltaHistorySource.UnorderedHistory unordered,
+      DeltaIdentitySnapshot selected,
+      SchemaIdentityState previous) {
+    Set<ColumnPath> retained = new LinkedHashSet<>(selected.fieldPaths());
+    retained.removeIf(path -> previous.byPath(path).isEmpty());
+    return unordered.metadata().stream()
+        .map(DeltaHistorySource.HistoricalMetadata::schemaJson)
+        .filter(schemaJson -> !schemaJson.isBlank())
+        .map(schemaJson -> KernelAdapter.currentSchemaIdentity(0L, schemaJson, Map.of()))
+        .anyMatch(historical -> !historical.fieldPaths().containsAll(retained));
   }
 
   private static boolean reusesUnownedNativeId(

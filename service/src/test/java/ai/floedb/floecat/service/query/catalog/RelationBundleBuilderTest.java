@@ -18,6 +18,9 @@ package ai.floedb.floecat.service.query.catalog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.QueryInput;
@@ -824,6 +827,50 @@ class RelationBundleBuilderTest {
 
     assertThat(result.isSuccess()).isTrue();
     assertThat(result.info().getColumnsList()).isEmpty();
+  }
+
+  @Test
+  void unpinnedCanonicalTableUsesCurrentGraphSchema() {
+    List<SchemaColumn> currentSchema = UserObjectBundleTestSupport.schemaFor("current_id");
+    UserTableNode table =
+        new UserTableNode(
+            TABLE,
+            "blob://test/canonical",
+            CATALOG,
+            ResourceId.getDefaultInstance(),
+            "canonical_table",
+            TableFormat.TF_DELTA,
+            ColumnIdAlgorithm.CID_CANONICAL_MAP,
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"newer\",\"type\":\"long\",\"nullable\":true,\"metadata\":{}}]}",
+            Map.of(),
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            List.of(),
+            Map.of(),
+            Map.of(),
+            ColumnIdentityMap.getDefaultInstance());
+    graphView.registerRelation(
+        TABLE,
+        table,
+        currentSchema,
+        NameRef.newBuilder().setCatalog("cat").setName("canonical_table").build());
+
+    RelationBundleBuilder.BuildResult result =
+        builder(ctxIgnored -> Optional.empty(), false)
+            .build(
+                "cid",
+                resolved(TABLE, fullCandidate()),
+                ctx,
+                resolutionContext(StatsProvider.NONE),
+                Optional.empty(),
+                Optional.empty());
+
+    assertThat(result.isSuccess()).isTrue();
+    assertThat(result.info().getColumnsList())
+        .extracting(ColumnResult::getColumnName)
+        .containsExactly("current_id");
   }
 
   @Test

@@ -50,10 +50,19 @@ public final class DeltaColumnMapping {
   /** Resolves a snapshot's schema together with the mapping mode its readers may trust. */
   public static DeltaResolvedSchema resolveSchema(Snapshot snapshot) {
     Objects.requireNonNull(snapshot, "snapshot");
-    DeltaResolvedSchema resolved =
-        DeltaSchemaResolver.resolve(snapshot.getSchema(), effectiveMode(snapshot));
-    validateNestedIds(snapshot, resolved);
-    validateMaxColumnId(snapshot, resolved);
+    ColumnMappingMode mode = effectiveMode(snapshot);
+    return resolveSchema(
+        snapshot.getSchema(),
+        mode,
+        mode.isEnabled() ? maxColumnId(snapshot) : 0L,
+        mode.isEnabled() && icebergCompatV2Enabled(snapshot));
+  }
+
+  static DeltaResolvedSchema resolveSchema(
+      StructType schema, ColumnMappingMode mode, long highWaterMark, boolean requireNestedIds) {
+    DeltaResolvedSchema resolved = DeltaSchemaResolver.resolve(schema, mode);
+    validateNestedIds(resolved, requireNestedIds);
+    validateMaxColumnId(resolved, highWaterMark);
     return resolved;
   }
 
@@ -77,7 +86,11 @@ public final class DeltaColumnMapping {
   /** Delta's monotonic high-water mark for regular and collection-interior field IDs. */
   public static long maxColumnId(Snapshot snapshot) {
     Objects.requireNonNull(snapshot, "snapshot");
-    String value = snapshot.getTableProperties().get(MAX_COLUMN_ID);
+    return maxColumnId(snapshot.getTableProperties());
+  }
+
+  static long maxColumnId(java.util.Map<String, String> properties) {
+    String value = properties.get(MAX_COLUMN_ID);
     if (value == null) {
       throw new IllegalArgumentException(
           "Column-mapped Delta table is missing required property " + MAX_COLUMN_ID);
@@ -94,8 +107,8 @@ public final class DeltaColumnMapping {
     }
   }
 
-  private static void validateNestedIds(Snapshot snapshot, DeltaResolvedSchema resolved) {
-    if (!resolved.effectiveMappingMode().isEnabled() || !icebergCompatV2Enabled(snapshot)) {
+  private static void validateNestedIds(DeltaResolvedSchema resolved, boolean required) {
+    if (!resolved.effectiveMappingMode().isEnabled() || !required) {
       return;
     }
     resolved.schema().nodes().stream()
@@ -109,11 +122,10 @@ public final class DeltaColumnMapping {
             });
   }
 
-  private static void validateMaxColumnId(Snapshot snapshot, DeltaResolvedSchema resolved) {
+  private static void validateMaxColumnId(DeltaResolvedSchema resolved, long highWaterMark) {
     if (!resolved.effectiveMappingMode().isEnabled()) {
       return;
     }
-    long highWaterMark = maxColumnId(snapshot);
     resolved.schema().nodes().stream()
         .filter(node -> node.nativeFieldId().isPresent())
         .filter(node -> node.nativeFieldId().getAsInt() > highWaterMark)

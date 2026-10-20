@@ -22,9 +22,8 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdentityHistoryTier;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.schema.identity.ColumnPath;
 import ai.floedb.floecat.schema.identity.HistoryTier;
+import ai.floedb.floecat.schema.identity.IdentityMode;
 import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
-import io.delta.kernel.Snapshot;
-import io.delta.kernel.internal.actions.Protocol;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -76,6 +75,24 @@ class DeltaIdentityServiceTest {
   }
 
   @Test
+  void noHistoryMappedDropAndReaddWithNewNativeIdAllocatesNewIdentity() {
+    ColumnIdentityMap present =
+        reconcile(
+            source(1L, mappedSchema(field("x", "long", 1)), mappedProperties(5)), Optional.empty());
+    ColumnIdentityMap dropped =
+        reconcile(source(2L, mappedSchema(), mappedProperties(5)), Optional.of(present));
+    ColumnIdentityMap readded =
+        reconcile(
+            source(3L, mappedSchema(field("x", "long", 6)), mappedProperties(6)),
+            Optional.of(dropped));
+
+    assertThat(dropped.getEntriesList()).isEmpty();
+    assertThat(dropped.getHighWaterMark()).isEqualTo(present.getHighWaterMark());
+    assertThat(columnId(readded, "x")).isNotEqualTo(columnId(present, "x"));
+    assertThat(columnId(readded, "x")).isGreaterThan(dropped.getHighWaterMark());
+  }
+
+  @Test
   void noHistoryMappedCounterRollbackStartsANewGeneration() {
     ColumnIdentityMap first =
         reconcile(
@@ -111,8 +128,9 @@ class DeltaIdentityServiceTest {
         reconcile(
             source(10L, mappedSchema(field("a", "long", 1)), mappedProperties(5)),
             Optional.empty());
-    Snapshot disabled = snapshot(20L, UNMAPPED_A, Map.of());
-    Snapshot current = snapshot(30L, mappedSchema(field("a", "long", 1)), mappedProperties(5));
+    DeltaIdentitySnapshot disabled = snapshot(20L, UNMAPPED_A, Map.of());
+    DeltaIdentitySnapshot current =
+        snapshot(30L, mappedSchema(field("a", "long", 1)), mappedProperties(5));
     DeltaHistorySource history =
         new TestHistorySource(
             30L,
@@ -162,6 +180,21 @@ class DeltaIdentityServiceTest {
   }
 
   @Test
+  void schemaOnlyReplacementOfAnchoredVersionZeroRemainsUnanchored() {
+    var first =
+        reconcile(
+            new TestHistorySource(
+                0L,
+                HistoryTier.VERSIONED_LOG,
+                Map.of(0L, snapshot(0L, UNMAPPED_A, Map.of())),
+                List.of()),
+            Optional.empty());
+    var replaced = reconcile(source(0L, UNMAPPED_AB, Map.of()), Optional.of(first));
+    assertThat(columnId(replaced, "a")).isGreaterThan(first.getHighWaterMark());
+    assertThat(replaced.getSourceVersionAnchored()).isFalse();
+  }
+
+  @Test
   void aMissingHeadIsASourceFailure() {
     DeltaHistorySource missing =
         new TestHistorySource(7L, HistoryTier.VERSIONED_LOG, Map.of(), List.of());
@@ -198,13 +231,13 @@ class DeltaIdentityServiceTest {
 
   @Test
   void metadataReadFailureDoesNotBecomeAGenerationReset() {
-    Snapshot previousSnapshot = snapshot(1L, UNMAPPED_A, Map.of());
+    DeltaIdentitySnapshot previousSnapshot = snapshot(1L, UNMAPPED_A, Map.of());
     ColumnIdentityMap previous =
         reconcile(
             new TestHistorySource(
                 1L, HistoryTier.VERSIONED_LOG, Map.of(1L, previousSnapshot), List.of(1L)),
             Optional.empty());
-    Snapshot current = snapshot(2L, UNMAPPED_AB, Map.of());
+    DeltaIdentitySnapshot current = snapshot(2L, UNMAPPED_AB, Map.of());
     DeltaHistorySource failing =
         new TestHistorySource(2L, HistoryTier.VERSIONED_LOG, Map.of(2L, current), List.of(2L)) {
           @Override
@@ -227,13 +260,13 @@ class DeltaIdentityServiceTest {
 
   @Test
   void unmappedHistoryGapIsRejected() {
-    Snapshot previousSnapshot = snapshot(1L, UNMAPPED_A, Map.of());
+    DeltaIdentitySnapshot previousSnapshot = snapshot(1L, UNMAPPED_A, Map.of());
     ColumnIdentityMap previous =
         reconcile(
             new TestHistorySource(
                 1L, HistoryTier.VERSIONED_LOG, Map.of(1L, previousSnapshot), List.of(1L)),
             Optional.empty());
-    Snapshot current = snapshot(3L, UNMAPPED_AB, Map.of());
+    DeltaIdentitySnapshot current = snapshot(3L, UNMAPPED_AB, Map.of());
     DeltaHistorySource gapped =
         new TestHistorySource(3L, HistoryTier.VERSIONED_LOG, Map.of(3L, current), List.of(3L)) {
           @Override
@@ -258,14 +291,14 @@ class DeltaIdentityServiceTest {
 
   @Test
   void mappedHistoryGapReconcilesByNativeFieldId() {
-    Snapshot previousSnapshot =
+    DeltaIdentitySnapshot previousSnapshot =
         snapshot(1L, mappedSchema(field("a", "long", 1)), mappedProperties(1));
     ColumnIdentityMap previous =
         reconcile(
             new TestHistorySource(
                 1L, HistoryTier.VERSIONED_LOG, Map.of(1L, previousSnapshot), List.of(1L)),
             Optional.empty());
-    Snapshot current =
+    DeltaIdentitySnapshot current =
         snapshot(
             3L,
             mappedSchema(field("renamed", "long", 1), field("b", "string", 2)),
@@ -288,10 +321,10 @@ class DeltaIdentityServiceTest {
 
   @Test
   void predecessorGapStillUsesIdentityProvenContinuousToSuccessor() {
-    Snapshot version10 = snapshot(10L, UNMAPPED_A, Map.of());
-    Snapshot version20 = snapshot(20L, UNMAPPED_A, Map.of());
-    Snapshot version25 = snapshot(25L, UNMAPPED_A, Map.of());
-    Snapshot version30 = snapshot(30L, UNMAPPED_A, Map.of());
+    DeltaIdentitySnapshot version10 = snapshot(10L, UNMAPPED_A, Map.of());
+    DeltaIdentitySnapshot version20 = snapshot(20L, UNMAPPED_A, Map.of());
+    DeltaIdentitySnapshot version25 = snapshot(25L, UNMAPPED_A, Map.of());
+    DeltaIdentitySnapshot version30 = snapshot(30L, UNMAPPED_A, Map.of());
     ColumnIdentityMap predecessor =
         reconcile(
             new TestHistorySource(
@@ -334,19 +367,19 @@ class DeltaIdentityServiceTest {
 
   @Test
   void intermediatePreferencesRequirePresenceThroughTheSelectedVersion() {
-    Snapshot introduced = snapshot(50L, UNMAPPED_AB, Map.of());
-    Snapshot dropped = snapshot(55L, UNMAPPED_A, Map.of());
-    Snapshot selected = snapshot(60L, UNMAPPED_A, Map.of());
+    DeltaIdentitySnapshot introduced = snapshot(50L, UNMAPPED_AB, Map.of());
+    DeltaIdentitySnapshot dropped = snapshot(55L, UNMAPPED_A, Map.of());
+    DeltaIdentitySnapshot selected = snapshot(60L, UNMAPPED_A, Map.of());
     PreferredCanonicalIds successor =
         PreferredCanonicalIds.byPath(Map.of(ColumnPath.ROOT.field("b"), 3L));
 
     Map<Long, PreferredCanonicalIds> preferences =
         DeltaIdentityService.preferredByMetadataVersion(
             List.of(
-                new DeltaIdentityService.MetadataStep(50L, DeltaIdentitySnapshot.from(introduced)),
-                new DeltaIdentityService.MetadataStep(55L, DeltaIdentitySnapshot.from(dropped))),
+                new DeltaIdentityService.MetadataStep(50L, introduced),
+                new DeltaIdentityService.MetadataStep(55L, dropped)),
             60L,
-            DeltaIdentitySnapshot.from(selected),
+            selected,
             successor);
 
     assertThat(preferences.get(50L).byPath()).isEmpty();
@@ -370,16 +403,9 @@ class DeltaIdentityServiceTest {
         List.of());
   }
 
-  private static Snapshot snapshot(
+  private static DeltaIdentitySnapshot snapshot(
       long version, String schemaJson, Map<String, String> properties) {
-    boolean mapped = ColumnMappingMode.fromTableProperties(properties).isEnabled();
-    Protocol protocol =
-        mapped
-            ? new Protocol(
-                3, 7, java.util.Set.of("columnMapping"), java.util.Set.of("columnMapping"))
-            : new Protocol(1, 2, java.util.Set.of(), java.util.Set.of());
-    return new TestSnapshot(
-        version, KernelAdapter.deserializeSchema(schemaJson), properties, protocol);
+    return KernelAdapter.currentSchemaIdentity(version, schemaJson, properties);
   }
 
   private static PersistedIdentityLookup lookup(Optional<ColumnIdentityMap> tableMap) {
@@ -465,13 +491,13 @@ class DeltaIdentityServiceTest {
   private static class TestHistorySource implements DeltaHistorySource {
     private final long headVersion;
     private final HistoryTier historyTier;
-    private final Map<Long, Snapshot> snapshots;
+    private final Map<Long, DeltaIdentitySnapshot> snapshots;
     private final List<Long> metadataVersions;
 
     private TestHistorySource(
         long headVersion,
         HistoryTier historyTier,
-        Map<Long, Snapshot> snapshots,
+        Map<Long, DeltaIdentitySnapshot> snapshots,
         List<Long> metadataVersions) {
       this.headVersion = headVersion;
       this.historyTier = historyTier;
@@ -496,7 +522,7 @@ class DeltaIdentityServiceTest {
 
     @Override
     public Optional<DeltaIdentitySnapshot> snapshot(long version) {
-      return Optional.ofNullable(snapshots.get(version)).map(DeltaIdentitySnapshot::from);
+      return Optional.ofNullable(snapshots.get(version));
     }
 
     @Override
@@ -514,23 +540,29 @@ class DeltaIdentityServiceTest {
 
     @Override
     public UnorderedHistory unorderedHistory() {
+      List<Boolean> mapped =
+          metadataVersions.stream()
+              .map(snapshots::get)
+              .filter(java.util.Objects::nonNull)
+              .map(snapshot -> snapshot.mode() == IdentityMode.NATIVE_FIELD_ID)
+              .toList();
       return new UnorderedHistory(
-          metadataVersions.stream()
-              .map(snapshots::get)
-              .filter(java.util.Objects::nonNull)
-              .map(snapshot -> new HistoricalMetadata("", snapshot.getTableProperties()))
-              .toList(),
-          metadataVersions.stream()
-              .map(snapshots::get)
-              .filter(java.util.Objects::nonNull)
-              .map(snapshot -> ((TestSnapshot) snapshot).protocol())
+          mapped.stream()
               .map(
-                  protocol ->
-                      new HistoricalProtocol(
-                          protocol.getMinReaderVersion(),
-                          protocol.getMinWriterVersion(),
-                          protocol.getReaderFeatures(),
-                          protocol.getWriterFeatures()))
+                  enabled ->
+                      new HistoricalMetadata(
+                          "", Map.of(ColumnMappingMode.PROPERTY, enabled ? "name" : "none")))
+              .toList(),
+          mapped.stream()
+              .map(
+                  enabled ->
+                      enabled
+                          ? new HistoricalProtocol(
+                              3,
+                              7,
+                              java.util.Set.of("columnMapping"),
+                              java.util.Set.of("columnMapping"))
+                          : new HistoricalProtocol(1, 2, java.util.Set.of(), java.util.Set.of()))
               .toList());
     }
   }
