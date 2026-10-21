@@ -1746,7 +1746,8 @@ class QueuedReconcileWorkerSupport {
                 + " without a column identity map");
       }
       ColumnIdentityMaps.restoreForSnapshot(bundle.columnIdentityMap(), bundle.snapshotId());
-      builder.setColumnIdentityMap(bundle.columnIdentityMap());
+      builder.setColumnIdentityMapRef(
+          backend.persistColumnIdentityMap(ctx, tableId, bundle.columnIdentityMap()));
     }
     if (hasParentSnapshotId) {
       builder.setParentSnapshotId(parentSnapshotId);

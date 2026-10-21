@@ -65,8 +65,12 @@ message Table {
   google.protobuf.Timestamp created_at = 6;
   string schema_json = 7;
   UpstreamRef upstream = 8;
+  // Field 9 previously carried the inline ColumnIdentityMap. Keep it reserved so persisted tables
+  // cannot be decoded as references.
+  reserved 9;
+  reserved "column_identity_map";
   // Current-schema identity for tables materialized before snapshot capture.
-  ColumnIdentityMap column_identity_map = 9;
+  ColumnIdentityMapRef column_identity_map_ref = 10;
   map<string,string> properties = 99;
 }
 

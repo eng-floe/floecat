@@ -19,10 +19,14 @@ package ai.floedb.floecat.schema.identity;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityEntry;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityHistoryTier;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMode;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityPathElement;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityPathElementKind;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import com.google.protobuf.ByteString;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -33,6 +37,7 @@ import java.util.OptionalLong;
 /** The single protobuf boundary for the canonical column-identity contract. */
 public final class ColumnIdentityMaps {
   public static final int FORMAT_VERSION = 2;
+  public static final long MAX_PAYLOAD_BYTES = 16L * 1024L * 1024L;
 
   private ColumnIdentityMaps() {}
 
@@ -85,15 +90,95 @@ public final class ColumnIdentityMaps {
     return state;
   }
 
+  /** Validates the bounded descriptor without reading its immutable payload. */
+  public static void validateReference(ColumnIdentityMapRef value) {
+    Objects.requireNonNull(value, "value");
+    if (value.equals(ColumnIdentityMapRef.getDefaultInstance())) {
+      throw new IllegalArgumentException("Column identity map reference is required");
+    }
+    if (value.getUri().isBlank()) {
+      throw new IllegalArgumentException("Column identity map reference URI is required");
+    }
+    if (value.getPayloadBytes() == 0L || value.getPayloadBytes() > MAX_PAYLOAD_BYTES) {
+      throw new IllegalArgumentException("Column identity map reference size is invalid");
+    }
+    if (value.getPayloadSha256().size() != 32) {
+      throw new IllegalArgumentException("Column identity map reference digest must be SHA-256");
+    }
+    if (value.getFormatVersion() != FORMAT_VERSION) {
+      throw new IllegalArgumentException(
+          "Unsupported column identity map format " + value.getFormatVersion());
+    }
+    if (value.getSourceVersion() < 0L || value.getHighWaterMark() < 0L) {
+      throw new IllegalArgumentException("Column identity map reference version is invalid");
+    }
+    identityMode(value.getMode());
+    historyTier(value.getHistoryTier());
+    if (value.getFingerprint().isBlank() || value.getStateChecksum().isBlank()) {
+      throw new IllegalArgumentException("Column identity map reference checksums are required");
+    }
+  }
+
+  /** Builds an integrity-protected immutable-blob reference for a serialized identity map. */
+  public static ColumnIdentityMapRef reference(String uri, ColumnIdentityMap value) {
+    Objects.requireNonNull(uri, "uri");
+    restore(value);
+    byte[] payload = value.toByteArray();
+    ColumnIdentityMapRef.Builder ref =
+        ColumnIdentityMapRef.newBuilder()
+            .setUri(uri)
+            .setPayloadBytes(payload.length)
+            .setPayloadSha256(ByteString.copyFrom(sha256(payload)))
+            .setFormatVersion(value.getFormatVersion())
+            .setSourceVersion(value.getSourceVersion())
+            .setHighWaterMark(value.getHighWaterMark())
+            .setMode(value.getMode())
+            .setFingerprint(value.getFingerprint())
+            .setStateChecksum(value.getStateChecksum())
+            .setHistoryTier(value.getHistoryTier())
+            .setSourceVersionAnchored(value.getSourceVersionAnchored());
+    if (value.hasNativeHighWaterMark()) {
+      ref.setNativeHighWaterMark(value.getNativeHighWaterMark());
+    }
+    return ref.build();
+  }
+
+  /** Validates that decoded immutable bytes agree with every summary field in their reference. */
+  public static SchemaIdentityState restore(ColumnIdentityMap value, ColumnIdentityMapRef ref) {
+    validateReference(ref);
+    SchemaIdentityState state = restore(value);
+    if (value.getFormatVersion() != ref.getFormatVersion()
+        || state.sourceVersion() != ref.getSourceVersion()
+        || state.highWaterMark() != ref.getHighWaterMark()
+        || value.getMode() != ref.getMode()
+        || !state.fingerprint().equals(ref.getFingerprint())
+        || !state.stateChecksum().equals(ref.getStateChecksum())
+        || value.getHistoryTier() != ref.getHistoryTier()
+        || value.hasNativeHighWaterMark() != ref.hasNativeHighWaterMark()
+        || (value.hasNativeHighWaterMark()
+            && value.getNativeHighWaterMark() != ref.getNativeHighWaterMark())
+        || state.sourceVersionAnchored() != ref.getSourceVersionAnchored()) {
+      throw new IllegalArgumentException("Column identity map does not match its reference");
+    }
+    return state;
+  }
+
   /** Returns a validated fingerprint when a snapshot carries canonical identity state. */
   public static Optional<String> fingerprint(Snapshot snapshot) {
     Objects.requireNonNull(snapshot, "snapshot");
-    if (!snapshot.hasColumnIdentityMap()) {
+    if (!snapshot.hasColumnIdentityMapRef()) {
       return Optional.empty();
     }
-    return Optional.of(
-        restoreForSnapshot(snapshot.getColumnIdentityMap(), snapshot.getSnapshotId())
-            .fingerprint());
+    ColumnIdentityMapRef ref = snapshot.getColumnIdentityMapRef();
+    validateReference(ref);
+    if (ref.getSourceVersion() != snapshot.getSnapshotId()) {
+      throw new IllegalArgumentException(
+          "Column identity map version "
+              + ref.getSourceVersion()
+              + " does not match snapshot "
+              + snapshot.getSnapshotId());
+    }
+    return Optional.of(ref.getFingerprint());
   }
 
   /**
@@ -203,6 +288,14 @@ public final class ColumnIdentityMaps {
       throw new IllegalArgumentException("Column identity path cannot be empty");
     }
     return path;
+  }
+
+  private static byte[] sha256(byte[] payload) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(payload);
+    } catch (NoSuchAlgorithmException impossible) {
+      throw new IllegalStateException("SHA-256 is unavailable", impossible);
+    }
   }
 
   private static IdentityMode identityMode(ColumnIdentityMode mode) {

@@ -17,6 +17,7 @@ package ai.floedb.floecat.reconciler.spi;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
@@ -96,6 +97,12 @@ public interface ReconcilerBackend {
 
   Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId);
 
+  /** Persists canonical identity state and returns its immutable bounded transport reference. */
+  default ColumnIdentityMapRef persistColumnIdentityMap(
+      ReconcileContext ctx, ResourceId tableId, ColumnIdentityMap map) {
+    throw new UnsupportedOperationException("column identity persistence is not configured");
+  }
+
   /** Snapshot IDs and their identity maps loaded from one consistent history walk. */
   record SnapshotIdentityHistory(
       Set<Long> snapshotIds, Map<Long, ColumnIdentityMap> columnIdentityMaps, long highWaterMark) {
@@ -126,19 +133,10 @@ public interface ReconcilerBackend {
   /** Returns persisted column identity maps keyed by snapshot ID. */
   default Map<Long, ColumnIdentityMap> persistedColumnIdentityMaps(
       ReconcileContext ctx, ResourceId tableId, Set<Long> snapshotIds) {
-    if (snapshotIds == null || snapshotIds.isEmpty()) {
-      return Map.of();
-    }
-    Map<Long, ColumnIdentityMap> maps = new java.util.LinkedHashMap<>();
-    snapshotIds.stream()
-        .filter(java.util.Objects::nonNull)
-        .sorted()
-        .forEach(
-            snapshotId ->
-                fetchSnapshot(ctx, tableId, snapshotId)
-                    .filter(Snapshot::hasColumnIdentityMap)
-                    .ifPresent(snapshot -> maps.put(snapshotId, snapshot.getColumnIdentityMap())));
-    return Map.copyOf(maps);
+    // Snapshot transport deliberately contains only immutable references. Backends that perform
+    // source-side reconciliation must override this through a cache-backed reference resolver;
+    // enumerating snapshots can no longer recover inline map payloads.
+    return Map.of();
   }
 
   void ingestSnapshot(ReconcileContext ctx, ResourceId tableId, Snapshot snapshot);

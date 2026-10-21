@@ -31,6 +31,8 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapChunk;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;
@@ -99,7 +101,14 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.schema.identity.HistoryTier;
+import ai.floedb.floecat.schema.identity.IdentityMode;
+import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
+import ai.floedb.floecat.schema.identity.ResolvedSchema;
+import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import com.google.protobuf.ByteString;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Method;
@@ -115,19 +124,34 @@ import org.mockito.ArgumentCaptor;
 
 class GrpcReconcilerBackendTest {
   @Test
-  void snapshotIdentityHistoryLoadsIdsAndMapsInOnePagedWalk() {
+  void snapshotIdentityHistoryListsIdsAndStreamsOnlyTheCurrentMap() {
     GrpcReconcilerBackend backend =
         new GrpcReconcilerBackend(
             Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
     backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    backend.table =
+        mock(ai.floedb.floecat.catalog.rpc.TableServiceGrpc.TableServiceBlockingStub.class);
     when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    when(backend.table.withInterceptors(any())).thenReturn(backend.table);
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId("acct")
             .setKind(ResourceKind.RK_TABLE)
             .setId("users")
             .build();
-    ColumnIdentityMap identityMap = ColumnIdentityMap.newBuilder().setHighWaterMark(9L).build();
+    ColumnIdentityMap identityMap =
+        ColumnIdentityMaps.toProto(
+            SchemaIdentityReconciler.reconcile(
+                ResolvedSchema.of(List.of()),
+                2L,
+                IdentityMode.STRUCTURED_PATH,
+                Optional.empty(),
+                9L,
+                PreferredCanonicalIds.NONE,
+                HistoryTier.VERSIONED_LOG));
+    ColumnIdentityMapRef identityRef =
+        ColumnIdentityMaps.reference(
+            "/accounts/acct/tables/users/column-identities/current.pb", identityMap);
     when(backend.snapshot.listSnapshots(any()))
         .thenReturn(
             ListSnapshotsResponse.newBuilder()
@@ -136,9 +160,21 @@ class GrpcReconcilerBackendTest {
                 .setPage(PageResponse.newBuilder().setNextPageToken("next"))
                 .build(),
             ListSnapshotsResponse.newBuilder()
-                .addSnapshots(
-                    Snapshot.newBuilder().setSnapshotId(2L).setColumnIdentityMap(identityMap))
+                .addSnapshots(Snapshot.newBuilder().setSnapshotId(2L))
                 .build());
+    when(backend.table.getTable(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(
+                    Table.newBuilder().setResourceId(tableId).setColumnIdentityMapRef(identityRef))
+                .build());
+    when(backend.snapshot.streamColumnIdentityMap(any()))
+        .thenReturn(
+            List.of(
+                    ColumnIdentityMapChunk.newBuilder()
+                        .setData(ByteString.copyFrom(identityMap.toByteArray()))
+                        .build())
+                .iterator());
 
     ReconcilerBackend.SnapshotIdentityHistory history =
         backend.snapshotIdentityHistory(reconcileContext(), tableId);

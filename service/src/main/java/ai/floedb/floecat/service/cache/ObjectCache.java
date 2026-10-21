@@ -155,6 +155,17 @@ public final class ObjectCache {
         key, SchemaDescriptor.class, () -> mapSchema(table, effectiveSchema, columnIdentityMap));
   }
 
+  /** Load one decoded immutable identity map under its content digest. */
+  public ColumnIdentityMap columnIdentityMap(
+      String accountId, String contentIdentity, Supplier<ColumnIdentityMap> loader) {
+    Key key =
+        new Key(
+            requireIdentity(accountId, "accountId"),
+            Kind.COLUMN_IDENTITY,
+            requireIdentity(contentIdentity, "column identity content identity"));
+    return get(key, ColumnIdentityMap.class, loader);
+  }
+
   /**
    * Resolve a resolved snapshot schema by the immutable identities already carried on the
    * selection. The backing table and snapshot are read only on a miss, which keeps callers from
@@ -475,6 +486,7 @@ public final class ObjectCache {
 
   private enum Kind {
     SCHEMA,
+    COLUMN_IDENTITY,
     RELATION,
     CONSTRAINTS,
     SNAPSHOT_FACTS,

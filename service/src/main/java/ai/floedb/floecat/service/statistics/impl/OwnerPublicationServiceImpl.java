@@ -31,7 +31,7 @@ import ai.floedb.floecat.reconciler.rpc.OwnerArtifactObjectReference;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -88,6 +88,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
   @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;
   @Inject CurrentSnapshotPointerService currentSnapshots;
+  @Inject ColumnIdentityMapResolver columnIdentityMaps;
   @Inject CatalogGraphView graphView;
   @Inject BlobStore blobStore;
   @Inject ExternalManifestCommitmentCache manifestCommitments;
@@ -961,16 +962,21 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     if (spec.hasMetadataLocation()) {
       builder.setMetadataLocation(spec.getMetadataLocation());
     }
-    if (spec.hasColumnIdentityMap()) {
+    if (spec.hasColumnIdentityMapRef()) {
       try {
-        ColumnIdentityMaps.restoreForSnapshot(spec.getColumnIdentityMap(), snapshotId);
+        columnIdentityMaps.validateReference(
+            spec.getTableId().getAccountId(), spec.getColumnIdentityMapRef());
+        if (spec.getColumnIdentityMapRef().getSourceVersion() != snapshotId) {
+          throw new IllegalArgumentException(
+              "Column identity map version does not match its snapshot");
+        }
       } catch (IllegalArgumentException invalid) {
         throw GrpcErrors.invalidArgument(
             correlationId(),
             null,
-            Map.of("field", "snapshot.column_identity_map", "reason", invalid.getMessage()));
+            Map.of("field", "snapshot.column_identity_map_ref", "reason", invalid.getMessage()));
       }
-      builder.setColumnIdentityMap(spec.getColumnIdentityMap());
+      builder.setColumnIdentityMapRef(spec.getColumnIdentityMapRef());
     }
     return builder.build();
   }

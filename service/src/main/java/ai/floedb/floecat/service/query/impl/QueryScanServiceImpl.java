@@ -91,7 +91,8 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
               // Build scan metadata from the resolved selection; fail on a bad selected blob rather
               // than scanning drifted current catalog state.
               var pin = ctx.requireResolvedSnapshot(tableId, correlationId);
-              var initData = scanBundles.initScan(correlationId, pin);
+              var initData =
+                  scanBundles.initScan(correlationId, pin, request.getRequiredColumnsList());
               var session =
                   ScanSession.builder()
                       .queryId(queryId)

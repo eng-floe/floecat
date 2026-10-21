@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.gc;
 import ai.floedb.floecat.catalog.rpc.OwnerPublicationLease;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestKind;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -1802,7 +1803,22 @@ public class CasBlobGc {
       String accountId = root.getTableId().getAccountId();
       String tableId = root.getTableId().getId();
       if (root.hasDefinitionRef() && !root.getDefinitionRef().getUri().isBlank()) {
-        referenced.add(normalizeKey(root.getDefinitionRef().getUri()));
+        String definitionUri = root.getDefinitionRef().getUri();
+        referenced.add(normalizeKey(definitionUri));
+        byte[] definitionBytes = blobStore.get(definitionUri);
+        if (definitionBytes == null) {
+          throw new IllegalStateException("missing table definition blob " + definitionUri);
+        }
+        Table table;
+        try {
+          table = Table.parseFrom(definitionBytes);
+        } catch (InvalidProtocolBufferException error) {
+          throw new IllegalStateException("invalid table definition blob " + definitionUri, error);
+        }
+        if (table.hasColumnIdentityMapRef()
+            && !table.getColumnIdentityMapRef().getUri().isBlank()) {
+          referenced.add(normalizeKey(table.getColumnIdentityMapRef().getUri()));
+        }
       }
       var pageRef = root.hasSnapshotManifestRef() ? root.getSnapshotManifestRef() : null;
       boolean resumingPage =
@@ -1931,6 +1947,10 @@ public class CasBlobGc {
           || !tableId.equals(snapshot.getTableId().getId())
           || snapshot.getSnapshotId() != snapshotId) {
         throw new IllegalStateException("snapshot reusable artifact identity mismatch");
+      }
+      if (snapshot.hasColumnIdentityMapRef()
+          && !snapshot.getColumnIdentityMapRef().getUri().isBlank()) {
+        referenced.add(normalizeKey(snapshot.getColumnIdentityMapRef().getUri()));
       }
       if (!snapshot.hasReuseManifestRef()) {
         return true;

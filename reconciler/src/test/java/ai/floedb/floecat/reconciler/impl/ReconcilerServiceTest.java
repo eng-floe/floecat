@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -2006,7 +2007,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                     SnapshotReuseManifestRef.newBuilder()
                         .setUri("s3://bucket/reuse/snapshot-201.pb")
                         .build())
-                .setColumnIdentityMap(emptyIdentityMap(snapshotId))
+                .setColumnIdentityMapRef(identityMapRef(emptyIdentityMap(snapshotId)))
                 .build());
       }
 
@@ -2423,7 +2424,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 .setSnapshotId(snapshotId)
                 .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
                 .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
-                .setColumnIdentityMap(emptyIdentityMap(snapshotId))
+                .setColumnIdentityMapRef(identityMapRef(emptyIdentityMap(snapshotId)))
                 .build());
       }
 
@@ -2738,7 +2739,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 .setSnapshotId(snapshotId)
                 .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
                 .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
-                .setColumnIdentityMap(emptyIdentityMap(snapshotId))
+                .setColumnIdentityMapRef(identityMapRef(emptyIdentityMap(snapshotId)))
                 .build());
       }
 
@@ -3555,5 +3556,10 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             0L,
             PreferredCanonicalIds.NONE,
             HistoryTier.VERSIONED_LOG));
+  }
+
+  private static ColumnIdentityMapRef identityMapRef(ColumnIdentityMap map) {
+    return ColumnIdentityMaps.reference(
+        "/accounts/acct/tables/tbl/column-identities/" + map.getSourceVersion() + ".pb", map);
   }
 }

@@ -758,11 +758,15 @@ public final class MetaGraph implements CatalogGraphView {
                   "");
         } catch (StatusRuntimeException error) {
           if (error.getStatus().getCode() == Status.Code.NOT_FOUND) {
-            return ut.columnIdentityMap()
-                    .equals(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance())
+            UserGraph.SchemaResolution tableResolution =
+                userGraph.schemaFor("table-schema", ut.id(), null, "", "");
+            return tableResolution == null
                 ? List.of()
                 : objects
-                    .mappedSchema(ut, ut.schemaJson(), ut.columnIdentityMap())
+                    .mappedSchema(
+                        tableResolution.table(),
+                        tableResolution.schemaJson(),
+                        tableResolution.columnIdentityMap())
                     .getColumnsList();
           }
           throw error;
@@ -776,7 +780,12 @@ public final class MetaGraph implements CatalogGraphView {
                 .mappedSchema(resolved.table(), resolved.schemaJson(), resolved.columnIdentityMap())
                 .getColumnsList();
       }
-      return objects.mappedSchema(ut, ut.schemaJson(), ut.columnIdentityMap()).getColumnsList();
+      return objects
+          .mappedSchema(
+              ut,
+              ut.schemaJson(),
+              ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance())
+          .getColumnsList();
     }
     if (table instanceof SystemTableNode st) {
       return st.columns();

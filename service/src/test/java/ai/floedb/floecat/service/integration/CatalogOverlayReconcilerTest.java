@@ -58,6 +58,8 @@ import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
+import ai.floedb.floecat.service.cache.ObjectCache;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.concurrent.MetadataResourceReader;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -160,6 +162,9 @@ class CatalogOverlayReconcilerTest {
     reconciler.pointerStore = pointers;
     reconciler.tableRoots = mock(TableRootRepository.class);
     reconciler.rootWriter = mock(TableRootWriter.class);
+    reconciler.blobStore = blobs;
+    reconciler.columnIdentityMaps =
+        new ColumnIdentityMapResolver(blobs, BlobCacheAccess.disabled(), ObjectCache.forTesting());
     // A real MarkerStore over the same in-memory pointer store. A mock returning empty conditions
     // passes whether the reconciler folds a fence into its batch or drops it on the floor, which is
     // the failure this protocol calls silent and total -- so the fences here are real and the
@@ -575,8 +580,10 @@ class CatalogOverlayReconcilerTest {
     assertEquals(
         ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
         table.getUpstream().getColumnIdAlgorithm());
-    assertTrue(table.hasColumnIdentityMap());
-    assertEquals(1, table.getColumnIdentityMap().getEntriesCount());
+    assertTrue(table.hasColumnIdentityMapRef());
+    assertEquals(
+        table.getColumnIdentityMapRef().getPayloadBytes(),
+        blobs.get(table.getColumnIdentityMapRef().getUri()).length);
 
     MutationMeta tableMeta = tables.metaFor(table.getResourceId());
     Table legacy =
@@ -760,7 +767,7 @@ class CatalogOverlayReconcilerTest {
     assertEquals(1, result.tablesUpdated());
     assertTrue(
         tables.metaFor(after.getResourceId()).getPointerVersion() > beforeMeta.getPointerVersion());
-    assertEquals(43L, after.getColumnIdentityMap().getSourceVersion());
+    assertEquals(43L, after.getColumnIdentityMapRef().getSourceVersion());
   }
 
   @Test
@@ -791,8 +798,8 @@ class CatalogOverlayReconcilerTest {
     MutationMeta meta = tables.metaFor(table.getResourceId());
     Table corrupt =
         table.toBuilder()
-            .setColumnIdentityMap(
-                table.getColumnIdentityMap().toBuilder().setStateChecksum("corrupt"))
+            .setColumnIdentityMapRef(
+                table.getColumnIdentityMapRef().toBuilder().setStateChecksum("corrupt"))
             .build();
     assertTrue(tables.update(corrupt, meta.getPointerVersion()));
 

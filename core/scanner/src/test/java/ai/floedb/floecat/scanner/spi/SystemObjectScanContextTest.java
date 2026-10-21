@@ -18,7 +18,7 @@ package ai.floedb.floecat.scanner.spi;
 
 import static org.assertj.core.api.Assertions.*;
 
-import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.*;
@@ -81,7 +81,7 @@ class SystemObjectScanContextTest {
             List.of(), // dependentViews
             Map.of(), // engineHints
             Map.of(), // columnHints
-            ColumnIdentityMap.getDefaultInstance());
+            ColumnIdentityMapRef.getDefaultInstance());
 
     ScannerTestGraphView view = new ScannerTestGraphView();
     view.addNode(node);
@@ -116,7 +116,7 @@ class SystemObjectScanContextTest {
             List.of(), // dependentViews
             Map.of(), // engineHints
             Map.of(), // columnHints
-            ColumnIdentityMap.getDefaultInstance());
+            ColumnIdentityMapRef.getDefaultInstance());
 
     ScannerTestGraphView view = new ScannerTestGraphView();
     view.addNode(node);
@@ -175,7 +175,7 @@ class SystemObjectScanContextTest {
             List.of(),
             Map.of(),
             Map.of(),
-            ColumnIdentityMap.getDefaultInstance());
+            ColumnIdentityMapRef.getDefaultInstance());
 
     ScannerTestGraphView view = new ScannerTestGraphView();
     view.addRelation(ResourceId.getDefaultInstance(), t);

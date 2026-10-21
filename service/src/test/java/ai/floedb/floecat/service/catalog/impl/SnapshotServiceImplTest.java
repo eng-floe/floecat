@@ -136,7 +136,7 @@ class SnapshotServiceImplTest {
 
     ArgumentCaptor<Snapshot> updated = ArgumentCaptor.forClass(Snapshot.class);
     verify(svc.snapshotRepo).update(updated.capture(), eq(4L));
-    assertFalse(updated.getValue().hasColumnIdentityMap());
+    assertFalse(updated.getValue().hasColumnIdentityMapRef());
     assertEquals("new", updated.getValue().getSummaryOrThrow("state"));
   }
 

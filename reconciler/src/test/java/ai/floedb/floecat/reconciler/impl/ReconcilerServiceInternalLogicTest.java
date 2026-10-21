@@ -40,6 +40,11 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.schema.identity.HistoryTier;
+import ai.floedb.floecat.schema.identity.IdentityMode;
+import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
+import ai.floedb.floecat.schema.identity.ResolvedSchema;
+import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +54,18 @@ import org.junit.jupiter.api.Test;
 
 class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBase {
 
+  private static ColumnIdentityMap emptyIdentityMap(long sourceVersion) {
+    return ColumnIdentityMaps.toProto(
+        SchemaIdentityReconciler.reconcile(
+            ResolvedSchema.of(List.of()),
+            sourceVersion,
+            IdentityMode.STRUCTURED_PATH,
+            Optional.empty(),
+            0L,
+            PreferredCanonicalIds.NONE,
+            HistoryTier.VERSIONED_LOG));
+  }
+
   @Test
   void canonicalDeltaTableCannotInheritAnExistingMapWhenBundleOmitsIt() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl").build();
@@ -56,7 +73,9 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
         Snapshot.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(123L)
-            .setColumnIdentityMap(ColumnIdentityMap.newBuilder().setFingerprint("old").build())
+            .setColumnIdentityMapRef(
+                ColumnIdentityMaps.reference(
+                    "/accounts/acct/tables/tbl/column-identities/old.pb", emptyIdentityMap(123L)))
             .build();
     var bundle =
         new FloecatConnector.SnapshotBundle(

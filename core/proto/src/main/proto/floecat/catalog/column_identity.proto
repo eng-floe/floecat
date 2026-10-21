@@ -71,3 +71,29 @@ message ColumnIdentityMap {
   // version. An unanchored map must not seed a later ordered history walk.
   bool source_version_anchored = 10;
 }
+
+// Durable, bounded reference to an immutable serialized ColumnIdentityMap. The summary fields let
+// catalog and statistics paths make identity decisions without fetching the payload. The URI must
+// name an account-scoped, content-addressed Floecat blob whose bytes hash to payload_sha256.
+message ColumnIdentityMapRef {
+  string uri = 1;
+  uint64 payload_bytes = 2;
+  bytes payload_sha256 = 3;
+  uint32 format_version = 4;
+  int64 source_version = 5;
+  int64 high_water_mark = 6;
+  ColumnIdentityMode mode = 7;
+  string fingerprint = 8;
+  string state_checksum = 9;
+  ColumnIdentityHistoryTier history_tier = 10;
+  optional int64 native_high_water_mark = 11;
+  bool source_version_anchored = 12;
+}
+
+// Query/scan transport contains only the entries needed by the requested logical columns. It is
+// deliberately not a durable reconciliation state and cannot seed later reconciliation.
+message ColumnIdentityProjection {
+  string fingerprint = 1;
+  ColumnIdentityMode mode = 2;
+  repeated ColumnIdentityEntry entries = 3;
+}

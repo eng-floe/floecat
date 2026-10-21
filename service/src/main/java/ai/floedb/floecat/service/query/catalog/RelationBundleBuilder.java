@@ -491,7 +491,10 @@ final class RelationBundleBuilder {
                     .orElseGet(List::of))
             .build();
       }
-      return objects.mappedSchema(userTable, userTable.schemaJson(), userTable.columnIdentityMap());
+      return objects.mappedSchema(
+          userTable,
+          userTable.schemaJson(),
+          ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
     }
     // The stream's producer-thread pre-pass validated this pin before the relation entered worker
     // fan-out. Objects owns the cache-first resolution so every caller gets the same behavior.

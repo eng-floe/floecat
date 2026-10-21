@@ -53,6 +53,7 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.model.ColumnIdentityWireMigration;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
@@ -333,7 +334,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           tsNow,
                           idempotencyTtlSeconds(),
                           this::correlationId,
-                          Table::parseFrom);
+                          ColumnIdentityWireMigration::parseTable);
 
                   // Parity with the non-idempotent path: record the definition on the root at
                   // create time. Idempotent (the committer no-ops when the ref already matches), so

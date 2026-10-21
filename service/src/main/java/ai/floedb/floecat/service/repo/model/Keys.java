@@ -646,6 +646,15 @@ public final class Keys {
     return tableBlobPrefix(accountId, tableId) + "constraints/";
   }
 
+  /** Immutable canonical identity payload produced by Owner or overlay reconciliation. */
+  public static String columnIdentityBlobUri(String accountId, String tableId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/tables/%s/column-identities/%s.pb", encode(tid), encode(tbid), encode(sha));
+  }
+
   public static String tableRootBlobPrefix(String accountId, String tableId) {
     return tableBlobPrefix(accountId, tableId) + "root/";
   }

@@ -81,9 +81,13 @@ message TableInfo {
   // The existing s3.* entries in properties remain available for initial compatibility.
   ai.floedb.floecat.storage.ResolveStorageAuthorityResponse resolved_storage = 7;
 
-  // Authoritative canonical identities for the pinned snapshot. Query engines use this map for
-  // statistics lookup and to resolve current logical fields to source-native physical fields.
-  ai.floedb.floecat.catalog.ColumnIdentityMap column_identity_map = 8;
+  // Field 8 previously carried the complete inline ColumnIdentityMap. Keep it retired so mixed
+  // client/server versions cannot interpret an inline map as a projection.
+  reserved 8;
+  reserved "column_identity_map";
+  // Canonical identities needed by required_columns. This bounded projection is derived from the
+  // pinned snapshot's immutable map; the complete durable map is never carried by scan RPCs.
+  ai.floedb.floecat.catalog.ColumnIdentityProjection column_identity_projection = 9;
 }
 
 message ScanHandle {

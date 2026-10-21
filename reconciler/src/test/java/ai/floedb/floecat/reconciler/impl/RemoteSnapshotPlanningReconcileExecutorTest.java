@@ -467,7 +467,9 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                     .setTableId(tableId())
                     .setSnapshotId(baseSnapshotId)
                     .setSchemaJson(baseSchemaJson)
-                    .setColumnIdentityMap(identityMap)
+                    .setColumnIdentityMapRef(
+                        ai.floedb.floecat.schema.identity.ColumnIdentityMaps.reference(
+                            "/accounts/acct/tables/table/column-identities/base.pb", identityMap))
                     .setReuseManifestRef(
                         SnapshotReuseManifestRef.newBuilder()
                             .setFormatVersion(1)

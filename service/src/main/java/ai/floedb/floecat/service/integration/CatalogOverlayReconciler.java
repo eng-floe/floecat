@@ -32,6 +32,7 @@ import ai.floedb.floecat.catalog.delta.DeltaIdentityHistoryProvider;
 import ai.floedb.floecat.catalog.delta.DeltaLogEngineFactory;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -49,6 +50,7 @@ import ai.floedb.floecat.delta.identity.PersistedIdentityLookup;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
@@ -64,13 +66,17 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.util.LogSafeText;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.runtime.Startup;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -80,6 +86,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -141,6 +148,8 @@ public class CatalogOverlayReconciler {
   @Inject TableRootWriter rootWriter;
   @Inject MarkerStore markerStore;
   @Inject ServerSideFileIoPropertiesResolver fileIoProperties;
+  @Inject BlobStore blobStore;
+  @Inject ColumnIdentityMapResolver columnIdentityMaps;
 
   @ConfigProperty(
       name = "floecat.catalog-overlay.reconcile.max-parallel-loads",
@@ -187,8 +196,18 @@ public class CatalogOverlayReconciler {
       MutationMeta overlayMeta,
       CatalogIntegration integration,
       MutationMeta integrationMeta) {
+    return reconcile(overlay, overlayMeta, integration, integrationMeta, false);
+  }
+
+  public Result reconcile(
+      CatalogOverlay overlay,
+      MutationMeta overlayMeta,
+      CatalogIntegration integration,
+      MutationMeta integrationMeta,
+      boolean captureManagedIdentity) {
     try (ReconcileLockLease ignored = acquireReconcileLock(overlay.getResourceId())) {
-      return reconcileWhileLocked(overlay, overlayMeta, integration, integrationMeta);
+      return reconcileWhileLocked(
+          overlay, overlayMeta, integration, integrationMeta, captureManagedIdentity);
     }
   }
 
@@ -196,7 +215,8 @@ public class CatalogOverlayReconciler {
       CatalogOverlay overlay,
       MutationMeta overlayMeta,
       CatalogIntegration integration,
-      MutationMeta integrationMeta) {
+      MutationMeta integrationMeta,
+      boolean captureManagedIdentity) {
     requireBinding(overlay, integration);
     PointerConditions fence = fence(overlay, overlayMeta, integration, integrationMeta);
     try (CatalogClientSession session = new CatalogClientSession(access.open(integration))) {
@@ -239,7 +259,8 @@ public class CatalogOverlayReconciler {
           discovery.tables(),
           localNamespaces,
           localInventory,
-          result);
+          result,
+          captureManagedIdentity);
       reconcileViews(
           overlay, integration, fence, discovery.views(), localNamespaces, localInventory, result);
       retireNamespaces(overlay, fence, discovery, localNamespaces, result);
@@ -737,7 +758,8 @@ public class CatalogOverlayReconciler {
       Map<CatalogObjectName, CatalogTable> discovered,
       Map<NamespacePath, Namespace> localNamespaces,
       LocalInventory inventory,
-      MutableResult result) {
+      MutableResult result,
+      boolean captureManagedIdentity) {
     // Only publications since the last successful fence assertion can need compensation. Keeping
     // this as a bounded batch prevents lost-fence recovery from turning into an uncancellable scan
     // of the entire catalog.
@@ -754,7 +776,9 @@ public class CatalogOverlayReconciler {
                 : inventory.tablesByName().get(name);
         Table mappedDesired;
         try {
-          mappedDesired = tableFor(overlay, integration, namespace, source, current, client);
+          mappedDesired =
+              tableFor(
+                  overlay, integration, namespace, source, current, client, captureManagedIdentity);
         } catch (TableIdentityException invalidIdentity) {
           LOG.warnf(
               invalidIdentity,
@@ -959,7 +983,8 @@ public class CatalogOverlayReconciler {
       Namespace namespace,
       CatalogTable source,
       Table current,
-      CatalogClient client) {
+      CatalogClient client,
+      boolean captureManagedIdentity) {
     ResourceId id =
         current == null
             ? randomId(overlay.getResourceId().getAccountId(), ResourceKind.RK_TABLE)
@@ -988,9 +1013,9 @@ public class CatalogOverlayReconciler {
             .setSchemaJson(source.schemaJson())
             .setUpstream(upstream)
             .putAllProperties(properties);
-    if (upstream.getFormat() == TableFormat.TF_DELTA) {
-      builder.setColumnIdentityMap(
-          reconcileDeltaIdentity(source, current, client, builder.build()));
+    if (upstream.getFormat() == TableFormat.TF_DELTA && !captureManagedIdentity) {
+      ColumnIdentityMap identity = reconcileDeltaIdentity(source, current, client, builder.build());
+      builder.setColumnIdentityMapRef(persistIdentityMap(id, identity));
     }
     return builder.build();
   }
@@ -1000,8 +1025,10 @@ public class CatalogOverlayReconciler {
     CatalogUpstreamBudget budget = CatalogUpstreamBudget.start(deltaIdentityTimeout, nanoTime);
     try {
       Optional<ColumnIdentityMap> tableMap =
-          current != null && current.hasColumnIdentityMap()
-              ? Optional.of(current.getColumnIdentityMap())
+          current != null && current.hasColumnIdentityMapRef()
+              ? Optional.of(
+                  columnIdentityMaps.resolve(
+                      current.getResourceId().getAccountId(), current.getColumnIdentityMapRef()))
               : Optional.empty();
       OptionalLong predecessorVersion = persistedSourceVersion(tableMap, source.name());
       PersistedIdentityLookup persisted = PersistedIdentityLookup.forTableMap(tableMap);
@@ -1056,6 +1083,44 @@ public class CatalogOverlayReconciler {
       }
       throw new TableIdentityException(
           "SOURCE_ERROR for table " + source.name() + ": " + failure.getMessage(), failure);
+    } catch (IllegalArgumentException failure) {
+      throw new TableIdentityException(
+          "INVALID_PERSISTED_IDENTITY for table " + source.name() + ": " + failure.getMessage(),
+          failure);
+    }
+  }
+
+  private ColumnIdentityMapRef persistIdentityMap(ResourceId tableId, ColumnIdentityMap map) {
+    byte[] payload = map.toByteArray();
+    byte[] digest = sha256(payload);
+    String uri =
+        Keys.columnIdentityBlobUri(
+            tableId.getAccountId(), tableId.getId(), HexFormat.of().formatHex(digest));
+    blobStore.putImmutable(uri, payload, "application/x-protobuf");
+    ColumnIdentityMapRef.Builder ref =
+        ColumnIdentityMapRef.newBuilder()
+            .setUri(uri)
+            .setPayloadBytes(payload.length)
+            .setPayloadSha256(ByteString.copyFrom(digest))
+            .setFormatVersion(map.getFormatVersion())
+            .setSourceVersion(map.getSourceVersion())
+            .setHighWaterMark(map.getHighWaterMark())
+            .setMode(map.getMode())
+            .setFingerprint(map.getFingerprint())
+            .setStateChecksum(map.getStateChecksum())
+            .setHistoryTier(map.getHistoryTier())
+            .setSourceVersionAnchored(map.getSourceVersionAnchored());
+    if (map.hasNativeHighWaterMark()) {
+      ref.setNativeHighWaterMark(map.getNativeHighWaterMark());
+    }
+    return ref.build();
+  }
+
+  private static byte[] sha256(byte[] payload) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(payload);
+    } catch (NoSuchAlgorithmException impossible) {
+      throw new IllegalStateException("SHA-256 is unavailable", impossible);
     }
   }
 

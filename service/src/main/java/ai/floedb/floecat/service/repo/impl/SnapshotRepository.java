@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.repo.model.ColumnIdentityWireMigration;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotKey;
@@ -175,7 +176,7 @@ public class SnapshotRepository {
             pointerStore,
             blobStore,
             Schemas.SNAPSHOT,
-            Snapshot::parseFrom,
+            ColumnIdentityWireMigration::parseSnapshot,
             Snapshot::toByteArray,
             "application/x-protobuf",
             blobCache,

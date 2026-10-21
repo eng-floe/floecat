@@ -28,6 +28,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -39,6 +40,7 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
@@ -73,6 +75,7 @@ class SnapshotHelperTest {
   private InMemoryPointerStore repairPointers;
   private ResolvedSnapshotReadContract pins;
   private RootRepairRequests repairs;
+  private ColumnIdentityMapResolver columnIdentityMaps;
 
   @BeforeEach
   void setUp() {
@@ -88,6 +91,7 @@ class SnapshotHelperTest {
     repairPointers = new InMemoryPointerStore();
     repairs = new RootRepairRequests(new RootResyncQueue(repairPointers));
     pins = new ResolvedSnapshotReadContract(repairs);
+    columnIdentityMaps = mock(ColumnIdentityMapResolver.class);
     helper =
         new SnapshotHelper(
             repository,
@@ -95,8 +99,8 @@ class SnapshotHelperTest {
             null,
             pins,
             repairs,
-            new SnapshotRetentionPolicy(
-                Clock.systemUTC(), Duration.ofDays(30), Duration.ofDays(7)));
+            new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ofDays(30), Duration.ofDays(7)),
+            columnIdentityMaps);
   }
 
   private boolean repairEnqueued(ResourceId tableId) {
@@ -223,12 +227,15 @@ class SnapshotHelperTest {
     ResourceId tableId = tableId("tbl");
     ColumnIdentityMap identityMap =
         ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build();
+    ColumnIdentityMapRef identityRef =
+        ColumnIdentityMapRef.newBuilder().setUri("/accounts/acct/identity.pb").build();
+    when(columnIdentityMaps.resolve(tableId.getAccountId(), identityRef)).thenReturn(identityMap);
     Snapshot snapshot =
         Snapshot.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(41L)
             .setSchemaJson("{\"fields\":[\"pinned\"]}")
-            .setColumnIdentityMap(identityMap)
+            .setColumnIdentityMapRef(identityRef)
             .setUpstreamCreatedAt(ts("2024-04-01T00:00:00Z"))
             .build();
     repository.put(tableId, snapshot);

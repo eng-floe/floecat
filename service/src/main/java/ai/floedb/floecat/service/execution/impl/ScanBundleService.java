@@ -36,6 +36,7 @@ import ai.floedb.floecat.query.rpc.DeleteFileBatch;
 import ai.floedb.floecat.query.rpc.DeleteRef;
 import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.common.ScanPruningUtils;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -78,6 +79,7 @@ public class ScanBundleService {
   private final ResolvedSnapshotReadContract resolvedSnapshotReads;
   private final TableRootRepository roots;
   private final TableBlobReachabilityGuard reachabilityGuard;
+  private final ColumnIdentityMapResolver columnIdentityMaps;
 
   @Inject
   public ScanBundleService(
@@ -87,7 +89,8 @@ public class ScanBundleService {
       ServerSideFileIoPropertiesResolver fileIoPropertiesResolver,
       ResolvedSnapshotReadContract resolvedSnapshotReads,
       TableRootRepository roots,
-      TableBlobReachabilityGuard reachabilityGuard) {
+      TableBlobReachabilityGuard reachabilityGuard,
+      ColumnIdentityMapResolver columnIdentityMaps) {
     this.tables = tables;
     this.snapshots = snapshots;
     this.statsStore = statsStore;
@@ -95,6 +98,7 @@ public class ScanBundleService {
     this.resolvedSnapshotReads = resolvedSnapshotReads;
     this.roots = roots;
     this.reachabilityGuard = reachabilityGuard;
+    this.columnIdentityMaps = columnIdentityMaps;
   }
 
   /** Compatibility constructor for embedded callers and focused tests. */
@@ -105,7 +109,14 @@ public class ScanBundleService {
       ServerSideFileIoPropertiesResolver fileIoPropertiesResolver,
       ResolvedSnapshotReadContract resolvedSnapshotReads) {
     this(
-        tables, snapshots, statsStore, fileIoPropertiesResolver, resolvedSnapshotReads, null, null);
+        tables,
+        snapshots,
+        statsStore,
+        fileIoPropertiesResolver,
+        resolvedSnapshotReads,
+        null,
+        null,
+        null);
   }
 
   /**
@@ -121,6 +132,10 @@ public class ScanBundleService {
    * blob the live root still owns is a catalog-integrity failure.
    */
   public InitData initScan(String correlationId, TablePin pin) {
+    return initScan(correlationId, pin, List.of());
+  }
+
+  public InitData initScan(String correlationId, TablePin pin, List<String> requiredColumns) {
     ResourceId tableId = pin.getTableId();
     long snapshotId = pin.getSnapshotId();
     long initStartedNanos = System.nanoTime();
@@ -141,7 +156,7 @@ public class ScanBundleService {
             snapshots.getByBlobUri(pin.getSnapshotBlobUri()), correlationId, pin);
     StoreOperationSummary.nanos("snapshot_load", System.nanoTime() - snapshotStartedNanos);
 
-    TableInfo info = buildTableInfo(table, snapshot, snapshotId);
+    TableInfo info = buildTableInfo(table, snapshot, snapshotId, requiredColumns);
     // The scan streams its file list from the generation the resolved root referenced, frozen on
     // the
     // selection at BeginQuery, not the live active generation: a re-stats between BeginQuery and
@@ -497,7 +512,8 @@ public class ScanBundleService {
   }
 
   /** Builds the TableInfo payload from catalog and snapshot state. */
-  private TableInfo buildTableInfo(Table table, Snapshot snapshot, long snapshotId) {
+  private TableInfo buildTableInfo(
+      Table table, Snapshot snapshot, long snapshotId, List<String> requiredColumns) {
     TableInfo.Builder builder =
         TableInfo.newBuilder().setTableId(table.getResourceId()).setSnapshotId(snapshotId);
 
@@ -554,8 +570,15 @@ public class ScanBundleService {
     if (resolvedTableProperties.response() != null) {
       builder.setResolvedStorage(resolvedTableProperties.response());
     }
-    if (snapshot.hasColumnIdentityMap()) {
-      builder.setColumnIdentityMap(snapshot.getColumnIdentityMap());
+    if (snapshot.hasColumnIdentityMapRef()) {
+      if (columnIdentityMaps == null) {
+        throw new IllegalStateException("Column identity resolver is unavailable");
+      }
+      builder.setColumnIdentityProjection(
+          columnIdentityMaps.project(
+              table.getResourceId().getAccountId(),
+              snapshot.getColumnIdentityMapRef(),
+              requiredColumns));
     }
 
     return builder.build();

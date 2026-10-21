@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
@@ -51,6 +52,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
+import ai.floedb.floecat.catalog.rpc.StreamColumnIdentityMapRequest;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -98,7 +100,10 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.types.Hashing;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import io.grpc.Metadata;
@@ -110,9 +115,13 @@ import io.quarkus.grpc.GrpcClient;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.io.ByteArrayOutputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -158,6 +167,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   @Inject CaptureEngineRegistry captureEngineRegistry;
   @Inject CredentialResolver credentialResolver;
   @Inject ServerSideStorageConfigResolver serverSideStorageConfigResolver;
+
+  @Inject BlobStore blobStore;
 
   @Inject
   public GrpcReconcilerBackend(
@@ -505,21 +516,52 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   @Override
   public SnapshotIdentityHistory snapshotIdentityHistory(ReconcileContext ctx, ResourceId tableId) {
-    Set<Long> snapshotIds = new LinkedHashSet<>();
-    Map<Long, ColumnIdentityMap> maps = new LinkedHashMap<>();
-    long highWaterMark = 0L;
-    for (Snapshot snapshot : listAllSnapshots(ctx, tableId)) {
-      if (snapshot.getSnapshotId() < 0) {
-        continue;
-      }
-      snapshotIds.add(snapshot.getSnapshotId());
-      if (snapshot.hasColumnIdentityMap()) {
-        ColumnIdentityMap identityMap = snapshot.getColumnIdentityMap();
-        highWaterMark = Math.max(highWaterMark, identityMap.getHighWaterMark());
-        maps.put(snapshot.getSnapshotId(), identityMap);
-      }
+    Set<Long> snapshotIds = existingSnapshotIds(ctx, tableId);
+    Table current =
+        table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+    if (!current.hasColumnIdentityMapRef()) {
+      return new SnapshotIdentityHistory(snapshotIds, Map.of(), 0L);
     }
-    return new SnapshotIdentityHistory(snapshotIds, maps, highWaterMark);
+    ColumnIdentityMap identityMap =
+        resolveColumnIdentityMap(ctx, tableId, current.getColumnIdentityMapRef());
+    return new SnapshotIdentityHistory(
+        snapshotIds,
+        Map.of(identityMap.getSourceVersion(), identityMap),
+        identityMap.getHighWaterMark());
+  }
+
+  @Override
+  public ColumnIdentityMapRef persistColumnIdentityMap(
+      ReconcileContext ctx, ResourceId tableId, ColumnIdentityMap map) {
+    ColumnIdentityMaps.restore(map);
+    byte[] payload = map.toByteArray();
+    byte[] digest = sha256(payload);
+    String uri =
+        "/accounts/"
+            + tableId.getAccountId()
+            + "/tables/"
+            + tableId.getId()
+            + "/column-identities/"
+            + HexFormat.of().formatHex(digest)
+            + ".pb";
+    blobStore.putImmutable(uri, payload, "application/x-protobuf");
+    ColumnIdentityMapRef.Builder ref =
+        ColumnIdentityMapRef.newBuilder()
+            .setUri(uri)
+            .setPayloadBytes(payload.length)
+            .setPayloadSha256(ByteString.copyFrom(digest))
+            .setFormatVersion(map.getFormatVersion())
+            .setSourceVersion(map.getSourceVersion())
+            .setHighWaterMark(map.getHighWaterMark())
+            .setMode(map.getMode())
+            .setFingerprint(map.getFingerprint())
+            .setStateChecksum(map.getStateChecksum())
+            .setHistoryTier(map.getHistoryTier())
+            .setSourceVersionAnchored(map.getSourceVersionAnchored());
+    if (map.hasNativeHighWaterMark()) {
+      ref.setNativeHighWaterMark(map.getNativeHighWaterMark());
+    }
+    return ref.build();
   }
 
   private List<Snapshot> listAllSnapshots(ReconcileContext ctx, ResourceId tableId) {
@@ -711,8 +753,51 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   private ColumnIdentityMap identityMapForSnapshot(
       ReconcileContext ctx, ResourceId tableId, long snapshotId) {
     return fetchSnapshot(ctx, tableId, snapshotId)
-        .map(Snapshot::getColumnIdentityMap)
+        .filter(Snapshot::hasColumnIdentityMapRef)
+        .map(Snapshot::getColumnIdentityMapRef)
+        .map(ref -> resolveColumnIdentityMap(ctx, tableId, ref))
         .orElse(ColumnIdentityMap.getDefaultInstance());
+  }
+
+  private ColumnIdentityMap resolveColumnIdentityMap(
+      ReconcileContext ctx, ResourceId tableId, ColumnIdentityMapRef ref) {
+    ColumnIdentityMaps.validateReference(ref);
+    var chunks =
+        snapshot(ctx)
+            .streamColumnIdentityMap(
+                StreamColumnIdentityMapRequest.newBuilder()
+                    .setTableId(tableId)
+                    .setColumnIdentityMapRef(ref)
+                    .build());
+    ByteArrayOutputStream payload =
+        new ByteArrayOutputStream(Math.toIntExact(ref.getPayloadBytes()));
+    chunks.forEachRemaining(
+        chunk -> {
+          if ((long) payload.size() + chunk.getData().size() > ref.getPayloadBytes()) {
+            throw new IllegalArgumentException("column identity stream exceeds declared size");
+          }
+          payload.writeBytes(chunk.getData().toByteArray());
+        });
+    byte[] bytes = payload.toByteArray();
+    if (bytes.length != ref.getPayloadBytes()
+        || !MessageDigest.isEqual(sha256(bytes), ref.getPayloadSha256().toByteArray())) {
+      throw new IllegalArgumentException("column identity stream does not match its reference");
+    }
+    try {
+      ColumnIdentityMap map = ColumnIdentityMap.parseFrom(bytes);
+      ColumnIdentityMaps.restore(map, ref);
+      return map;
+    } catch (com.google.protobuf.InvalidProtocolBufferException error) {
+      throw new IllegalArgumentException("column identity payload is invalid", error);
+    }
+  }
+
+  private static byte[] sha256(byte[] payload) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(payload);
+    } catch (NoSuchAlgorithmException impossible) {
+      throw new IllegalStateException("SHA-256 is unavailable", impossible);
+    }
   }
 
   @Override
@@ -742,7 +827,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                     ? FloecatConnector.ColumnSelectorPolicy.defaults()
                     : columnSelectorPolicy,
                 fetchSnapshot(ctx, tableId, snapshotId)
-                    .map(Snapshot::getColumnIdentityMap)
+                    .filter(Snapshot::hasColumnIdentityMapRef)
+                    .map(Snapshot::getColumnIdentityMapRef)
+                    .map(ref -> resolveColumnIdentityMap(ctx, tableId, ref))
                     .orElse(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance())));
   }
 
@@ -1563,8 +1650,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (snapshot.hasMetadataLocation() && !snapshot.getMetadataLocation().isBlank()) {
       builder.setMetadataLocation(snapshot.getMetadataLocation());
     }
-    if (snapshot.hasColumnIdentityMap()) {
-      builder.setColumnIdentityMap(snapshot.getColumnIdentityMap());
+    if (snapshot.hasColumnIdentityMapRef()) {
+      builder.setColumnIdentityMapRef(snapshot.getColumnIdentityMapRef());
     }
     return builder.build();
   }
@@ -1595,8 +1682,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (spec.hasMetadataLocation()) {
       mask.addPaths("metadata_location");
     }
-    if (spec.hasColumnIdentityMap()) {
-      mask.addPaths("column_identity_map");
+    if (spec.hasColumnIdentityMapRef()) {
+      mask.addPaths("column_identity_map_ref");
     }
     return mask.build();
   }

@@ -41,10 +41,13 @@ message Snapshot {
   int32 schema_id = 11;
   optional string metadata_location = 12;
   SnapshotReuseManifestRef reuse_manifest_ref = 13;
-  // Authoritative column identities for this source schema version. The fingerprint binds schema,
-  // capture, and reuse consumers to the exact same mapping.
-  ColumnIdentityMap column_identity_map = 14;
-  reserved 15;
+  // Field 14 previously carried the inline ColumnIdentityMap. It must never be reused: persisted
+  // snapshots may still contain that payload, whose nested wire layout is not a ColumnIdentityMapRef.
+  reserved 14, 15;
+  reserved "column_identity_map";
+  // Authoritative immutable column-identity state for this source schema version. Snapshot APIs
+  // carry only the bounded reference; the map payload never crosses this gRPC boundary.
+  ColumnIdentityMapRef column_identity_map_ref = 16;
 }
 
 // System-owned reference to the compact artifact-reuse manifest produced when this snapshot's
@@ -108,6 +111,25 @@ message GetLatestFinalizedSnapshotResponse {
   Snapshot snapshot = 1;
 }
 
+// Returns the latest accepted identity state directly. Callers must not enumerate snapshots to
+// recover the reconciliation predecessor.
+message GetLatestColumnIdentityRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+}
+
+message GetLatestColumnIdentityResponse {
+  ColumnIdentityMapRef column_identity_map_ref = 1;
+}
+
+message StreamColumnIdentityMapRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  ColumnIdentityMapRef column_identity_map_ref = 2;
+}
+
+message ColumnIdentityMapChunk {
+  bytes data = 1;
+}
+
 /**
  * The table's QUERY-VISIBLE current snapshot. Under the visibility gate a snapshot becomes
  * current only when it is finalized (its file list, indexes, and statistics published), so this
@@ -151,8 +173,10 @@ message SnapshotSpec {
   // 13 is intentionally unused: Snapshot.reuse_manifest_ref occupies it, and holding the two
   // messages on the same numbering keeps the spec/snapshot field mapping readable.
   reserved 13;
-  ColumnIdentityMap column_identity_map = 14;
-  reserved 15;
+  // Field 14 previously carried the inline ColumnIdentityMap.
+  reserved 14, 15;
+  reserved "column_identity_map";
+  ColumnIdentityMapRef column_identity_map_ref = 16;
 }
 
 message CreateSnapshotRequest {
@@ -191,6 +215,10 @@ service SnapshotService {
   rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
   rpc GetLatestFinalizedSnapshot(GetLatestFinalizedSnapshotRequest)
       returns (GetLatestFinalizedSnapshotResponse);
+  rpc GetLatestColumnIdentity(GetLatestColumnIdentityRequest)
+      returns (GetLatestColumnIdentityResponse);
+  rpc StreamColumnIdentityMap(StreamColumnIdentityMapRequest)
+      returns (stream ColumnIdentityMapChunk);
   rpc GetCurrentSnapshotPointer(GetCurrentSnapshotPointerRequest)
       returns (GetCurrentSnapshotPointerResponse);
   rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
