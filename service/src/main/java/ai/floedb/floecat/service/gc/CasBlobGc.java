@@ -1397,12 +1397,13 @@ public class CasBlobGc {
       deleted += snapshots.deleted();
       rescued += snapshots.rescued();
 
-      // Both table-root objects and Owner-managed reusable artifacts lack a derivable owner
-      // pointer. Sweep them through the deferred remark-and-fence path so a concurrent publication
-      // cannot make an object live between the mark and its delete.
+      // Table-root objects, column-identity payloads, and Owner-managed reusable artifacts lack a
+      // derivable owner pointer. Sweep them through the deferred remark-and-fence path so a
+      // concurrent publication cannot make an object live between the mark and its delete.
       List<String> deferredPrefixes =
           List.of(
               Keys.tableRootBlobPrefix(accountId, tableId),
+              Keys.columnIdentityBlobPrefix(accountId, tableId),
               Keys.tableReusableArtifactBlobPrefix(accountId, tableId));
       int firstDeferredPrefix = 0;
       if (continuation.deferredPage != null) {

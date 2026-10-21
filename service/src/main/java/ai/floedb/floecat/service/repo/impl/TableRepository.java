@@ -21,7 +21,6 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView.RelationRef;
-import ai.floedb.floecat.service.repo.model.ColumnIdentityWireMigration;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -52,7 +51,7 @@ public class TableRepository {
             pointerStore,
             blobStore,
             Schemas.TABLE,
-            ColumnIdentityWireMigration::parseTable,
+            Table::parseFrom,
             Table::toByteArray,
             "application/x-protobuf"));
   }
@@ -61,10 +60,7 @@ public class TableRepository {
   public TableRepository(MetadataRepositoryFactory repositories) {
     this(
         repositories.create(
-            Schemas.TABLE,
-            ColumnIdentityWireMigration::parseTable,
-            Table::toByteArray,
-            "application/x-protobuf"));
+            Schemas.TABLE, Table::parseFrom, Table::toByteArray, "application/x-protobuf"));
   }
 
   private TableRepository(GenericResourceRepository<Table, TableKey> repo) {

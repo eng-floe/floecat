@@ -12,15 +12,18 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdentityEntry;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityProjection;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.InvalidProtocolBufferException;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -40,25 +43,42 @@ public class ColumnIdentityMapResolver {
     this.objects = Objects.requireNonNull(objects, "objects");
   }
 
-  public void validateReference(String accountId, ColumnIdentityMapRef ref) {
+  public void validateReference(ResourceId tableId, ColumnIdentityMapRef ref) {
+    Objects.requireNonNull(tableId, "tableId");
     ColumnIdentityMaps.validateReference(ref);
-    String prefix = "/accounts/" + Objects.requireNonNull(accountId, "accountId") + "/";
-    if (!ref.getUri().startsWith(prefix)) {
-      throw new IllegalArgumentException("Column identity map reference is outside its account");
+    String digest = HexFormat.of().formatHex(ref.getPayloadSha256().toByteArray());
+    String expectedUri =
+        Keys.columnIdentityBlobUri(tableId.getAccountId(), tableId.getId(), digest);
+    if (!ref.getUri().equals(expectedUri)) {
+      throw new IllegalArgumentException(
+          "Column identity map reference URI does not match its table and digest");
     }
   }
 
-  public ColumnIdentityMap resolve(String accountId, ColumnIdentityMapRef ref) {
-    validateReference(accountId, ref);
-    String identity = java.util.HexFormat.of().formatHex(ref.getPayloadSha256().toByteArray());
-    ColumnIdentityMap map = objects.columnIdentityMap(accountId, identity, () -> load(ref));
+  public ColumnIdentityMap resolve(ResourceId tableId, ColumnIdentityMapRef ref) {
+    validateReference(tableId, ref);
+    String identity = HexFormat.of().formatHex(ref.getPayloadSha256().toByteArray());
+    ColumnIdentityMap map =
+        objects.columnIdentityMap(
+            tableId.getAccountId(), identity, () -> parse(loadBytes(ref), ref));
     ColumnIdentityMaps.restore(map, ref);
     return map;
   }
 
+  /** Returns the exact integrity-checked bytes named by the immutable reference. */
+  public byte[] bytes(ResourceId tableId, ColumnIdentityMapRef ref) {
+    validateReference(tableId, ref);
+    byte[] bytes = loadBytes(ref);
+    String identity = HexFormat.of().formatHex(ref.getPayloadSha256().toByteArray());
+    ColumnIdentityMap map =
+        objects.columnIdentityMap(tableId.getAccountId(), identity, () -> parse(bytes, ref));
+    ColumnIdentityMaps.restore(map, ref);
+    return bytes;
+  }
+
   public ColumnIdentityProjection project(
-      String accountId, ColumnIdentityMapRef ref, List<String> requiredColumns) {
-    ColumnIdentityMap map = resolve(accountId, ref);
+      ResourceId tableId, ColumnIdentityMapRef ref, List<String> requiredColumns) {
+    ColumnIdentityMap map = resolve(tableId, ref);
     Set<String> roots = new HashSet<>();
     for (String requested : requiredColumns) {
       if (requested != null && !requested.isBlank()) {
@@ -77,7 +97,7 @@ public class ColumnIdentityMapResolver {
     return projection.build();
   }
 
-  private ColumnIdentityMap load(ColumnIdentityMapRef ref) {
+  private byte[] loadBytes(ColumnIdentityMapRef ref) {
     byte[] bytes =
         blobCache
             .immutableBytes(
@@ -91,6 +111,10 @@ public class ColumnIdentityMapResolver {
         || !MessageDigest.isEqual(sha256(bytes), ref.getPayloadSha256().toByteArray())) {
       throw new IllegalArgumentException("Column identity map digest mismatch");
     }
+    return bytes;
+  }
+
+  private static ColumnIdentityMap parse(byte[] bytes, ColumnIdentityMapRef ref) {
     try {
       ColumnIdentityMap map = ColumnIdentityMap.parseFrom(bytes);
       ColumnIdentityMaps.restore(map, ref);

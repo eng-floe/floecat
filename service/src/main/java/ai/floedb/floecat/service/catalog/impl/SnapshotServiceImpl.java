@@ -67,7 +67,6 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
-import ai.floedb.floecat.service.repo.model.ColumnIdentityWireMigration;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -365,8 +364,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       Map.of("reason", "column identity reference is required"));
                 }
                 var ref = request.getColumnIdentityMapRef();
-                byte[] payload =
-                    columnIdentityMaps.resolve(tableId.getAccountId(), ref).toByteArray();
+                byte[] payload = columnIdentityMaps.bytes(tableId, ref);
                 for (int offset = 0; offset < payload.length && !emitter.isCancelled(); ) {
                   int length = Math.min(IDENTITY_CHUNK_BYTES, payload.length - offset);
                   emitter.emit(
@@ -576,7 +574,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           tsNow,
                           idempotencyTtlSeconds(),
                           this::correlationId,
-                          ColumnIdentityWireMigration::parseSnapshot);
+                          Snapshot::parseFrom);
 
                   maybeAdvanceCurrentSnapshot(tableId, result.body, corr);
 
@@ -967,7 +965,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
         throw new IllegalArgumentException("Column identity maps require a canonical Delta table");
       }
       var ref = snapshot.getColumnIdentityMapRef();
-      columnIdentityMaps.validateReference(snapshot.getTableId().getAccountId(), ref);
+      columnIdentityMaps.validateReference(snapshot.getTableId(), ref);
       if (ref.getSourceVersion() != snapshot.getSnapshotId()) {
         throw new IllegalArgumentException(
             "Column identity map version does not match its snapshot");

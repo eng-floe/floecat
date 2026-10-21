@@ -620,6 +620,36 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void captureManagedReconcilePreservesThePublishedIdentityReference() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+
+    assertEquals(1, reconcile().tablesCreated());
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table before =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertTrue(before.hasColumnIdentityMapRef());
+
+    var result =
+        reconciler.reconcile(
+            overlay,
+            overlays.metaForSafe(overlay.getResourceId()),
+            integration,
+            integrations.metaForSafe(integration.getResourceId()),
+            true);
+
+    Table after = tables.getById(before.getResourceId()).orElseThrow();
+    assertEquals(0, result.tablesUpdated());
+    assertEquals(before.getColumnIdentityMapRef(), after.getColumnIdentityMapRef());
+  }
+
+  @Test
   void deltaTableWithoutHistoryIsSkippedInsteadOfSynthesized() {
     NamespacePath sales = NamespacePath.of("sales");
     CatalogObjectName orders = new CatalogObjectName(sales, "orders");

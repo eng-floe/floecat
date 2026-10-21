@@ -129,6 +129,19 @@ public final class Keys {
         "/accounts/%s/tables/%s/snapshots/current", encodeSegment(aid), encodeSegment(tid));
   }
 
+  public static String columnIdentityBlobUri(String accountId, String tableId, String sha256) {
+    return columnIdentityBlobPrefix(accountId, tableId)
+        + encodeSegment(req("sha256", sha256))
+        + ".pb";
+  }
+
+  public static String columnIdentityBlobPrefix(String accountId, String tableId) {
+    String aid = req("account_id", accountId);
+    String tid = req("table_id", tableId);
+    return String.format(
+        "/accounts/%s/tables/%s/column-identities/", encodeSegment(aid), encodeSegment(tid));
+  }
+
   public static String connectorPointerById(String accountId, String connectorId) {
     String aid = req("account_id", accountId);
     String cid = req("connector_id", connectorId);

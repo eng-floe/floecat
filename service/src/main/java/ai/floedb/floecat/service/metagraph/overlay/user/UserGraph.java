@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -30,6 +31,7 @@ import ai.floedb.floecat.service.metagraph.loader.NodeLoader;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -123,7 +125,8 @@ public final class UserGraph {
       TableRepository tableRepo,
       ViewRepository viewRepo,
       TableRootRepository tableRootRepo,
-      PrincipalProvider principal) {
+      PrincipalProvider principal,
+      ColumnIdentityMapResolver columnIdentityMaps) {
     RootRepairRequests repairs = RootRepairRequests.disabled();
     ResolvedSnapshotReadContract pins = new ResolvedSnapshotReadContract(repairs);
     return new UserGraph(
@@ -133,7 +136,14 @@ public final class UserGraph {
         viewRepo,
         principal,
         pins,
-        new SnapshotHelper(snapshotRepo, tableRootRepo, null, pins, repairs),
+        new SnapshotHelper(
+            snapshotRepo,
+            tableRootRepo,
+            null,
+            pins,
+            repairs,
+            SnapshotRetentionPolicy.disabled(),
+            columnIdentityMaps),
         tableRootRepo);
   }
 

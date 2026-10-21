@@ -28,6 +28,7 @@ import com.google.protobuf.ByteString;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -121,26 +122,52 @@ public final class ColumnIdentityMaps {
 
   /** Builds an integrity-protected immutable-blob reference for a serialized identity map. */
   public static ColumnIdentityMapRef reference(String uri, ColumnIdentityMap value) {
-    Objects.requireNonNull(uri, "uri");
+    return serialize(value).reference(uri);
+  }
+
+  /** Serializes and hashes a validated map once for immutable publication. */
+  public static SerializedMap serialize(ColumnIdentityMap value) {
     restore(value);
     byte[] payload = value.toByteArray();
-    ColumnIdentityMapRef.Builder ref =
-        ColumnIdentityMapRef.newBuilder()
-            .setUri(uri)
-            .setPayloadBytes(payload.length)
-            .setPayloadSha256(ByteString.copyFrom(sha256(payload)))
-            .setFormatVersion(value.getFormatVersion())
-            .setSourceVersion(value.getSourceVersion())
-            .setHighWaterMark(value.getHighWaterMark())
-            .setMode(value.getMode())
-            .setFingerprint(value.getFingerprint())
-            .setStateChecksum(value.getStateChecksum())
-            .setHistoryTier(value.getHistoryTier())
-            .setSourceVersionAnchored(value.getSourceVersionAnchored());
-    if (value.hasNativeHighWaterMark()) {
-      ref.setNativeHighWaterMark(value.getNativeHighWaterMark());
+    return new SerializedMap(value, payload, ByteString.copyFrom(sha256(payload)));
+  }
+
+  public record SerializedMap(ColumnIdentityMap value, byte[] payload, ByteString payloadSha256) {
+    public SerializedMap {
+      Objects.requireNonNull(value, "value");
+      payload = Objects.requireNonNull(payload, "payload").clone();
+      Objects.requireNonNull(payloadSha256, "payloadSha256");
     }
-    return ref.build();
+
+    @Override
+    public byte[] payload() {
+      return payload.clone();
+    }
+
+    public String sha256Hex() {
+      return HexFormat.of().formatHex(payloadSha256.toByteArray());
+    }
+
+    public ColumnIdentityMapRef reference(String uri) {
+      Objects.requireNonNull(uri, "uri");
+      ColumnIdentityMapRef.Builder ref =
+          ColumnIdentityMapRef.newBuilder()
+              .setUri(uri)
+              .setPayloadBytes(payload.length)
+              .setPayloadSha256(payloadSha256)
+              .setFormatVersion(value.getFormatVersion())
+              .setSourceVersion(value.getSourceVersion())
+              .setHighWaterMark(value.getHighWaterMark())
+              .setMode(value.getMode())
+              .setFingerprint(value.getFingerprint())
+              .setStateChecksum(value.getStateChecksum())
+              .setHistoryTier(value.getHistoryTier())
+              .setSourceVersionAnchored(value.getSourceVersionAnchored());
+      if (value.hasNativeHighWaterMark()) {
+        ref.setNativeHighWaterMark(value.getNativeHighWaterMark());
+      }
+      return ref.build();
+    }
   }
 
   /** Validates that decoded immutable bytes agree with every summary field in their reference. */

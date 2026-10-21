@@ -114,6 +114,17 @@ class CasBlobGcTest {
   }
 
   @Test
+  void sweepsUnreferencedColumnIdentityBlobs() {
+    seedCurrentTable();
+    String orphan = Keys.columnIdentityBlobUri(ACCOUNT_ID, TABLE_ID, "sha-orphan");
+    blobs.put(orphan, "orphan".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(blobs.head(orphan).isPresent());
+  }
+
+  @Test
   void sweepsStorageAuthorityCasFamilyWithoutDeletingThePointedVersion() {
     String live = Keys.storageAuthorityBlobUri(ACCOUNT_ID, "authority-1", "sha-live");
     String orphan = Keys.storageAuthorityBlobUri(ACCOUNT_ID, "authority-1", "sha-orphan");
@@ -2819,7 +2830,13 @@ class CasBlobGcTest {
 
   private String seedCurrentTable() {
     String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
+    blobs.put(
+        tableBlob,
+        ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+            .setResourceId(tableRid())
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
     putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
     return tableBlob;
   }

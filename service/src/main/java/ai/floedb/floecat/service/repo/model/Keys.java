@@ -648,11 +648,11 @@ public final class Keys {
 
   /** Immutable canonical identity payload produced by Owner or overlay reconciliation. */
   public static String columnIdentityBlobUri(String accountId, String tableId, String sha256) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    String sha = req("sha256", sha256);
-    return String.format(
-        "/accounts/%s/tables/%s/column-identities/%s.pb", encode(tid), encode(tbid), encode(sha));
+    return ai.floedb.floecat.storage.kv.Keys.columnIdentityBlobUri(accountId, tableId, sha256);
+  }
+
+  public static String columnIdentityBlobPrefix(String accountId, String tableId) {
+    return ai.floedb.floecat.storage.kv.Keys.columnIdentityBlobPrefix(accountId, tableId);
   }
 
   public static String tableRootBlobPrefix(String accountId, String tableId) {

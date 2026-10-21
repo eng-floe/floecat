@@ -69,14 +69,11 @@ import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.util.LogSafeText;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.runtime.Startup;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -86,7 +83,6 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -1013,9 +1009,16 @@ public class CatalogOverlayReconciler {
             .setSchemaJson(source.schemaJson())
             .setUpstream(upstream)
             .putAllProperties(properties);
-    if (upstream.getFormat() == TableFormat.TF_DELTA && !captureManagedIdentity) {
-      ColumnIdentityMap identity = reconcileDeltaIdentity(source, current, client, builder.build());
-      builder.setColumnIdentityMapRef(persistIdentityMap(id, identity));
+    if (upstream.getFormat() == TableFormat.TF_DELTA) {
+      if (captureManagedIdentity) {
+        if (current != null && current.hasColumnIdentityMapRef()) {
+          builder.setColumnIdentityMapRef(current.getColumnIdentityMapRef());
+        }
+      } else {
+        ColumnIdentityMap identity =
+            reconcileDeltaIdentity(source, current, client, builder.build());
+        builder.setColumnIdentityMapRef(persistIdentityMap(id, identity));
+      }
     }
     return builder.build();
   }
@@ -1028,7 +1031,7 @@ public class CatalogOverlayReconciler {
           current != null && current.hasColumnIdentityMapRef()
               ? Optional.of(
                   columnIdentityMaps.resolve(
-                      current.getResourceId().getAccountId(), current.getColumnIdentityMapRef()))
+                      current.getResourceId(), current.getColumnIdentityMapRef()))
               : Optional.empty();
       OptionalLong predecessorVersion = persistedSourceVersion(tableMap, source.name());
       PersistedIdentityLookup persisted = PersistedIdentityLookup.forTableMap(tableMap);
@@ -1091,37 +1094,11 @@ public class CatalogOverlayReconciler {
   }
 
   private ColumnIdentityMapRef persistIdentityMap(ResourceId tableId, ColumnIdentityMap map) {
-    byte[] payload = map.toByteArray();
-    byte[] digest = sha256(payload);
+    var serialized = ColumnIdentityMaps.serialize(map);
     String uri =
-        Keys.columnIdentityBlobUri(
-            tableId.getAccountId(), tableId.getId(), HexFormat.of().formatHex(digest));
-    blobStore.putImmutable(uri, payload, "application/x-protobuf");
-    ColumnIdentityMapRef.Builder ref =
-        ColumnIdentityMapRef.newBuilder()
-            .setUri(uri)
-            .setPayloadBytes(payload.length)
-            .setPayloadSha256(ByteString.copyFrom(digest))
-            .setFormatVersion(map.getFormatVersion())
-            .setSourceVersion(map.getSourceVersion())
-            .setHighWaterMark(map.getHighWaterMark())
-            .setMode(map.getMode())
-            .setFingerprint(map.getFingerprint())
-            .setStateChecksum(map.getStateChecksum())
-            .setHistoryTier(map.getHistoryTier())
-            .setSourceVersionAnchored(map.getSourceVersionAnchored());
-    if (map.hasNativeHighWaterMark()) {
-      ref.setNativeHighWaterMark(map.getNativeHighWaterMark());
-    }
-    return ref.build();
-  }
-
-  private static byte[] sha256(byte[] payload) {
-    try {
-      return MessageDigest.getInstance("SHA-256").digest(payload);
-    } catch (NoSuchAlgorithmException impossible) {
-      throw new IllegalStateException("SHA-256 is unavailable", impossible);
-    }
+        Keys.columnIdentityBlobUri(tableId.getAccountId(), tableId.getId(), serialized.sha256Hex());
+    blobStore.putImmutable(uri, serialized.payload(), "application/x-protobuf");
+    return serialized.reference(uri);
   }
 
   private static OptionalLong persistedSourceVersion(

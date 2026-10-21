@@ -101,24 +101,6 @@ public class ScanBundleService {
     this.columnIdentityMaps = columnIdentityMaps;
   }
 
-  /** Compatibility constructor for embedded callers and focused tests. */
-  public ScanBundleService(
-      TableRepository tables,
-      SnapshotRepository snapshots,
-      StatsStore statsStore,
-      ServerSideFileIoPropertiesResolver fileIoPropertiesResolver,
-      ResolvedSnapshotReadContract resolvedSnapshotReads) {
-    this(
-        tables,
-        snapshots,
-        statsStore,
-        fileIoPropertiesResolver,
-        resolvedSnapshotReads,
-        null,
-        null,
-        null);
-  }
-
   /**
    * Loads the resolved table snapshot and snapshot blobs and builds the initial TableInfo for a
    * scan handle.
@@ -576,9 +558,7 @@ public class ScanBundleService {
       }
       builder.setColumnIdentityProjection(
           columnIdentityMaps.project(
-              table.getResourceId().getAccountId(),
-              snapshot.getColumnIdentityMapRef(),
-              requiredColumns));
+              table.getResourceId(), snapshot.getColumnIdentityMapRef(), requiredColumns));
     }
 
     return builder.build();

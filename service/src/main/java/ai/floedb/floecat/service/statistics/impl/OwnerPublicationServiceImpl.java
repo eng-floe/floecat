@@ -964,8 +964,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     }
     if (spec.hasColumnIdentityMapRef()) {
       try {
-        columnIdentityMaps.validateReference(
-            spec.getTableId().getAccountId(), spec.getColumnIdentityMapRef());
+        columnIdentityMaps.validateReference(spec.getTableId(), spec.getColumnIdentityMapRef());
         if (spec.getColumnIdentityMapRef().getSourceVersion() != snapshotId) {
           throw new IllegalArgumentException(
               "Column identity map version does not match its snapshot");

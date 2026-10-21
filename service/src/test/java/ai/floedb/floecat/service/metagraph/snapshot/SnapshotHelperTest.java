@@ -229,7 +229,7 @@ class SnapshotHelperTest {
         ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build();
     ColumnIdentityMapRef identityRef =
         ColumnIdentityMapRef.newBuilder().setUri("/accounts/acct/identity.pb").build();
-    when(columnIdentityMaps.resolve(tableId.getAccountId(), identityRef)).thenReturn(identityMap);
+    when(columnIdentityMaps.resolve(tableId, identityRef)).thenReturn(identityMap);
     Snapshot snapshot =
         Snapshot.newBuilder()
             .setTableId(tableId)
@@ -607,7 +607,14 @@ class SnapshotHelperTest {
     seedAndCommit(tableId, 5, "2024-01-01T00:00:00Z");
     var spied = spy(repository);
     var disabled =
-        new SnapshotHelper(spied, roots, null, pins, repairs, SnapshotRetentionPolicy.disabled());
+        new SnapshotHelper(
+            spied,
+            roots,
+            null,
+            pins,
+            repairs,
+            SnapshotRetentionPolicy.disabled(),
+            columnIdentityMaps);
 
     disabled.resolvedSnapshotFor(
         "corr", tableId, SnapshotRef.newBuilder().setSnapshotId(5).build(), Optional.empty());
@@ -647,7 +654,13 @@ class SnapshotHelperTest {
     // This test exercises predecessor selection, not retention admission.
     helper =
         new SnapshotHelper(
-            repository, roots, null, pins, repairs, SnapshotRetentionPolicy.disabled());
+            repository,
+            roots,
+            null,
+            pins,
+            repairs,
+            SnapshotRetentionPolicy.disabled(),
+            columnIdentityMaps);
 
     TablePin pin =
         helper.resolvedSnapshotFor(
@@ -817,7 +830,15 @@ class SnapshotHelperTest {
     // Metadata surfaces (getCommittedCurrent*) still expose 12 as the committed selection.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, tracking, pins, repairs);
+    helper =
+        new SnapshotHelper(
+            repository,
+            roots,
+            tracking,
+            pins,
+            repairs,
+            SnapshotRetentionPolicy.disabled(),
+            columnIdentityMaps);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 11, "2024-02-01T00:00:00Z");
     seedSnapshot(tableId, 12, "2024-03-01T00:00:00Z");
@@ -850,7 +871,15 @@ class SnapshotHelperTest {
     // among finalized entries only; CURRENT never points at it (currency advances at finalize).
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, tracking, pins, repairs);
+    helper =
+        new SnapshotHelper(
+            repository,
+            roots,
+            tracking,
+            pins,
+            repairs,
+            SnapshotRetentionPolicy.disabled(),
+            columnIdentityMaps);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 11, "2024-02-01T00:00:00Z");
     seedSnapshot(tableId, 12, "2024-03-01T00:00:00Z");
@@ -953,7 +982,15 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var flakyHelper = new SnapshotHelper(repository, flakyRoots, null, pins, repairs);
+    var flakyHelper =
+        new SnapshotHelper(
+            repository,
+            flakyRoots,
+            null,
+            pins,
+            repairs,
+            SnapshotRetentionPolicy.disabled(),
+            columnIdentityMaps);
 
     TablePin pin = flakyHelper.resolvedSnapshotFor("corr", table, null, Optional.empty());
 
@@ -993,7 +1030,15 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var deadHelper = new SnapshotHelper(repository, deadRoots, null, pins, repairs);
+    var deadHelper =
+        new SnapshotHelper(
+            repository,
+            deadRoots,
+            null,
+            pins,
+            repairs,
+            SnapshotRetentionPolicy.disabled(),
+            columnIdentityMaps);
 
     assertThatThrownBy(() -> deadHelper.resolvedSnapshotFor("corr", table, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class);
@@ -1020,7 +1065,15 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var localHelper = new SnapshotHelper(repository, roots, null, pins, repairs);
+    var localHelper =
+        new SnapshotHelper(
+            repository,
+            roots,
+            null,
+            pins,
+            repairs,
+            SnapshotRetentionPolicy.disabled(),
+            columnIdentityMaps);
 
     assertThatThrownBy(() -> localHelper.resolvedSnapshotFor("corr", table, null, Optional.empty()))
         .hasMessageContaining("INTERNAL");
@@ -1035,7 +1088,15 @@ class SnapshotHelperTest {
     // explicit-id (reject) and AS_OF (skip) paths — not pin a snapshot that would then scan empty.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, tracking, pins, repairs);
+    helper =
+        new SnapshotHelper(
+            repository,
+            roots,
+            tracking,
+            pins,
+            repairs,
+            SnapshotRetentionPolicy.disabled(),
+            columnIdentityMaps);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 7, "2024-02-01T00:00:00Z");
     // Finalize 7 (generation ref present -> becomes current), then remove its generation.
@@ -1061,7 +1122,15 @@ class SnapshotHelperTest {
     // not be rejected. The gate keys on presence, not on the generation being non-empty.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, tracking, pins, repairs);
+    helper =
+        new SnapshotHelper(
+            repository,
+            roots,
+            tracking,
+            pins,
+            repairs,
+            SnapshotRetentionPolicy.disabled(),
+            columnIdentityMaps);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 3, "2024-02-01T00:00:00Z");
     // The stats-generation ref points at an EMPTY generation — the snapshot is finalized, it just

@@ -161,7 +161,7 @@ class ScanBundleServiceTest {
             .build();
     when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.of(table));
     when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI)).thenReturn(Optional.of(snapshot));
-    when(columnIdentityMaps.project(eq("acct"), eq(identityRef), any()))
+    when(columnIdentityMaps.project(eq(TABLE_ID), eq(identityRef), any()))
         .thenReturn(identityProjection);
     ResolveStorageAuthorityResponse storage =
         ResolveStorageAuthorityResponse.newBuilder()
@@ -324,7 +324,15 @@ class ScanBundleServiceTest {
                 java.time.Duration.ofMillis(1),
                 java.time.Duration.ZERO));
     var expiredService =
-        new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver, expiredReads);
+        new ScanBundleService(
+            tableRepo,
+            snapshotRepo,
+            statsStore,
+            resolver,
+            expiredReads,
+            null,
+            null,
+            columnIdentityMaps);
     TablePin expiredPin = PIN.toBuilder().setIngestedAt(Timestamps.fromMillis(0L)).build();
 
     var failure =

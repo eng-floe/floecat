@@ -103,7 +103,6 @@ import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.types.Hashing;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import io.grpc.Metadata;
@@ -121,7 +120,6 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -533,35 +531,12 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   @Override
   public ColumnIdentityMapRef persistColumnIdentityMap(
       ReconcileContext ctx, ResourceId tableId, ColumnIdentityMap map) {
-    ColumnIdentityMaps.restore(map);
-    byte[] payload = map.toByteArray();
-    byte[] digest = sha256(payload);
+    var serialized = ColumnIdentityMaps.serialize(map);
     String uri =
-        "/accounts/"
-            + tableId.getAccountId()
-            + "/tables/"
-            + tableId.getId()
-            + "/column-identities/"
-            + HexFormat.of().formatHex(digest)
-            + ".pb";
-    blobStore.putImmutable(uri, payload, "application/x-protobuf");
-    ColumnIdentityMapRef.Builder ref =
-        ColumnIdentityMapRef.newBuilder()
-            .setUri(uri)
-            .setPayloadBytes(payload.length)
-            .setPayloadSha256(ByteString.copyFrom(digest))
-            .setFormatVersion(map.getFormatVersion())
-            .setSourceVersion(map.getSourceVersion())
-            .setHighWaterMark(map.getHighWaterMark())
-            .setMode(map.getMode())
-            .setFingerprint(map.getFingerprint())
-            .setStateChecksum(map.getStateChecksum())
-            .setHistoryTier(map.getHistoryTier())
-            .setSourceVersionAnchored(map.getSourceVersionAnchored());
-    if (map.hasNativeHighWaterMark()) {
-      ref.setNativeHighWaterMark(map.getNativeHighWaterMark());
-    }
-    return ref.build();
+        ai.floedb.floecat.storage.kv.Keys.columnIdentityBlobUri(
+            tableId.getAccountId(), tableId.getId(), serialized.sha256Hex());
+    blobStore.putImmutable(uri, serialized.payload(), "application/x-protobuf");
+    return serialized.reference(uri);
   }
 
   private List<Snapshot> listAllSnapshots(ReconcileContext ctx, ResourceId tableId) {

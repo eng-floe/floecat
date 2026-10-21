@@ -92,34 +92,6 @@ public class SnapshotHelper {
     this.columnIdentityMaps = columnIdentityMaps;
   }
 
-  /** Compatibility constructor for embedded graph builders and focused tests. */
-  public SnapshotHelper(
-      SnapshotRepository snapshots,
-      TableRootRepository roots,
-      StatsStore statsStore,
-      ResolvedSnapshotReadContract resolvedSnapshotReads,
-      RootRepairRequests repairs,
-      SnapshotRetentionPolicy retention) {
-    this(snapshots, roots, statsStore, resolvedSnapshotReads, repairs, retention, null);
-  }
-
-  /** Compatibility constructor for embedded graph builders and focused tests. */
-  public SnapshotHelper(
-      SnapshotRepository snapshots,
-      TableRootRepository roots,
-      StatsStore statsStore,
-      ResolvedSnapshotReadContract resolvedSnapshotReads,
-      RootRepairRequests repairs) {
-    this(
-        snapshots,
-        roots,
-        statsStore,
-        resolvedSnapshotReads,
-        repairs,
-        SnapshotRetentionPolicy.disabled(),
-        null);
-  }
-
   /**
    * Whether snapshots gate visibility on finalize: with a generation-tracking store, an entry
    * without its generation ref is not yet query-ready (its file list, indexes, and stats have not
@@ -429,7 +401,7 @@ public class SnapshotHelper {
       if (columnIdentityMaps == null) {
         throw new IllegalStateException("Column identity resolver is unavailable");
       }
-      identityMap = columnIdentityMaps.resolve(tbl.id().getAccountId(), identityRef);
+      identityMap = columnIdentityMaps.resolve(tbl.id(), identityRef);
     }
 
     return new SchemaResolution(tbl, schemaJson, identityMap);
