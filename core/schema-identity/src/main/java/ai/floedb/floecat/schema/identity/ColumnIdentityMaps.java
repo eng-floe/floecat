@@ -125,6 +125,18 @@ public final class ColumnIdentityMaps {
     return serialize(value).reference(uri);
   }
 
+  /** Validates exact immutable payload bytes against their bounded transport reference. */
+  public static void validatePayload(byte[] payload, ColumnIdentityMapRef ref) {
+    Objects.requireNonNull(payload, "payload");
+    validateReference(ref);
+    if (payload.length != ref.getPayloadBytes()
+        || !MessageDigest.isEqual(
+            sha256Digest().digest(payload), ref.getPayloadSha256().toByteArray())) {
+      throw new IllegalArgumentException(
+          "Column identity map payload does not match its reference");
+    }
+  }
+
   /** Serializes and hashes a validated map once for immutable publication. */
   public static SerializedMap serialize(ColumnIdentityMap value) {
     restore(value);
@@ -314,10 +326,14 @@ public final class ColumnIdentityMaps {
   }
 
   private static ByteString sha256(ByteString payload) {
+    MessageDigest digest = sha256Digest();
+    payload.asReadOnlyByteBufferList().forEach(digest::update);
+    return ByteString.copyFrom(digest.digest());
+  }
+
+  private static MessageDigest sha256Digest() {
     try {
-      MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      payload.asReadOnlyByteBufferList().forEach(digest::update);
-      return ByteString.copyFrom(digest.digest());
+      return MessageDigest.getInstance("SHA-256");
     } catch (NoSuchAlgorithmException impossible) {
       throw new IllegalStateException("SHA-256 is unavailable", impossible);
     }

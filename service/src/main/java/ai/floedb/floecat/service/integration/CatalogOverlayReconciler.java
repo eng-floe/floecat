@@ -1012,7 +1012,18 @@ public class CatalogOverlayReconciler {
     if (upstream.getFormat() == TableFormat.TF_DELTA) {
       if (captureManagedIdentity) {
         if (current != null && current.hasColumnIdentityMapRef()) {
-          builder.setColumnIdentityMapRef(current.getColumnIdentityMapRef());
+          try {
+            columnIdentityMaps.validateReference(
+                current.getResourceId(), current.getColumnIdentityMapRef());
+            builder.setColumnIdentityMapRef(current.getColumnIdentityMapRef());
+          } catch (IllegalArgumentException invalid) {
+            throw new TableIdentityException(
+                "INVALID_PERSISTED_IDENTITY for table "
+                    + source.name()
+                    + ": "
+                    + invalid.getMessage(),
+                invalid);
+          }
         }
       } else {
         ColumnIdentityMap identity =

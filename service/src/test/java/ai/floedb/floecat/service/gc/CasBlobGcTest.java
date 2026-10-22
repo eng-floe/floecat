@@ -125,6 +125,46 @@ class CasBlobGcTest {
   }
 
   @Test
+  void malformedTableIdentityReferencePoisonsTheTableWalk() {
+    String tableBlob = seedCurrentTable();
+    blobs.put(
+        tableBlob,
+        ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+            .setResourceId(tableRid())
+            .setColumnIdentityMapRef(identityRefBoundToAnotherTable(7L))
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    String snapshotBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-snapshot");
+    putSnapshotBlob(snapshotBlob, 7L);
+    commitRoot(7L, snapshotBlob, "v7", null);
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(result.poisoned());
+  }
+
+  @Test
+  void malformedSnapshotIdentityReferencePoisonsTheTableWalk() {
+    seedCurrentTable();
+    String snapshotBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-snapshot");
+    blobs.put(
+        snapshotBlob,
+        ai.floedb.floecat.catalog.rpc.Snapshot.newBuilder()
+            .setTableId(tableRid())
+            .setSnapshotId(7L)
+            .setColumnIdentityMapRef(identityRefBoundToAnotherTable(7L))
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    commitRoot(7L, snapshotBlob, "v7", null);
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(result.poisoned());
+  }
+
+  @Test
   void sweepsStorageAuthorityCasFamilyWithoutDeletingThePointedVersion() {
     String live = Keys.storageAuthorityBlobUri(ACCOUNT_ID, "authority-1", "sha-live");
     String orphan = Keys.storageAuthorityBlobUri(ACCOUNT_ID, "authority-1", "sha-orphan");
@@ -2845,6 +2885,29 @@ class CasBlobGcTest {
         "application/x-protobuf");
     putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
     return tableBlob;
+  }
+
+  private ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef identityRefBoundToAnotherTable(
+      long sourceVersion) {
+    byte[] digest = new byte[32];
+    return ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef.newBuilder()
+        .setUri(
+            Keys.columnIdentityBlobUri(
+                ACCOUNT_ID, "other-table", java.util.HexFormat.of().formatHex(digest)))
+        .setPayloadBytes(1L)
+        .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(digest))
+        .setFormatVersion(ai.floedb.floecat.schema.identity.ColumnIdentityMaps.FORMAT_VERSION)
+        .setSourceVersion(sourceVersion)
+        .setHighWaterMark(1L)
+        .setMode(
+            ai.floedb.floecat.catalog.rpc.ColumnIdentityMode.COLUMN_IDENTITY_MODE_STRUCTURED_PATH)
+        .setFingerprint("fingerprint")
+        .setStateChecksum("checksum")
+        .setHistoryTier(
+            ai.floedb.floecat.catalog.rpc.ColumnIdentityHistoryTier
+                .COLUMN_IDENTITY_HISTORY_TIER_VERSIONED_LOG)
+        .setSourceVersionAnchored(true)
+        .build();
   }
 
   private ai.floedb.floecat.common.rpc.ResourceId tableRid() {

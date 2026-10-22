@@ -28,6 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestKind;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
@@ -1816,8 +1817,9 @@ public class CasBlobGc {
         } catch (InvalidProtocolBufferException error) {
           throw new IllegalStateException("invalid table definition blob " + definitionUri, error);
         }
-        if (table.hasColumnIdentityMapRef()
-            && !table.getColumnIdentityMapRef().getUri().isBlank()) {
+        if (table.hasColumnIdentityMapRef()) {
+          ColumnIdentityMapResolver.validateReferenceForTable(
+              root.getTableId(), table.getColumnIdentityMapRef());
           referenced.add(normalizeKey(table.getColumnIdentityMapRef().getUri()));
         }
       }
@@ -1949,8 +1951,9 @@ public class CasBlobGc {
           || snapshot.getSnapshotId() != snapshotId) {
         throw new IllegalStateException("snapshot reusable artifact identity mismatch");
       }
-      if (snapshot.hasColumnIdentityMapRef()
-          && !snapshot.getColumnIdentityMapRef().getUri().isBlank()) {
+      if (snapshot.hasColumnIdentityMapRef()) {
+        ColumnIdentityMapResolver.validateReferenceForTable(
+            snapshot.getTableId(), snapshot.getColumnIdentityMapRef());
         referenced.add(normalizeKey(snapshot.getColumnIdentityMapRef().getUri()));
       }
       if (!snapshot.hasReuseManifestRef()) {

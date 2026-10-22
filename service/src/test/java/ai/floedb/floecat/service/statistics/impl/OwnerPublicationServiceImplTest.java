@@ -24,6 +24,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BeginOwnerPublicationRequest;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.CompleteOwnerPublicationRequest;
 import ai.floedb.floecat.catalog.rpc.OwnerPublicationManifestRef;
@@ -33,6 +34,8 @@ import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestKind;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -435,6 +438,7 @@ class OwnerPublicationServiceImplTest {
   @Test
   void completeRegistersCanonicalReferencesAndActivatesOnce() {
     var service = service();
+    when(service.tables.getById(tableId())).thenReturn(Optional.of(canonicalDeltaTable()));
     var columnIdentityMap = columnIdentityMap();
     var columnIdentityRef = columnIdentityMapRef(columnIdentityMap);
     var request =
@@ -487,6 +491,7 @@ class OwnerPublicationServiceImplTest {
   @Test
   void completeRejectsAnInvalidColumnIdentityMap() {
     var service = service();
+    when(service.tables.getById(tableId())).thenReturn(Optional.of(canonicalDeltaTable()));
     var request =
         complete(service).toBuilder()
             .setSnapshot(
@@ -502,6 +507,26 @@ class OwnerPublicationServiceImplTest {
 
     assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
     verify(service.snapshots, never()).prepareCreatePublicationUpdates(any());
+  }
+
+  @Test
+  void completeRejectsCanonicalDeltaWithoutIdentityBeforePreparingPublication() {
+    var service = service();
+    when(service.tables.getById(tableId())).thenReturn(Optional.of(canonicalDeltaTable()));
+    var request = complete(service);
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.completeOwnerPublication(request).await().indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(service.reuseLeases, never()).renew(any(), anyString(), any());
+    verify(service.snapshots, never()).prepareCreatePublicationUpdates(any());
+    verify(service.persistence, never())
+        .prepareStatsGenerationForPublication(any(), anyLong(), anyString(), anyBoolean());
+    verify(service.persistence, never())
+        .activatePreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
   }
 
   @Test
@@ -1604,6 +1629,16 @@ class OwnerPublicationServiceImplTest {
         .setSnapshotId(SNAPSHOT)
         .setUpstreamCreatedAt(com.google.protobuf.Timestamp.newBuilder().setSeconds(1))
         .setSchemaJson("{}")
+        .build();
+  }
+
+  private static Table canonicalDeltaTable() {
+    return Table.newBuilder()
+        .setResourceId(tableId())
+        .setUpstream(
+            UpstreamRef.newBuilder()
+                .setFormat(TableFormat.TF_DELTA)
+                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_CANONICAL_MAP))
         .build();
   }
 

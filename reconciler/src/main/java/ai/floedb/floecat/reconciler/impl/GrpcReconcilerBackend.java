@@ -116,8 +116,6 @@ import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.ByteArrayOutputStream;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -753,24 +751,13 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
           payload.writeBytes(chunk.getData().toByteArray());
         });
     byte[] bytes = payload.toByteArray();
-    if (bytes.length != ref.getPayloadBytes()
-        || !MessageDigest.isEqual(sha256(bytes), ref.getPayloadSha256().toByteArray())) {
-      throw new IllegalArgumentException("column identity stream does not match its reference");
-    }
+    ColumnIdentityMaps.validatePayload(bytes, ref);
     try {
       ColumnIdentityMap map = ColumnIdentityMap.parseFrom(bytes);
       ColumnIdentityMaps.restore(map, ref);
       return map;
     } catch (com.google.protobuf.InvalidProtocolBufferException error) {
       throw new IllegalArgumentException("column identity payload is invalid", error);
-    }
-  }
-
-  private static byte[] sha256(byte[] payload) {
-    try {
-      return MessageDigest.getInstance("SHA-256").digest(payload);
-    } catch (NoSuchAlgorithmException impossible) {
-      throw new IllegalStateException("SHA-256 is unavailable", impossible);
     }
   }
 

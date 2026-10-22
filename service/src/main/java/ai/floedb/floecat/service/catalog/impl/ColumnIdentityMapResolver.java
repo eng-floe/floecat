@@ -20,8 +20,6 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.InvalidProtocolBufferException;
 import jakarta.enterprise.context.ApplicationScoped;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
@@ -44,6 +42,10 @@ public class ColumnIdentityMapResolver {
   }
 
   public void validateReference(ResourceId tableId, ColumnIdentityMapRef ref) {
+    validateReferenceForTable(tableId, ref);
+  }
+
+  public static void validateReferenceForTable(ResourceId tableId, ColumnIdentityMapRef ref) {
     Objects.requireNonNull(tableId, "tableId");
     ColumnIdentityMaps.validateReference(ref);
     String digest = HexFormat.of().formatHex(ref.getPayloadSha256().toByteArray());
@@ -107,10 +109,7 @@ public class ColumnIdentityMapResolver {
                     blobs.getRangeAtMost(
                         ref.getUri(), 0L, Math.toIntExact(ref.getPayloadBytes() + 1L)))
             .orElseThrow(() -> new IllegalArgumentException("Column identity map is unreadable"));
-    if (bytes.length != ref.getPayloadBytes()
-        || !MessageDigest.isEqual(sha256(bytes), ref.getPayloadSha256().toByteArray())) {
-      throw new IllegalArgumentException("Column identity map digest mismatch");
-    }
+    ColumnIdentityMaps.validatePayload(bytes, ref);
     return bytes;
   }
 
@@ -121,14 +120,6 @@ public class ColumnIdentityMapResolver {
       return map;
     } catch (InvalidProtocolBufferException invalid) {
       throw new IllegalArgumentException("Invalid column identity map payload", invalid);
-    }
-  }
-
-  private static byte[] sha256(byte[] bytes) {
-    try {
-      return MessageDigest.getInstance("SHA-256").digest(bytes);
-    } catch (NoSuchAlgorithmException impossible) {
-      throw new IllegalStateException("SHA-256 is unavailable", impossible);
     }
   }
 

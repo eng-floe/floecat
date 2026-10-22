@@ -98,10 +98,8 @@ public interface ReconcilerBackend {
   Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId);
 
   /** Persists canonical identity state and returns its immutable bounded transport reference. */
-  default ColumnIdentityMapRef persistColumnIdentityMap(
-      ReconcileContext ctx, ResourceId tableId, ColumnIdentityMap map) {
-    throw new UnsupportedOperationException("column identity persistence is not configured");
-  }
+  ColumnIdentityMapRef persistColumnIdentityMap(
+      ReconcileContext ctx, ResourceId tableId, ColumnIdentityMap map);
 
   /** The single latest identity state used to continue canonical reconciliation. */
   record LatestIdentityState(Optional<ColumnIdentityMap> columnIdentityMap) {

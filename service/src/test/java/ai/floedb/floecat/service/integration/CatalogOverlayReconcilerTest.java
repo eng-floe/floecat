@@ -650,6 +650,46 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void captureManagedReconcileRejectsAnIdentityReferenceBoundToAnotherTable() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+
+    assertEquals(1, reconcile().tablesCreated());
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table table =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    MutationMeta meta = tables.metaFor(table.getResourceId());
+    Table corrupt =
+        table.toBuilder()
+            .setColumnIdentityMapRef(
+                table.getColumnIdentityMapRef().toBuilder()
+                    .setUri(
+                        table
+                            .getColumnIdentityMapRef()
+                            .getUri()
+                            .replace("/tables/" + table.getResourceId().getId(), "/tables/other")))
+            .build();
+    assertTrue(tables.update(corrupt, meta.getPointerVersion()));
+
+    var result =
+        reconciler.reconcile(
+            overlay,
+            overlays.metaForSafe(overlay.getResourceId()),
+            integration,
+            integrations.metaForSafe(integration.getResourceId()),
+            true);
+
+    assertEquals(1, result.objectsSkipped());
+    assertEquals(corrupt, tables.getById(table.getResourceId()).orElseThrow());
+  }
+
+  @Test
   void deltaTableWithoutHistoryIsSkippedInsteadOfSynthesized() {
     NamespacePath sales = NamespacePath.of("sales");
     CatalogObjectName orders = new CatalogObjectName(sales, "orders");

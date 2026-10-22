@@ -41,6 +41,19 @@ class ColumnIdentityMapsTest {
         .contains(state.fingerprint());
   }
 
+  @Test
+  void validatesExactSerializedPayloadBytes() {
+    var serialized = ColumnIdentityMaps.serialize(ColumnIdentityMaps.toProto(state(7L)));
+    var ref = serialized.reference("/accounts/a/tables/t/column-identities/test.pb");
+
+    ColumnIdentityMaps.validatePayload(serialized.payload().toByteArray(), ref);
+
+    byte[] corrupted = serialized.payload().toByteArray();
+    corrupted[0] ^= 1;
+    assertThatThrownBy(() -> ColumnIdentityMaps.validatePayload(corrupted, ref))
+        .hasMessageContaining("does not match its reference");
+  }
+
   private static ColumnIdentityMapRef ref(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap map) {
     return ColumnIdentityMapRef.newBuilder()
         .setUri("/accounts/a/tables/t/column-identities/test.pb")
