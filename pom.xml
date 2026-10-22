@@ -202,6 +202,15 @@
         <groupId>org.apache.hadoop</groupId>
         <artifactId>hadoop-common</artifactId>
         <version>${version.hadoop}</version>
+        <exclusions>
+          <!-- Jetty 9.4 only backs Hadoop's daemon web UIs (HttpServer2); we use Hadoop as a
+               filesystem/Parquet library and never start one. 9.4 is EOL and has no public fix
+               for CVE-2026-2332. -->
+          <exclusion>
+            <groupId>org.eclipse.jetty</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>org.apache.parquet</groupId>
