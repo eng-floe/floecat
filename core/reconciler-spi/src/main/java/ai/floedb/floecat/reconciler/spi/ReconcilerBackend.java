@@ -103,7 +103,7 @@ public interface ReconcilerBackend {
     throw new UnsupportedOperationException("column identity persistence is not configured");
   }
 
-  /** Snapshot IDs and their identity maps loaded from one consistent history walk. */
+  /** The bounded latest identity state used to continue canonical reconciliation. */
   record SnapshotIdentityHistory(
       Set<Long> snapshotIds, Map<Long, ColumnIdentityMap> columnIdentityMaps, long highWaterMark) {
     public SnapshotIdentityHistory {
@@ -115,11 +115,7 @@ public interface ReconcilerBackend {
     }
   }
 
-  /**
-   * Returns persisted snapshot identity state.
-   *
-   * <p>Backends with a paged snapshot API should override this so IDs and maps share one walk.
-   */
+  /** Returns the latest persisted snapshot identity state without enumerating snapshot history. */
   default SnapshotIdentityHistory snapshotIdentityHistory(
       ReconcileContext ctx, ResourceId tableId) {
     Set<Long> snapshotIds = existingSnapshotIds(ctx, tableId);

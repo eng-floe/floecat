@@ -1156,7 +1156,12 @@ class QueuedReconcileWorkerSupport {
             ? ReconcilerService.captureOnlyEnumerationTargetSnapshotIds(
                 knownSnapshotIds, targetSnapshotIds)
             : targetSnapshotIds;
-    ReconcileSnapshotSelection enumerationSelection = scope.snapshotSelection();
+    // The recurring canonical-Delta path publishes only the current source snapshot. Identity
+    // continuity does not require materializing every missed version: the connector replays the
+    // intervening Delta metadata commits while reconciling the current identity map. Explicit
+    // historical selections remain available for callers that deliberately request them.
+    ReconcileSnapshotSelection enumerationSelection =
+        effectiveEnumerationSelection(canonicalDelta, scope.snapshotSelection());
     boolean enumerationFullRescan = captureOnly || fullRescan;
 
     MetadataPassOutcome outcome;
@@ -1248,6 +1253,15 @@ class QueuedReconcileWorkerSupport {
         statsProcessed,
         Optional.empty(),
         Optional.empty());
+  }
+
+  static ReconcileSnapshotSelection effectiveEnumerationSelection(
+      boolean canonicalDelta, ReconcileSnapshotSelection requested) {
+    ReconcileSnapshotSelection effective =
+        requested == null ? ReconcileSnapshotSelection.unspecified() : requested;
+    return canonicalDelta && !effective.isSpecified()
+        ? ReconcileSnapshotSelection.current()
+        : effective;
   }
 
   private ResourceId resolveOrCreateDiscoveryNamespaceId(

@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusRequest;
+import ai.floedb.floecat.catalog.rpc.GetLatestColumnIdentityRequest;
 import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
@@ -514,16 +515,17 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   @Override
   public SnapshotIdentityHistory snapshotIdentityHistory(ReconcileContext ctx, ResourceId tableId) {
-    Set<Long> snapshotIds = existingSnapshotIds(ctx, tableId);
-    Table current =
-        table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
-    if (!current.hasColumnIdentityMapRef()) {
-      return new SnapshotIdentityHistory(snapshotIds, Map.of(), 0L);
+    var latest =
+        snapshot(ctx)
+            .getLatestColumnIdentity(
+                GetLatestColumnIdentityRequest.newBuilder().setTableId(tableId).build());
+    if (!latest.hasColumnIdentityMapRef()) {
+      return new SnapshotIdentityHistory(Set.of(), Map.of(), 0L);
     }
     ColumnIdentityMap identityMap =
-        resolveColumnIdentityMap(ctx, tableId, current.getColumnIdentityMapRef());
+        resolveColumnIdentityMap(ctx, tableId, latest.getColumnIdentityMapRef());
     return new SnapshotIdentityHistory(
-        snapshotIds,
+        Set.of(identityMap.getSourceVersion()),
         Map.of(identityMap.getSourceVersion(), identityMap),
         identityMap.getHighWaterMark());
   }

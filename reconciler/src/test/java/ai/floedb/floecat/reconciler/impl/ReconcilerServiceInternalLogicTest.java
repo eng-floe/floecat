@@ -37,6 +37,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
@@ -166,6 +167,22 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             QueuedReconcileWorkerSupport.withFormatCanonicalIdentity(deltaConnector(), descriptor)
                 .columnIdAlgorithm())
         .isEqualTo(ColumnIdAlgorithm.CID_CANONICAL_MAP);
+  }
+
+  @Test
+  void canonicalDeltaDefaultsToCurrentSnapshotWithoutOverridingExplicitHistory() {
+    assertThat(
+            QueuedReconcileWorkerSupport.effectiveEnumerationSelection(
+                true, ReconcileSnapshotSelection.unspecified()))
+        .isEqualTo(ReconcileSnapshotSelection.current());
+    assertThat(
+            QueuedReconcileWorkerSupport.effectiveEnumerationSelection(
+                true, ReconcileSnapshotSelection.all()))
+        .isEqualTo(ReconcileSnapshotSelection.all());
+    assertThat(
+            QueuedReconcileWorkerSupport.effectiveEnumerationSelection(
+                false, ReconcileSnapshotSelection.unspecified()))
+        .isEqualTo(ReconcileSnapshotSelection.unspecified());
   }
 
   private static FloecatConnector deltaConnector() {
