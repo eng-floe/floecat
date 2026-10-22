@@ -19,12 +19,15 @@ package ai.floedb.floecat.service.catalog.impl;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapChunk;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerRequest;
 import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerResponse;
+import ai.floedb.floecat.catalog.rpc.GetLatestColumnIdentityRequest;
+import ai.floedb.floecat.catalog.rpc.GetLatestColumnIdentityResponse;
 import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
@@ -38,6 +41,7 @@ import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotService;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
+import ai.floedb.floecat.catalog.rpc.StreamColumnIdentityMapRequest;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
@@ -51,7 +55,6 @@ import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -69,9 +72,11 @@ import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import io.quarkus.grpc.GrpcService;
+import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -98,8 +103,10 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   @Inject ObjectCache objects;
   @Inject TableRootWriter rootWriter;
   @Inject LogicalSchemaMapper schemaMapper;
+  @Inject ColumnIdentityMapResolver columnIdentityMaps;
 
   private static final Logger LOG = Logger.getLogger(SnapshotService.class);
+  private static final int IDENTITY_CHUNK_BYTES = 256 * 1024;
 
   private void maybeAdvanceCurrentSnapshot(ResourceId tableId, Snapshot candidate, String corr) {
     if (currentSnapshotPointerService == null) {
@@ -310,6 +317,74 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
         .onFailure()
         .invoke(L::fail)
         .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<GetLatestColumnIdentityResponse> getLatestColumnIdentity(
+      GetLatestColumnIdentityRequest request) {
+    var L = LogHelper.start(LOG, "GetLatestColumnIdentity");
+    return mapFailures(
+            run(
+                () -> {
+                  var principalContext = principal.get();
+                  authz.require(principalContext, "table.read");
+                  var tableId = request.getTableId();
+                  ensureTableVisible(tableId, correlationId());
+                  var response = GetLatestColumnIdentityResponse.newBuilder();
+                  tableRepo
+                      .getById(tableId)
+                      .filter(Table::hasColumnIdentityMapRef)
+                      .map(Table::getColumnIdentityMapRef)
+                      .ifPresent(response::setColumnIdentityMapRef);
+                  return response.build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Multi<ColumnIdentityMapChunk> streamColumnIdentityMap(
+      StreamColumnIdentityMapRequest request) {
+    var L = LogHelper.start(LOG, "StreamColumnIdentityMap");
+    return this.<ColumnIdentityMapChunk>runStreamEmitter(
+            (callContext, emitter) -> {
+              try {
+                var principalContext = callContext.principalContext();
+                authz.require(principalContext, "table.read");
+                var tableId = request.getTableId();
+                ensureTableVisible(tableId, callContext.effectiveCorrelationId());
+                if (!request.hasColumnIdentityMapRef()) {
+                  throw GrpcErrors.invalidArgument(
+                      callContext.effectiveCorrelationId(),
+                      SNAPSHOT_COLUMN_IDENTITY_INVALID,
+                      Map.of("reason", "column identity reference is required"));
+                }
+                var ref = request.getColumnIdentityMapRef();
+                byte[] payload = columnIdentityMaps.bytes(tableId, ref);
+                for (int offset = 0; offset < payload.length && !emitter.isCancelled(); ) {
+                  int length = Math.min(IDENTITY_CHUNK_BYTES, payload.length - offset);
+                  emitter.emit(
+                      ColumnIdentityMapChunk.newBuilder()
+                          .setData(ByteString.copyFrom(payload, offset, length))
+                          .build());
+                  offset += length;
+                }
+                if (!emitter.isCancelled()) {
+                  emitter.complete();
+                }
+              } catch (RuntimeException failure) {
+                if (!emitter.isCancelled()) {
+                  emitter.fail(failure);
+                }
+              }
+            })
+        .onFailure()
+        .invoke(L::fail)
+        .onCompletion()
         .invoke(L::ok);
   }
 
@@ -647,7 +722,8 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   validateColumnIdentitySnapshot(
                       desired,
                       corr,
-                      maskTargets(mask, "schema_json") || maskTargets(mask, "column_identity_map"));
+                      maskTargets(mask, "schema_json")
+                          || maskTargets(mask, "column_identity_map_ref"));
 
                   if (desired.equals(existing)) {
                     var noopMeta = snapshotRepo.metaFor(tableId, snapshotId);
@@ -725,7 +801,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           "summary",
           "schema_id",
           "metadata_location",
-          "column_identity_map");
+          "column_identity_map_ref");
 
   private Snapshot applySnapshotSpecPatch(
       Snapshot current, SnapshotSpec spec, FieldMask mask, String corr) {
@@ -796,7 +872,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           }
           builder.setMetadataLocation(spec.getMetadataLocation());
         }
-        case "column_identity_map" -> applyColumnIdentity(spec, builder);
+        case "column_identity_map_ref" -> applyColumnIdentity(spec, builder);
         default ->
             throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_PATH_INVALID, Map.of("path", path));
       }
@@ -852,19 +928,20 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     if (spec.hasMetadataLocation()) {
       c.scalar("metadata_location", spec.getMetadataLocation());
     }
-    if (spec.hasColumnIdentityMap()) {
+    if (spec.hasColumnIdentityMapRef()) {
       c.scalar(
-          "column_identity_map",
-          java.util.Base64.getEncoder().encodeToString(spec.getColumnIdentityMap().toByteArray()));
+          "column_identity_map_ref",
+          java.util.Base64.getEncoder()
+              .encodeToString(spec.getColumnIdentityMapRef().toByteArray()));
     }
     return c.bytes();
   }
 
   private static void applyColumnIdentity(SnapshotSpec spec, Snapshot.Builder builder) {
-    if (!spec.hasColumnIdentityMap()) {
+    if (!spec.hasColumnIdentityMapRef()) {
       return;
     }
-    builder.setColumnIdentityMap(spec.getColumnIdentityMap());
+    builder.setColumnIdentityMapRef(spec.getColumnIdentityMapRef());
   }
 
   private void validateColumnIdentitySnapshot(
@@ -877,24 +954,22 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
       boolean canonicalDelta =
           table.getUpstream().getFormat() == TableFormat.TF_DELTA
               && table.getUpstream().getColumnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP;
-      if (!snapshot.hasColumnIdentityMap()) {
+      if (!snapshot.hasColumnIdentityMapRef()) {
         if (canonicalDelta && requireCanonicalMap) {
           throw new IllegalArgumentException(
-              "Canonical Delta snapshots require a column identity map");
+              "Canonical Delta snapshots require a column identity map reference");
         }
         return;
       }
       if (!canonicalDelta) {
         throw new IllegalArgumentException("Column identity maps require a canonical Delta table");
       }
-      ColumnIdentityMaps.restoreForSnapshot(
-          snapshot.getColumnIdentityMap(), snapshot.getSnapshotId());
-      schemaMapper.mapRaw(
-          ColumnIdAlgorithm.CID_CANONICAL_MAP,
-          TableFormat.TF_DELTA,
-          snapshot.getSchemaJson(),
-          Set.copyOf(table.getUpstream().getPartitionKeysList()),
-          snapshot.getColumnIdentityMap());
+      var ref = snapshot.getColumnIdentityMapRef();
+      columnIdentityMaps.validateReference(snapshot.getTableId(), ref);
+      if (ref.getSourceVersion() != snapshot.getSnapshotId()) {
+        throw new IllegalArgumentException(
+            "Column identity map version does not match its snapshot");
+      }
     } catch (IllegalArgumentException invalid) {
       throw GrpcErrors.invalidArgument(
           correlationId, SNAPSHOT_COLUMN_IDENTITY_INVALID, Map.of("reason", invalid.getMessage()));

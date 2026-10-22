@@ -17,7 +17,7 @@
 package ai.floedb.floecat.metagraph.model;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
@@ -51,7 +51,7 @@ public record UserTableNode(
     List<ResourceId> dependentViews,
     Map<EngineHintKey, EngineHint> engineHints,
     Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
-    ColumnIdentityMap columnIdentityMap)
+    ColumnIdentityMapRef columnIdentityMapRef)
     implements TableNode {
 
   public UserTableNode {
@@ -63,8 +63,10 @@ public record UserTableNode(
     dependentViews = List.copyOf(dependentViews);
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
     columnHints = RelationNode.normalizeColumnHints(columnHints);
-    columnIdentityMap =
-        columnIdentityMap == null ? ColumnIdentityMap.getDefaultInstance() : columnIdentityMap;
+    columnIdentityMapRef =
+        columnIdentityMapRef == null
+            ? ColumnIdentityMapRef.getDefaultInstance()
+            : columnIdentityMapRef;
   }
 
   /** User nodes are content-keyed by {@link #blobUri()}; the pointer version is not retained. */
@@ -99,7 +101,7 @@ public record UserTableNode(
         dependentViews,
         relationHints,
         columnHints,
-        columnIdentityMap);
+        columnIdentityMapRef);
   }
 
   @Override

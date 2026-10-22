@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.query.catalog;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -850,7 +849,7 @@ class RelationBundleBuilderTest {
             List.of(),
             Map.of(),
             Map.of(),
-            ColumnIdentityMap.getDefaultInstance());
+            ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef.getDefaultInstance());
     graphView.registerRelation(
         TABLE,
         table,

@@ -607,7 +607,10 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       return Optional.empty();
     }
     if (!identityFingerprintsEquivalent(
-        historical.snapshot().getColumnIdentityMap(), delta.executionSchemaJson())) {
+        historical.snapshot().hasColumnIdentityMapRef()
+            ? historical.snapshot().getColumnIdentityMapRef().getFingerprint()
+            : "",
+        delta.executionSchemaJson())) {
       LOG.infof(
           "Append-only delta rejected for column identity change tableId=%s snapshotId=%d"
               + " baseSnapshotId=%d",
@@ -698,6 +701,11 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   static boolean identityFingerprintsEquivalent(
       ColumnIdentityMap baseIdentityMap, String targetExecutionSchema) {
     String baseFingerprint = baseIdentityMap == null ? "" : baseIdentityMap.getFingerprint();
+    return identityFingerprintsEquivalent(baseFingerprint, targetExecutionSchema);
+  }
+
+  private static boolean identityFingerprintsEquivalent(
+      String baseFingerprint, String targetExecutionSchema) {
     try {
       return baseFingerprint.equals(
           ColumnIdentityExecutionSchema.identityMap(targetExecutionSchema).getFingerprint());

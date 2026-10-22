@@ -133,7 +133,7 @@ class ColumnsScannerTest {
             List.of(),
             Map.of(),
             Map.of(),
-            ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance()));
+            ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef.getDefaultInstance()));
     graphView.setTableSchema(
         tableId,
         List.of(

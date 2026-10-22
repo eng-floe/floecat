@@ -9,6 +9,7 @@ package ai.floedb.floecat.service.statistics.impl;
 
 import ai.floedb.floecat.catalog.rpc.BeginOwnerPublicationRequest;
 import ai.floedb.floecat.catalog.rpc.BeginOwnerPublicationResponse;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.CompleteOwnerPublicationRequest;
 import ai.floedb.floecat.catalog.rpc.CompleteOwnerPublicationResponse;
 import ai.floedb.floecat.catalog.rpc.OwnerPublicationManifestRef;
@@ -19,6 +20,8 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestKind;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
+import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
@@ -31,7 +34,7 @@ import ai.floedb.floecat.reconciler.rpc.OwnerArtifactObjectReference;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -88,6 +91,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
   @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;
   @Inject CurrentSnapshotPointerService currentSnapshots;
+  @Inject ColumnIdentityMapResolver columnIdentityMaps;
   @Inject CatalogGraphView graphView;
   @Inject BlobStore blobStore;
   @Inject ExternalManifestCommitmentCache manifestCommitments;
@@ -933,6 +937,23 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     }
     PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
         spec.getSummaryMap(), correlationId(), "snapshot.summary");
+    Table table =
+        tables
+            .getById(tableId)
+            .orElseThrow(
+                () ->
+                    GrpcErrors.invalidArgument(
+                        correlationId(), null, Map.of("field", "snapshot.table_id")));
+    boolean canonicalDelta =
+        table.getUpstream().getFormat() == TableFormat.TF_DELTA
+            && table.getUpstream().getColumnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP;
+    if (!spec.hasColumnIdentityMapRef() && canonicalDelta) {
+      throw invalidColumnIdentity(
+          "Canonical Delta snapshots require a column identity map reference");
+    }
+    if (spec.hasColumnIdentityMapRef() && !canonicalDelta) {
+      throw invalidColumnIdentity("Column identity maps require a canonical Delta table");
+    }
     var builder =
         Snapshot.newBuilder()
             .setTableId(tableId)
@@ -961,18 +982,26 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     if (spec.hasMetadataLocation()) {
       builder.setMetadataLocation(spec.getMetadataLocation());
     }
-    if (spec.hasColumnIdentityMap()) {
+    if (spec.hasColumnIdentityMapRef()) {
       try {
-        ColumnIdentityMaps.restoreForSnapshot(spec.getColumnIdentityMap(), snapshotId);
+        columnIdentityMaps.validateReference(spec.getTableId(), spec.getColumnIdentityMapRef());
+        if (spec.getColumnIdentityMapRef().getSourceVersion() != snapshotId) {
+          throw new IllegalArgumentException(
+              "Column identity map version does not match its snapshot");
+        }
       } catch (IllegalArgumentException invalid) {
-        throw GrpcErrors.invalidArgument(
-            correlationId(),
-            null,
-            Map.of("field", "snapshot.column_identity_map", "reason", invalid.getMessage()));
+        throw invalidColumnIdentity(invalid.getMessage());
       }
-      builder.setColumnIdentityMap(spec.getColumnIdentityMap());
+      builder.setColumnIdentityMapRef(spec.getColumnIdentityMapRef());
     }
     return builder.build();
+  }
+
+  private io.grpc.StatusRuntimeException invalidColumnIdentity(String reason) {
+    return GrpcErrors.invalidArgument(
+        correlationId(),
+        null,
+        Map.of("field", "snapshot.column_identity_map_ref", "reason", reason));
   }
 
   private static boolean sameOwnerSnapshot(Snapshot stored, Snapshot incoming) {

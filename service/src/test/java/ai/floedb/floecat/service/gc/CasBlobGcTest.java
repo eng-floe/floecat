@@ -114,6 +114,57 @@ class CasBlobGcTest {
   }
 
   @Test
+  void sweepsUnreferencedColumnIdentityBlobs() {
+    seedCurrentTable();
+    String orphan = Keys.columnIdentityBlobUri(ACCOUNT_ID, TABLE_ID, "sha-orphan");
+    blobs.put(orphan, "orphan".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(blobs.head(orphan).isPresent());
+  }
+
+  @Test
+  void malformedTableIdentityReferencePoisonsTheTableWalk() {
+    String tableBlob = seedCurrentTable();
+    blobs.put(
+        tableBlob,
+        ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+            .setResourceId(tableRid())
+            .setColumnIdentityMapRef(identityRefBoundToAnotherTable(7L))
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    String snapshotBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-snapshot");
+    putSnapshotBlob(snapshotBlob, 7L);
+    commitRoot(7L, snapshotBlob, "v7", null);
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(result.poisoned());
+  }
+
+  @Test
+  void malformedSnapshotIdentityReferencePoisonsTheTableWalk() {
+    seedCurrentTable();
+    String snapshotBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-snapshot");
+    blobs.put(
+        snapshotBlob,
+        ai.floedb.floecat.catalog.rpc.Snapshot.newBuilder()
+            .setTableId(tableRid())
+            .setSnapshotId(7L)
+            .setColumnIdentityMapRef(identityRefBoundToAnotherTable(7L))
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    commitRoot(7L, snapshotBlob, "v7", null);
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(result.poisoned());
+  }
+
+  @Test
   void sweepsStorageAuthorityCasFamilyWithoutDeletingThePointedVersion() {
     String live = Keys.storageAuthorityBlobUri(ACCOUNT_ID, "authority-1", "sha-live");
     String orphan = Keys.storageAuthorityBlobUri(ACCOUNT_ID, "authority-1", "sha-orphan");
@@ -2127,6 +2178,9 @@ class CasBlobGcTest {
             + "02".repeat(32)
             + ".pb";
     blobs.put(uploadOnlyUri, new byte[] {8}, "application/x-protobuf");
+    String identityUploadOnlyUri =
+        Keys.columnIdentityBlobUri(ACCOUNT_ID, TABLE_ID, "03".repeat(32));
+    blobs.put(identityUploadOnlyUri, new byte[] {9}, "application/x-protobuf");
     String captureUploadOnlyUri =
         Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L)
             + "pending-upload.bin";
@@ -2370,6 +2424,9 @@ class CasBlobGcTest {
     assertTrue(
         blobs.head(uploadOnlyUri).isPresent(),
         "the Begin lease protects uploads not yet named by a completed coverage manifest");
+    assertTrue(
+        blobs.head(identityUploadOnlyUri).isPresent(),
+        "the Begin lease protects the identity map before Complete publishes its reference");
   }
 
   @Test
@@ -2819,9 +2876,38 @@ class CasBlobGcTest {
 
   private String seedCurrentTable() {
     String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
+    blobs.put(
+        tableBlob,
+        ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+            .setResourceId(tableRid())
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
     putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
     return tableBlob;
+  }
+
+  private ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef identityRefBoundToAnotherTable(
+      long sourceVersion) {
+    byte[] digest = new byte[32];
+    return ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef.newBuilder()
+        .setUri(
+            Keys.columnIdentityBlobUri(
+                ACCOUNT_ID, "other-table", java.util.HexFormat.of().formatHex(digest)))
+        .setPayloadBytes(1L)
+        .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(digest))
+        .setFormatVersion(ai.floedb.floecat.schema.identity.ColumnIdentityMaps.FORMAT_VERSION)
+        .setSourceVersion(sourceVersion)
+        .setHighWaterMark(1L)
+        .setMode(
+            ai.floedb.floecat.catalog.rpc.ColumnIdentityMode.COLUMN_IDENTITY_MODE_STRUCTURED_PATH)
+        .setFingerprint("fingerprint")
+        .setStateChecksum("checksum")
+        .setHistoryTier(
+            ai.floedb.floecat.catalog.rpc.ColumnIdentityHistoryTier
+                .COLUMN_IDENTITY_HISTORY_TIER_VERSIONED_LOG)
+        .setSourceVersionAnchored(true)
+        .build();
   }
 
   private ai.floedb.floecat.common.rpc.ResourceId tableRid() {

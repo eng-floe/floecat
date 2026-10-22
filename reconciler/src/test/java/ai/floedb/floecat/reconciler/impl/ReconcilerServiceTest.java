@@ -1955,6 +1955,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
 
     class Backend extends DefaultBackend {
       @Override
+      public LatestIdentityState latestIdentityState(
+          ReconcileContext ctx, ResourceId ignoredTableId) {
+        return new LatestIdentityState(Optional.of(emptyIdentityMap(201L)));
+      }
+
+      @Override
       public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
         return activeConnector();
       }
@@ -2006,7 +2012,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                     SnapshotReuseManifestRef.newBuilder()
                         .setUri("s3://bucket/reuse/snapshot-201.pb")
                         .build())
-                .setColumnIdentityMap(emptyIdentityMap(snapshotId))
+                .setColumnIdentityMapRef(identityMapRef(tableId, emptyIdentityMap(snapshotId)))
                 .build());
       }
 
@@ -2423,7 +2429,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 .setSnapshotId(snapshotId)
                 .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
                 .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
-                .setColumnIdentityMap(emptyIdentityMap(snapshotId))
+                .setColumnIdentityMapRef(identityMapRef(tableId, emptyIdentityMap(snapshotId)))
                 .build());
       }
 
@@ -2691,6 +2697,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       int putConstraintsCalls = 0;
 
       @Override
+      public LatestIdentityState latestIdentityState(
+          ReconcileContext ctx, ResourceId ignoredTableId) {
+        return new LatestIdentityState(Optional.of(emptyIdentityMap(201L)));
+      }
+
+      @Override
       public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
         return activeConnector();
       }
@@ -2738,7 +2750,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 .setSnapshotId(snapshotId)
                 .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
                 .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
-                .setColumnIdentityMap(emptyIdentityMap(snapshotId))
+                .setColumnIdentityMapRef(identityMapRef(tableId, emptyIdentityMap(snapshotId)))
                 .build());
       }
 

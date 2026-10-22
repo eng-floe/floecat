@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.gc;
 import ai.floedb.floecat.catalog.rpc.OwnerPublicationLease;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestKind;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -27,6 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestKind;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
@@ -1396,12 +1398,13 @@ public class CasBlobGc {
       deleted += snapshots.deleted();
       rescued += snapshots.rescued();
 
-      // Both table-root objects and Owner-managed reusable artifacts lack a derivable owner
-      // pointer. Sweep them through the deferred remark-and-fence path so a concurrent publication
-      // cannot make an object live between the mark and its delete.
+      // Table-root objects, column-identity payloads, and Owner-managed reusable artifacts lack a
+      // derivable owner pointer. Sweep them through the deferred remark-and-fence path so a
+      // concurrent publication cannot make an object live between the mark and its delete.
       List<String> deferredPrefixes =
           List.of(
               Keys.tableRootBlobPrefix(accountId, tableId),
+              Keys.columnIdentityBlobPrefix(accountId, tableId),
               Keys.tableReusableArtifactBlobPrefix(accountId, tableId));
       int firstDeferredPrefix = 0;
       if (continuation.deferredPage != null) {
@@ -1802,7 +1805,23 @@ public class CasBlobGc {
       String accountId = root.getTableId().getAccountId();
       String tableId = root.getTableId().getId();
       if (root.hasDefinitionRef() && !root.getDefinitionRef().getUri().isBlank()) {
-        referenced.add(normalizeKey(root.getDefinitionRef().getUri()));
+        String definitionUri = root.getDefinitionRef().getUri();
+        referenced.add(normalizeKey(definitionUri));
+        byte[] definitionBytes = blobStore.get(definitionUri);
+        if (definitionBytes == null) {
+          throw new IllegalStateException("missing table definition blob " + definitionUri);
+        }
+        Table table;
+        try {
+          table = Table.parseFrom(definitionBytes);
+        } catch (InvalidProtocolBufferException error) {
+          throw new IllegalStateException("invalid table definition blob " + definitionUri, error);
+        }
+        if (table.hasColumnIdentityMapRef()) {
+          ColumnIdentityMapResolver.validateReferenceForTable(
+              root.getTableId(), table.getColumnIdentityMapRef());
+          referenced.add(normalizeKey(table.getColumnIdentityMapRef().getUri()));
+        }
       }
       var pageRef = root.hasSnapshotManifestRef() ? root.getSnapshotManifestRef() : null;
       boolean resumingPage =
@@ -1931,6 +1950,11 @@ public class CasBlobGc {
           || !tableId.equals(snapshot.getTableId().getId())
           || snapshot.getSnapshotId() != snapshotId) {
         throw new IllegalStateException("snapshot reusable artifact identity mismatch");
+      }
+      if (snapshot.hasColumnIdentityMapRef()) {
+        ColumnIdentityMapResolver.validateReferenceForTable(
+            snapshot.getTableId(), snapshot.getColumnIdentityMapRef());
+        referenced.add(normalizeKey(snapshot.getColumnIdentityMapRef().getUri()));
       }
       if (!snapshot.hasReuseManifestRef()) {
         return true;
@@ -2168,6 +2192,8 @@ public class CasBlobGc {
       }
       activeOwnerPublications(referenced).add(lease.getPublicationId());
       ownerProtectedPrefixes(referenced).add(normalizeKey(expectedPrefix));
+      ownerProtectedPrefixes(referenced)
+          .add(normalizeKey(Keys.columnIdentityBlobPrefix(accountId, tableId)));
       for (String manifestPrefix : lease.getProtectedCaptureManifestPrefixesList()) {
         if (!isOwnerCaptureManifestPrefix(accountId, tableId, manifestPrefix)) {
           throw new IllegalStateException("invalid Owner capture-manifest lease prefix");

@@ -646,6 +646,15 @@ public final class Keys {
     return tableBlobPrefix(accountId, tableId) + "constraints/";
   }
 
+  /** Immutable canonical identity payload produced by Owner or overlay reconciliation. */
+  public static String columnIdentityBlobUri(String accountId, String tableId, String sha256) {
+    return ai.floedb.floecat.storage.kv.Keys.columnIdentityBlobUri(accountId, tableId, sha256);
+  }
+
+  public static String columnIdentityBlobPrefix(String accountId, String tableId) {
+    return ai.floedb.floecat.storage.kv.Keys.columnIdentityBlobPrefix(accountId, tableId);
+  }
+
   public static String tableRootBlobPrefix(String accountId, String tableId) {
     return tableBlobPrefix(accountId, tableId) + "root/";
   }

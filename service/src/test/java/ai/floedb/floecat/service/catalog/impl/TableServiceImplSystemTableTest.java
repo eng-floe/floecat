@@ -513,6 +513,6 @@ class TableServiceImplSystemTableTest {
         List.of(),
         Map.of(),
         Map.<Long, Map<EngineHintKey, ai.floedb.floecat.metagraph.model.EngineHint>>of(),
-        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
+        ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef.getDefaultInstance());
   }
 }

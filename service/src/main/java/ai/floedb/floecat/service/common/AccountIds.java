@@ -24,4 +24,24 @@ public final class AccountIds {
   public static String randomAccountId() {
     return UUID.randomUUID().toString();
   }
+
+  /** Account identifiers are embedded as canonical storage-key path segments. */
+  public static boolean isStoragePathSegment(String value) {
+    if (value == null || value.isBlank()) {
+      return false;
+    }
+    for (int index = 0; index < value.length(); index++) {
+      char character = value.charAt(index);
+      if ((character >= 'a' && character <= 'z')
+          || (character >= 'A' && character <= 'Z')
+          || (character >= '0' && character <= '9')
+          || character == '-'
+          || character == '_'
+          || character == '.') {
+        continue;
+      }
+      return false;
+    }
+    return true;
+  }
 }

@@ -23,7 +23,6 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -31,6 +30,8 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapChunk;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;
@@ -42,14 +43,13 @@ import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusRequest;
 import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusResponse;
+import ai.floedb.floecat.catalog.rpc.GetLatestColumnIdentityResponse;
 import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.GetViewResponse;
-import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
-import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
@@ -78,7 +78,6 @@ import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -99,7 +98,14 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.schema.identity.HistoryTier;
+import ai.floedb.floecat.schema.identity.IdentityMode;
+import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
+import ai.floedb.floecat.schema.identity.ResolvedSchema;
+import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import com.google.protobuf.ByteString;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Method;
@@ -115,7 +121,7 @@ import org.mockito.ArgumentCaptor;
 
 class GrpcReconcilerBackendTest {
   @Test
-  void snapshotIdentityHistoryLoadsIdsAndMapsInOnePagedWalk() {
+  void latestIdentityStateReadsOnlyTheLatestIdentity() {
     GrpcReconcilerBackend backend =
         new GrpcReconcilerBackend(
             Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
@@ -127,31 +133,38 @@ class GrpcReconcilerBackendTest {
             .setKind(ResourceKind.RK_TABLE)
             .setId("users")
             .build();
-    ColumnIdentityMap identityMap = ColumnIdentityMap.newBuilder().setHighWaterMark(9L).build();
-    when(backend.snapshot.listSnapshots(any()))
+    ColumnIdentityMap identityMap =
+        ColumnIdentityMaps.toProto(
+            SchemaIdentityReconciler.reconcile(
+                ResolvedSchema.of(List.of()),
+                2L,
+                IdentityMode.STRUCTURED_PATH,
+                Optional.empty(),
+                9L,
+                PreferredCanonicalIds.NONE,
+                HistoryTier.VERSIONED_LOG));
+    ColumnIdentityMapRef identityRef =
+        ColumnIdentityMaps.reference(
+            "/accounts/acct/tables/users/column-identities/current.pb", identityMap);
+    when(backend.snapshot.getLatestColumnIdentity(any()))
         .thenReturn(
-            ListSnapshotsResponse.newBuilder()
-                .addSnapshots(Snapshot.newBuilder().setSnapshotId(1L))
-                .addSnapshots(Snapshot.newBuilder().setSnapshotId(-1L))
-                .setPage(PageResponse.newBuilder().setNextPageToken("next"))
-                .build(),
-            ListSnapshotsResponse.newBuilder()
-                .addSnapshots(
-                    Snapshot.newBuilder().setSnapshotId(2L).setColumnIdentityMap(identityMap))
+            GetLatestColumnIdentityResponse.newBuilder()
+                .setColumnIdentityMapRef(identityRef)
                 .build());
+    when(backend.snapshot.streamColumnIdentityMap(any()))
+        .thenReturn(
+            List.of(
+                    ColumnIdentityMapChunk.newBuilder()
+                        .setData(ByteString.copyFrom(identityMap.toByteArray()))
+                        .build())
+                .iterator());
 
-    ReconcilerBackend.SnapshotIdentityHistory history =
-        backend.snapshotIdentityHistory(reconcileContext(), tableId);
+    ReconcilerBackend.LatestIdentityState latest =
+        backend.latestIdentityState(reconcileContext(), tableId);
 
-    assertThat(history.snapshotIds()).containsExactlyInAnyOrder(1L, 2L);
-    assertThat(history.columnIdentityMaps()).containsOnly(Map.entry(2L, identityMap));
-    assertThat(history.highWaterMark()).isEqualTo(9L);
-    ArgumentCaptor<ListSnapshotsRequest> requests =
-        ArgumentCaptor.forClass(ListSnapshotsRequest.class);
-    verify(backend.snapshot, times(2)).listSnapshots(requests.capture());
-    assertThat(requests.getAllValues())
-        .extracting(request -> request.getPage().getPageToken())
-        .containsExactly("", "next");
+    assertThat(latest.columnIdentityMap()).contains(identityMap);
+    verify(backend.snapshot).getLatestColumnIdentity(any());
+    verify(backend.snapshot, never()).listSnapshots(any());
   }
 
   @Test

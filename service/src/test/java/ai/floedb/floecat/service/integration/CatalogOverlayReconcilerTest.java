@@ -58,6 +58,8 @@ import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
+import ai.floedb.floecat.service.cache.ObjectCache;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.concurrent.MetadataResourceReader;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -160,6 +162,9 @@ class CatalogOverlayReconcilerTest {
     reconciler.pointerStore = pointers;
     reconciler.tableRoots = mock(TableRootRepository.class);
     reconciler.rootWriter = mock(TableRootWriter.class);
+    reconciler.blobStore = blobs;
+    reconciler.columnIdentityMaps =
+        new ColumnIdentityMapResolver(blobs, BlobCacheAccess.disabled(), ObjectCache.forTesting());
     // A real MarkerStore over the same in-memory pointer store. A mock returning empty conditions
     // passes whether the reconciler folds a fence into its batch or drops it on the floor, which is
     // the failure this protocol calls silent and total -- so the fences here are real and the
@@ -575,8 +580,10 @@ class CatalogOverlayReconcilerTest {
     assertEquals(
         ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
         table.getUpstream().getColumnIdAlgorithm());
-    assertTrue(table.hasColumnIdentityMap());
-    assertEquals(1, table.getColumnIdentityMap().getEntriesCount());
+    assertTrue(table.hasColumnIdentityMapRef());
+    assertEquals(
+        table.getColumnIdentityMapRef().getPayloadBytes(),
+        blobs.get(table.getColumnIdentityMapRef().getUri()).length);
 
     MutationMeta tableMeta = tables.metaFor(table.getResourceId());
     Table legacy =
@@ -610,6 +617,76 @@ class CatalogOverlayReconcilerTest {
     assertEquals(
         ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
         tables.getById(table.getResourceId()).orElseThrow().getUpstream().getColumnIdAlgorithm());
+  }
+
+  @Test
+  void captureManagedReconcilePreservesThePublishedIdentityReference() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+
+    assertEquals(1, reconcile().tablesCreated());
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table before =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertTrue(before.hasColumnIdentityMapRef());
+
+    var result =
+        reconciler.reconcile(
+            overlay,
+            overlays.metaForSafe(overlay.getResourceId()),
+            integration,
+            integrations.metaForSafe(integration.getResourceId()),
+            true);
+
+    Table after = tables.getById(before.getResourceId()).orElseThrow();
+    assertEquals(0, result.tablesUpdated());
+    assertEquals(before.getColumnIdentityMapRef(), after.getColumnIdentityMapRef());
+  }
+
+  @Test
+  void captureManagedReconcileRejectsAnIdentityReferenceBoundToAnotherTable() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+
+    assertEquals(1, reconcile().tablesCreated());
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table table =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    MutationMeta meta = tables.metaFor(table.getResourceId());
+    Table corrupt =
+        table.toBuilder()
+            .setColumnIdentityMapRef(
+                table.getColumnIdentityMapRef().toBuilder()
+                    .setUri(
+                        table
+                            .getColumnIdentityMapRef()
+                            .getUri()
+                            .replace("/tables/" + table.getResourceId().getId(), "/tables/other")))
+            .build();
+    assertTrue(tables.update(corrupt, meta.getPointerVersion()));
+
+    var result =
+        reconciler.reconcile(
+            overlay,
+            overlays.metaForSafe(overlay.getResourceId()),
+            integration,
+            integrations.metaForSafe(integration.getResourceId()),
+            true);
+
+    assertEquals(1, result.objectsSkipped());
+    assertEquals(corrupt, tables.getById(table.getResourceId()).orElseThrow());
   }
 
   @Test
@@ -760,7 +837,7 @@ class CatalogOverlayReconcilerTest {
     assertEquals(1, result.tablesUpdated());
     assertTrue(
         tables.metaFor(after.getResourceId()).getPointerVersion() > beforeMeta.getPointerVersion());
-    assertEquals(43L, after.getColumnIdentityMap().getSourceVersion());
+    assertEquals(43L, after.getColumnIdentityMapRef().getSourceVersion());
   }
 
   @Test
@@ -791,8 +868,8 @@ class CatalogOverlayReconcilerTest {
     MutationMeta meta = tables.metaFor(table.getResourceId());
     Table corrupt =
         table.toBuilder()
-            .setColumnIdentityMap(
-                table.getColumnIdentityMap().toBuilder().setStateChecksum("corrupt"))
+            .setColumnIdentityMapRef(
+                table.getColumnIdentityMapRef().toBuilder().setStateChecksum("corrupt"))
             .build();
     assertTrue(tables.update(corrupt, meta.getPointerVersion()));
 

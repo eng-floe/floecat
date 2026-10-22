@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.metagraph.overlay.user;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
@@ -38,6 +39,7 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.catalog.impl.TableRootMutations;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -93,7 +95,8 @@ class UserGraphTest {
             tableRepository,
             viewRepository,
             tableRootRepository,
-            principalProvider);
+            principalProvider,
+            mock(ColumnIdentityMapResolver.class));
   }
 
   @Test
@@ -267,7 +270,8 @@ class UserGraphTest {
             tableRepository,
             viewRepository,
             tableRootRepository,
-            principalProvider);
+            principalProvider,
+            mock(ColumnIdentityMapResolver.class));
 
     ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
     ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);

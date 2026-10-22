@@ -48,7 +48,7 @@
     <version.commons.logging>1.3.5</version.commons.logging>
     <version.datasketches>6.0.0</version.datasketches>
     <version.delta.kernel.api>4.2.0</version.delta.kernel.api>
-    <version.google.java.format>1.32.0</version.google.java.format>
+    <version.google.java.format>1.37.0</version.google.java.format>
     <version.hadoop>3.4.2</version.hadoop>
     <version.iceberg>1.10.0</version.iceberg>
     <version.jakarta.inject>2.0.1</version.jakarta.inject>

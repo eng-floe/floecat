@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -38,6 +40,7 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
@@ -45,6 +48,7 @@ import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureControlPlane;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
+import ai.floedb.floecat.storage.kv.Keys;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -280,6 +284,17 @@ abstract class AbstractReconcilerServiceTestBase {
     @Override
     public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId) {
       return Set.of();
+    }
+
+    @Override
+    public LatestIdentityState latestIdentityState(ReconcileContext ctx, ResourceId tableId) {
+      return new LatestIdentityState(Optional.empty());
+    }
+
+    @Override
+    public ColumnIdentityMapRef persistColumnIdentityMap(
+        ReconcileContext ctx, ResourceId tableId, ColumnIdentityMap identityMap) {
+      return identityMapRef(tableId, identityMap);
     }
 
     @Override
@@ -527,5 +542,13 @@ abstract class AbstractReconcilerServiceTestBase {
 
     @Override
     public void close() {}
+  }
+
+  protected static ColumnIdentityMapRef identityMapRef(
+      ResourceId tableId, ColumnIdentityMap identityMap) {
+    var serialized = ColumnIdentityMaps.serialize(identityMap);
+    return serialized.reference(
+        Keys.columnIdentityBlobUri(
+            tableId.getAccountId(), tableId.getId(), serialized.sha256Hex()));
   }
 }

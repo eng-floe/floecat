@@ -66,7 +66,7 @@ public final class TestNodes {
         List.of(),
         Map.of(),
         Map.of(),
-        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
+        ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef.getDefaultInstance());
   }
 
   static ResourceId rid(String accountId, String id) {

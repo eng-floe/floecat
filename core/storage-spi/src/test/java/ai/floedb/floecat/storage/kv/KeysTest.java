@@ -77,6 +77,16 @@ public class KeysTest {
   }
 
   @Test
+  void columnIdentityUrisEncodeEveryPathSegment() {
+    assertEquals(
+        "/accounts/a%20b/tables/t%2Fb/column-identities/c%2Bd.pb",
+        Keys.columnIdentityBlobUri("a b", "t/b", "c+d"));
+    assertEquals(
+        "/accounts/a%20b/tables/t%2Fb/column-identities/",
+        Keys.columnIdentityBlobPrefix("a b", "t/b"));
+  }
+
+  @Test
   void joinEncodesSegments() {
     assertEquals("/a%2Fb/c%20d", Keys.join("a/b", "c d"));
   }

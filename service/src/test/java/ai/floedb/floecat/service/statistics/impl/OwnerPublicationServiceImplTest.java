@@ -24,6 +24,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BeginOwnerPublicationRequest;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.CompleteOwnerPublicationRequest;
 import ai.floedb.floecat.catalog.rpc.OwnerPublicationManifestRef;
 import ai.floedb.floecat.catalog.rpc.PublishOwnerReuseManifestRequest;
@@ -32,6 +34,8 @@ import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestKind;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -53,6 +57,7 @@ import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
 import ai.floedb.floecat.schema.identity.ResolvedSchema;
 import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
 import ai.floedb.floecat.schema.identity.SchemaNode;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.reconciler.impl.SnapshotFinalizePersistenceService;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
@@ -433,10 +438,13 @@ class OwnerPublicationServiceImplTest {
   @Test
   void completeRegistersCanonicalReferencesAndActivatesOnce() {
     var service = service();
+    when(service.tables.getById(tableId())).thenReturn(Optional.of(canonicalDeltaTable()));
     var columnIdentityMap = columnIdentityMap();
+    var columnIdentityRef = columnIdentityMapRef(columnIdentityMap);
     var request =
         complete(service).toBuilder()
-            .setSnapshot(snapshotSpec().toBuilder().setColumnIdentityMap(columnIdentityMap).build())
+            .setSnapshot(
+                snapshotSpec().toBuilder().setColumnIdentityMapRef(columnIdentityRef).build())
             .build();
 
     var response = service.completeOwnerPublication(request).await().indefinitely();
@@ -458,7 +466,7 @@ class OwnerPublicationServiceImplTest {
         .advanceOwnerPublication(any(), any(Snapshot.class), anyString());
     var publishedSnapshot = ArgumentCaptor.<Snapshot>captor();
     verify(service.snapshots).prepareCreatePublicationUpdates(publishedSnapshot.capture());
-    assertEquals(columnIdentityMap, publishedSnapshot.getValue().getColumnIdentityMap());
+    assertEquals(columnIdentityRef, publishedSnapshot.getValue().getColumnIdentityMapRef());
     SnapshotReuseManifestRef reuseManifest = publishedSnapshot.getValue().getReuseManifestRef();
     verify(service.reuseLeases)
         .renew(
@@ -483,14 +491,13 @@ class OwnerPublicationServiceImplTest {
   @Test
   void completeRejectsAnInvalidColumnIdentityMap() {
     var service = service();
+    when(service.tables.getById(tableId())).thenReturn(Optional.of(canonicalDeltaTable()));
     var request =
         complete(service).toBuilder()
             .setSnapshot(
                 snapshotSpec().toBuilder()
-                    .setColumnIdentityMap(
-                        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.newBuilder()
-                            .setFormatVersion(1)
-                            .setSourceVersion(SNAPSHOT)))
+                    .setColumnIdentityMapRef(
+                        ColumnIdentityMapRef.newBuilder().setSourceVersion(SNAPSHOT + 1L)))
             .build();
 
     var error =
@@ -500,6 +507,26 @@ class OwnerPublicationServiceImplTest {
 
     assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
     verify(service.snapshots, never()).prepareCreatePublicationUpdates(any());
+  }
+
+  @Test
+  void completeRejectsCanonicalDeltaWithoutIdentityBeforePreparingPublication() {
+    var service = service();
+    when(service.tables.getById(tableId())).thenReturn(Optional.of(canonicalDeltaTable()));
+    var request = complete(service);
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.completeOwnerPublication(request).await().indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(service.reuseLeases, never()).renew(any(), anyString(), any());
+    verify(service.snapshots, never()).prepareCreatePublicationUpdates(any());
+    verify(service.persistence, never())
+        .prepareStatsGenerationForPublication(any(), anyLong(), anyString(), anyBoolean());
+    verify(service.persistence, never())
+        .activatePreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
   }
 
   @Test
@@ -1605,6 +1632,16 @@ class OwnerPublicationServiceImplTest {
         .build();
   }
 
+  private static Table canonicalDeltaTable() {
+    return Table.newBuilder()
+        .setResourceId(tableId())
+        .setUpstream(
+            UpstreamRef.newBuilder()
+                .setFormat(TableFormat.TF_DELTA)
+                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_CANONICAL_MAP))
+        .build();
+  }
+
   private static ai.floedb.floecat.catalog.rpc.ColumnIdentityMap columnIdentityMap() {
     var schema =
         ResolvedSchema.of(
@@ -1620,6 +1657,17 @@ class OwnerPublicationServiceImplTest {
             0L,
             PreferredCanonicalIds.NONE,
             HistoryTier.VERSIONED_LOG));
+  }
+
+  private static ColumnIdentityMapRef columnIdentityMapRef(
+      ai.floedb.floecat.catalog.rpc.ColumnIdentityMap map) {
+    return ColumnIdentityMaps.reference(
+        "/accounts/"
+            + tableId().getAccountId()
+            + "/tables/"
+            + tableId().getId()
+            + "/column-identities/test.pb",
+        map);
   }
 
   private static SnapshotCaptureManifest.Builder baseManifest(String generationId) {
@@ -1901,6 +1949,7 @@ class OwnerPublicationServiceImplTest {
     service.tables = org.mockito.Mockito.mock(TableRepository.class);
     service.snapshots = org.mockito.Mockito.mock(SnapshotRepository.class);
     service.currentSnapshots = org.mockito.Mockito.mock(CurrentSnapshotPointerService.class);
+    service.columnIdentityMaps = org.mockito.Mockito.mock(ColumnIdentityMapResolver.class);
     service.graphView = org.mockito.Mockito.mock(CatalogGraphView.class);
     service.blobStore = org.mockito.Mockito.mock(BlobStore.class);
     service.manifestCommitments = ExternalManifestCommitmentCache.forTesting();

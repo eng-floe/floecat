@@ -20,6 +20,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
@@ -30,6 +31,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -60,6 +62,7 @@ public class SnapshotHelper {
   private final ResolvedSnapshotReadContract resolvedSnapshotReads;
   private final RootRepairRequests repairs;
   private final SnapshotRetentionPolicy retention;
+  private final ColumnIdentityMapResolver columnIdentityMaps;
 
   /**
    * Snapshot selections are built from a just-read root blob, so construction performs no extra
@@ -78,29 +81,15 @@ public class SnapshotHelper {
       StatsStore statsStore,
       ResolvedSnapshotReadContract resolvedSnapshotReads,
       RootRepairRequests repairs,
-      SnapshotRetentionPolicy retention) {
+      SnapshotRetentionPolicy retention,
+      ColumnIdentityMapResolver columnIdentityMaps) {
     this.snapshots = snapshots;
     this.roots = roots;
     this.statsStore = statsStore;
     this.resolvedSnapshotReads = resolvedSnapshotReads;
     this.repairs = repairs;
     this.retention = retention;
-  }
-
-  /** Compatibility constructor for embedded graph builders and focused tests. */
-  public SnapshotHelper(
-      SnapshotRepository snapshots,
-      TableRootRepository roots,
-      StatsStore statsStore,
-      ResolvedSnapshotReadContract resolvedSnapshotReads,
-      RootRepairRequests repairs) {
-    this(
-        snapshots,
-        roots,
-        statsStore,
-        resolvedSnapshotReads,
-        repairs,
-        SnapshotRetentionPolicy.disabled());
+    this.columnIdentityMaps = columnIdentityMaps;
   }
 
   /**
@@ -394,7 +383,7 @@ public class SnapshotHelper {
             ? supplier.get()
             : snapshot.getSchemaJson();
     if (snapshot != null
-        && !snapshot.hasColumnIdentityMap()
+        && !snapshot.hasColumnIdentityMapRef()
         && tbl.columnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP) {
       // Snapshot writes reject a canonical snapshot without its map, so this is corrupt state that
       // an empty schema would hide.
@@ -405,8 +394,15 @@ public class SnapshotHelper {
               "table_id", tbl.id().getId(),
               "snapshot_id", Long.toString(snapshot.getSnapshotId())));
     }
-    ColumnIdentityMap identityMap =
-        snapshot == null ? tbl.columnIdentityMap() : snapshot.getColumnIdentityMap();
+    ColumnIdentityMapRef identityRef =
+        snapshot == null ? tbl.columnIdentityMapRef() : snapshot.getColumnIdentityMapRef();
+    ColumnIdentityMap identityMap = ColumnIdentityMap.getDefaultInstance();
+    if (!identityRef.equals(ColumnIdentityMapRef.getDefaultInstance())) {
+      if (columnIdentityMaps == null) {
+        throw new IllegalStateException("Column identity resolver is unavailable");
+      }
+      identityMap = columnIdentityMaps.resolve(tbl.id(), identityRef);
+    }
 
     return new SchemaResolution(tbl, schemaJson, identityMap);
   }

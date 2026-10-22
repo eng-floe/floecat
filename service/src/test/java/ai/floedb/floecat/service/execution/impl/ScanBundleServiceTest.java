@@ -29,7 +29,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityProjection;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -40,6 +41,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.ColumnIdentityMapResolver;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
@@ -93,6 +95,7 @@ class ScanBundleServiceTest {
   private ScanBundleService service;
   private ServerSideFileIoPropertiesResolver resolver;
   private StatsStore statsStore;
+  private ColumnIdentityMapResolver columnIdentityMaps;
   private InMemoryPointerStore repairPointers;
 
   @BeforeEach
@@ -101,6 +104,7 @@ class ScanBundleServiceTest {
     snapshotRepo = mock(SnapshotRepository.class);
     resolver = mock(ServerSideFileIoPropertiesResolver.class);
     statsStore = mock(StatsStore.class);
+    columnIdentityMaps = mock(ColumnIdentityMapResolver.class);
     // A real repair pipeline over an in-memory store: initScan's missing-pinned-blob failures
     // must durably enqueue the table for the resync re-drive, and tests assert the marker.
     repairPointers = new InMemoryPointerStore();
@@ -108,7 +112,15 @@ class ScanBundleServiceTest {
         new ResolvedSnapshotReadContract(
             new RootRepairRequests(new RootResyncQueue(repairPointers)));
     service =
-        new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver, resolvedSnapshotReads);
+        new ScanBundleService(
+            tableRepo,
+            snapshotRepo,
+            statsStore,
+            resolver,
+            resolvedSnapshotReads,
+            null,
+            null,
+            columnIdentityMaps);
   }
 
   private boolean repairEnqueued(ResourceId tableId) {
@@ -135,20 +147,22 @@ class ScanBundleServiceTest {
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
             .putProperties("storage_location", "s3://bucket/table")
             .build();
+    var identityRef =
+        ColumnIdentityMapRef.newBuilder().setUri("/accounts/acct/identity-42.pb").build();
+    var identityProjection =
+        ColumnIdentityProjection.newBuilder().setFingerprint("sha256:" + "11".repeat(32)).build();
     var snapshot =
         Snapshot.newBuilder()
             .setTableId(TABLE_ID)
             .setSnapshotId(42L)
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
             .setMetadataLocation("s3://bucket/table/metadata/00001.metadata.json")
-            .setColumnIdentityMap(
-                ColumnIdentityMap.newBuilder()
-                    .setFormatVersion(2)
-                    .setSourceVersion(42L)
-                    .setFingerprint("sha256:" + "11".repeat(32)))
+            .setColumnIdentityMapRef(identityRef)
             .build();
     when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.of(table));
     when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI)).thenReturn(Optional.of(snapshot));
+    when(columnIdentityMaps.project(eq(TABLE_ID), eq(identityRef), any()))
+        .thenReturn(identityProjection);
     ResolveStorageAuthorityResponse storage =
         ResolveStorageAuthorityResponse.newBuilder()
             .putClientSafeConfig("s3.region", "us-east-1")
@@ -178,7 +192,7 @@ class ScanBundleServiceTest {
     verify(snapshotRepo).getByBlobUri(SNAPSHOT_BLOB_URI);
     verify(snapshotRepo, never()).getById(any(), anyLong());
     assertEquals(42L, init.snapshotId());
-    assertEquals(snapshot.getColumnIdentityMap(), init.tableInfo().getColumnIdentityMap());
+    assertEquals(identityProjection, init.tableInfo().getColumnIdentityProjection());
     assertEquals(
         "s3://bucket/table/metadata/00001.metadata.json", init.tableInfo().getMetadataLocation());
     assertEquals("us-east-1", init.tableInfo().getPropertiesMap().get("s3.region"));
@@ -310,7 +324,15 @@ class ScanBundleServiceTest {
                 java.time.Duration.ofMillis(1),
                 java.time.Duration.ZERO));
     var expiredService =
-        new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver, expiredReads);
+        new ScanBundleService(
+            tableRepo,
+            snapshotRepo,
+            statsStore,
+            resolver,
+            expiredReads,
+            null,
+            null,
+            columnIdentityMaps);
     TablePin expiredPin = PIN.toBuilder().setIngestedAt(Timestamps.fromMillis(0L)).build();
 
     var failure =

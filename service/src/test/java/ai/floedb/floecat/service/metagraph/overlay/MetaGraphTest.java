@@ -21,6 +21,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.notNull;
 import static org.mockito.Mockito.*;
 
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -214,7 +215,7 @@ class MetaGraphTest {
     UserTableNode canonical = canonicalTable();
     when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
     when(user.resolve(usrTable)).thenReturn(Optional.of(canonical));
-    when(user.schemaFor(eq("table-schema"), eq(usrTable), any(), eq(""), eq("")))
+    when(user.schemaFor(eq("table-schema"), eq(usrTable), notNull(), eq(""), eq("")))
         .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException());
 
     assertThat(meta.tableSchema(usrTable, context)).isEmpty();
@@ -239,11 +240,17 @@ class MetaGraphTest {
             .maps()
             .get(history.headVersion());
     UserTableNode canonical =
-        canonicalTable(ai.floedb.floecat.catalog.rpc.TableFormat.TF_DELTA, schemaJson, identityMap);
+        canonicalTable(
+            ai.floedb.floecat.catalog.rpc.TableFormat.TF_DELTA,
+            schemaJson,
+            ai.floedb.floecat.schema.identity.ColumnIdentityMaps.reference(
+                "/accounts/acct/tables/usr/column-identities/current.pb", identityMap));
     when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
     when(user.resolve(usrTable)).thenReturn(Optional.of(canonical));
     when(user.schemaFor(eq("table-schema"), eq(usrTable), any(), eq(""), eq("")))
         .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException());
+    when(user.schemaFor(eq("table-schema"), eq(usrTable), isNull(), eq(""), eq("")))
+        .thenReturn(new UserGraph.SchemaResolution(canonical, schemaJson, identityMap));
 
     assertThat(meta.tableSchema(usrTable, context))
         .singleElement()
@@ -904,13 +911,13 @@ class MetaGraphTest {
     return canonicalTable(
         ai.floedb.floecat.catalog.rpc.TableFormat.TF_ICEBERG,
         "{}",
-        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
+        ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef.getDefaultInstance());
   }
 
   private UserTableNode canonicalTable(
       ai.floedb.floecat.catalog.rpc.TableFormat format,
       String schemaJson,
-      ai.floedb.floecat.catalog.rpc.ColumnIdentityMap identityMap) {
+      ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef identityMapRef) {
     UserTableNode base = TestNodes.tableNode(usrTable, schemaJson);
     return new UserTableNode(
         base.id(),
@@ -929,6 +936,6 @@ class MetaGraphTest {
         base.dependentViews(),
         base.engineHints(),
         base.columnHints(),
-        identityMap);
+        identityMapRef);
   }
 }

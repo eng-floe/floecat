@@ -154,11 +154,11 @@ public class CurrentSnapshotPointerService {
       boolean generationOwnsRepairMarker) {
     // A snapshot without a map needs one table read: canonical Delta must be rejected before the
     // pointer moves, and any other table only needs a sync if it still carries a stale map.
-    boolean syncIdentity = candidate.hasColumnIdentityMap();
+    boolean syncIdentity = candidate.hasColumnIdentityMapRef();
     if (!syncIdentity) {
       Optional<Table> table = tableRepo.getById(tableId);
       table.ifPresent(current -> requireCanonicalIdentity(current, corr));
-      syncIdentity = table.map(Table::hasColumnIdentityMap).orElse(false);
+      syncIdentity = table.map(Table::hasColumnIdentityMapRef).orElse(false);
     }
     long pointerStartedNanos = System.nanoTime();
     var result = snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate);
@@ -223,15 +223,15 @@ public class CurrentSnapshotPointerService {
                     new BaseResourceRepository.AbortRetryableException(
                         "table disappeared while publishing current column identity for "
                             + tableId.getId()));
-    if (table.hasColumnIdentityMap() == candidate.hasColumnIdentityMap()
-        && table.getColumnIdentityMap().equals(candidate.getColumnIdentityMap())) {
+    if (table.hasColumnIdentityMapRef() == candidate.hasColumnIdentityMapRef()
+        && table.getColumnIdentityMapRef().equals(candidate.getColumnIdentityMapRef())) {
       return;
     }
     var updated = table.toBuilder();
-    if (candidate.hasColumnIdentityMap()) {
-      updated.setColumnIdentityMap(candidate.getColumnIdentityMap());
+    if (candidate.hasColumnIdentityMapRef()) {
+      updated.setColumnIdentityMapRef(candidate.getColumnIdentityMapRef());
     } else {
-      updated.clearColumnIdentityMap();
+      updated.clearColumnIdentityMapRef();
     }
     long pointerVersion = tableRepo.metaFor(tableId).getPointerVersion();
     if (!tableRepo.update(updated.build(), pointerVersion)) {
@@ -247,7 +247,7 @@ public class CurrentSnapshotPointerService {
       throw GrpcErrors.invalidArgument(
           corr,
           SNAPSHOT_COLUMN_IDENTITY_INVALID,
-          Map.of("reason", "Canonical Delta snapshots require a column identity map"));
+          Map.of("reason", "Canonical Delta snapshots require a column identity map reference"));
     }
   }
 }

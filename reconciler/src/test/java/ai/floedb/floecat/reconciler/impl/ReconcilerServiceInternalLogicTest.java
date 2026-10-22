@@ -37,9 +37,15 @@ import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.schema.identity.HistoryTier;
+import ai.floedb.floecat.schema.identity.IdentityMode;
+import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
+import ai.floedb.floecat.schema.identity.ResolvedSchema;
+import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +55,18 @@ import org.junit.jupiter.api.Test;
 
 class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBase {
 
+  private static ColumnIdentityMap emptyIdentityMap(long sourceVersion) {
+    return ColumnIdentityMaps.toProto(
+        SchemaIdentityReconciler.reconcile(
+            ResolvedSchema.of(List.of()),
+            sourceVersion,
+            IdentityMode.STRUCTURED_PATH,
+            Optional.empty(),
+            0L,
+            PreferredCanonicalIds.NONE,
+            HistoryTier.VERSIONED_LOG));
+  }
+
   @Test
   void canonicalDeltaTableCannotInheritAnExistingMapWhenBundleOmitsIt() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl").build();
@@ -56,7 +74,9 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
         Snapshot.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(123L)
-            .setColumnIdentityMap(ColumnIdentityMap.newBuilder().setFingerprint("old").build())
+            .setColumnIdentityMapRef(
+                ColumnIdentityMaps.reference(
+                    "/accounts/acct/tables/tbl/column-identities/old.pb", emptyIdentityMap(123L)))
             .build();
     var bundle =
         new FloecatConnector.SnapshotBundle(
@@ -149,6 +169,56 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
         .isEqualTo(ColumnIdAlgorithm.CID_CANONICAL_MAP);
   }
 
+  @Test
+  void canonicalDeltaDefaultsToCurrentSnapshotWithoutOverridingExplicitHistory() {
+    assertThat(
+            QueuedReconcileWorkerSupport.effectiveEnumerationSelection(
+                true, ReconcileSnapshotSelection.unspecified()))
+        .isEqualTo(ReconcileSnapshotSelection.current());
+    assertThat(
+            QueuedReconcileWorkerSupport.effectiveEnumerationSelection(
+                true, ReconcileSnapshotSelection.all()))
+        .isEqualTo(ReconcileSnapshotSelection.all());
+    assertThat(
+            QueuedReconcileWorkerSupport.effectiveEnumerationSelection(
+                false, ReconcileSnapshotSelection.unspecified()))
+        .isEqualTo(ReconcileSnapshotSelection.unspecified());
+  }
+
+  @Test
+  void canonicalDeltaEnumeratesSnapshotIdsForCaptureAndHistoricalSelections() {
+    Set<Long> latestIdentityVersion = Set.of(91L);
+    Set<Long> existingSnapshots = Set.of(17L, 42L, 91L);
+
+    assertThat(
+            QueuedReconcileWorkerSupport.knownSnapshotIdsForEnumeration(
+                true,
+                true,
+                false,
+                ReconcileSnapshotSelection.current(),
+                latestIdentityVersion,
+                () -> existingSnapshots))
+        .containsExactlyInAnyOrderElementsOf(existingSnapshots);
+    assertThat(
+            QueuedReconcileWorkerSupport.knownSnapshotIdsForEnumeration(
+                true,
+                false,
+                false,
+                ReconcileSnapshotSelection.explicit(List.of(17L)),
+                latestIdentityVersion,
+                () -> existingSnapshots))
+        .containsExactlyInAnyOrderElementsOf(existingSnapshots);
+    assertThat(
+            QueuedReconcileWorkerSupport.knownSnapshotIdsForEnumeration(
+                true,
+                false,
+                false,
+                ReconcileSnapshotSelection.current(),
+                latestIdentityVersion,
+                () -> existingSnapshots))
+        .containsExactlyElementsOf(latestIdentityVersion);
+  }
+
   private static FloecatConnector deltaConnector() {
     FloecatConnector connector = mock(FloecatConnector.class);
     when(connector.format()).thenReturn(ConnectorFormat.CF_DELTA);
@@ -189,7 +259,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .buildSnapshot(
                 ctx,
                 tableId,
-                QueuedReconcileWorkerSupport.IdentityEnumerationContext.disabled(Set.of()),
+                QueuedReconcileWorkerSupport.IdentityEnumerationContext.disabled(),
                 bundle,
                 existing)
             .orElseThrow();
@@ -225,7 +295,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .buildSnapshot(
                 ctx,
                 tableId,
-                QueuedReconcileWorkerSupport.IdentityEnumerationContext.disabled(Set.of()),
+                QueuedReconcileWorkerSupport.IdentityEnumerationContext.disabled(),
                 bundle,
                 null)
             .orElseThrow();

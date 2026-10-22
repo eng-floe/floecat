@@ -20,13 +20,16 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.GetLatestColumnIdentityRequest;
 import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
+import ai.floedb.floecat.catalog.rpc.StreamColumnIdentityMapRequest;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
@@ -59,6 +62,60 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class SnapshotServiceImplTest {
+
+  @Test
+  void getLatestColumnIdentityReturnsTheTablesPublishedReference() {
+    var tableId = tableId("identity-latest");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.tableNode(tableId, "{}"));
+    var ref = ColumnIdentityMapRef.newBuilder().setUri("identity.pb").build();
+    when(svc.tableRepo.getById(tableId))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder().setResourceId(tableId).setColumnIdentityMapRef(ref).build()));
+
+    var response =
+        svc.getLatestColumnIdentity(
+                GetLatestColumnIdentityRequest.newBuilder().setTableId(tableId).build())
+            .await()
+            .indefinitely();
+
+    assertEquals(ref, response.getColumnIdentityMapRef());
+  }
+
+  @Test
+  void streamColumnIdentityMapReturnsTheResolversExactBytesInBoundedChunks() {
+    var tableId = tableId("identity-stream");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.tableNode(tableId, "{}"));
+    var ref = ColumnIdentityMapRef.newBuilder().setUri("identity.pb").build();
+    byte[] payload = new byte[300_000];
+    for (int i = 0; i < payload.length; i++) {
+      payload[i] = (byte) i;
+    }
+    when(svc.columnIdentityMaps.bytes(tableId, ref)).thenReturn(payload);
+
+    var chunks =
+        svc.streamColumnIdentityMap(
+                StreamColumnIdentityMapRequest.newBuilder()
+                    .setTableId(tableId)
+                    .setColumnIdentityMapRef(ref)
+                    .build())
+            .collect()
+            .asList()
+            .await()
+            .indefinitely();
+
+    assertEquals(2, chunks.size());
+    assertArrayEquals(
+        payload,
+        chunks.stream()
+            .map(chunk -> chunk.getData().toByteArray())
+            .collect(
+                java.io.ByteArrayOutputStream::new,
+                java.io.ByteArrayOutputStream::writeBytes,
+                (left, right) -> left.writeBytes(right.toByteArray()))
+            .toByteArray());
+    verify(svc.columnIdentityMaps).bytes(tableId, ref);
+  }
 
   @Test
   void createSnapshotRejectsCanonicalDeltaSnapshotWithoutIdentityMap() {
@@ -136,7 +193,7 @@ class SnapshotServiceImplTest {
 
     ArgumentCaptor<Snapshot> updated = ArgumentCaptor.forClass(Snapshot.class);
     verify(svc.snapshotRepo).update(updated.capture(), eq(4L));
-    assertFalse(updated.getValue().hasColumnIdentityMap());
+    assertFalse(updated.getValue().hasColumnIdentityMapRef());
     assertEquals("new", updated.getValue().getSummaryOrThrow("state"));
   }
 
@@ -149,6 +206,7 @@ class SnapshotServiceImplTest {
     svc.idempotencyStore = mock(IdempotencyRepository.class);
     svc.graphView = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
+    svc.columnIdentityMaps = mock(ColumnIdentityMapResolver.class);
 
     var tableId =
         ResourceId.newBuilder()
@@ -903,6 +961,7 @@ class SnapshotServiceImplTest {
     svc.idempotencyStore = mock(IdempotencyRepository.class);
     svc.graphView = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
+    svc.columnIdentityMaps = mock(ColumnIdentityMapResolver.class);
 
     when(svc.graphView.resolve(eq(tableId), any())).thenReturn(Optional.of(node));
     when(svc.tableRepo.getById(tableId))

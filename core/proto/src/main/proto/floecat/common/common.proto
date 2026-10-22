@@ -47,7 +47,10 @@ enum ResourceKind {
 }
 
 message ResourceId {
+  // Non-empty account identifiers are canonical storage-key segments and use only ASCII letters,
+  // digits, '-', '_', and '.'. This keeps independently implemented blob URI producers identical.
   string account_id = 1;
+  // RK_ACCOUNT ids follow the same storage-key segment grammar as account_id.
   string id = 2;
   ResourceKind kind = 3;
 }

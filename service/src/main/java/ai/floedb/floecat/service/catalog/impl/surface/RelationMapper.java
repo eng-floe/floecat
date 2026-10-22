@@ -164,9 +164,7 @@ final class RelationMapper {
     return schemaMapper.map(
         table,
         table.getSchemaJson(),
-        table.hasColumnIdentityMap()
-            ? table.getColumnIdentityMap()
-            : ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
+        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
   }
 
   private NameRef canonicalName(ResourceId id, String fallbackDisplayName) {

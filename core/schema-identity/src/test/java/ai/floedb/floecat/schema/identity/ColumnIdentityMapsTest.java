@@ -19,7 +19,9 @@ package ai.floedb.floecat.schema.identity;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import com.google.protobuf.ByteString;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -35,8 +37,37 @@ class ColumnIdentityMapsTest {
     assertThat(ColumnIdentityMaps.restore(map).historyTier()).isEqualTo(HistoryTier.VERSIONED_LOG);
     assertThat(
             ColumnIdentityMaps.fingerprint(
-                Snapshot.newBuilder().setSnapshotId(7L).setColumnIdentityMap(map).build()))
+                Snapshot.newBuilder().setSnapshotId(7L).setColumnIdentityMapRef(ref(map)).build()))
         .contains(state.fingerprint());
+  }
+
+  @Test
+  void validatesExactSerializedPayloadBytes() {
+    var serialized = ColumnIdentityMaps.serialize(ColumnIdentityMaps.toProto(state(7L)));
+    var ref = serialized.reference("/accounts/a/tables/t/column-identities/test.pb");
+
+    ColumnIdentityMaps.validatePayload(serialized.payload().toByteArray(), ref);
+
+    byte[] corrupted = serialized.payload().toByteArray();
+    corrupted[0] ^= 1;
+    assertThatThrownBy(() -> ColumnIdentityMaps.validatePayload(corrupted, ref))
+        .hasMessageContaining("does not match its reference");
+  }
+
+  private static ColumnIdentityMapRef ref(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap map) {
+    return ColumnIdentityMapRef.newBuilder()
+        .setUri("/accounts/a/tables/t/column-identities/test.pb")
+        .setPayloadBytes(map.getSerializedSize())
+        .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+        .setFormatVersion(map.getFormatVersion())
+        .setSourceVersion(map.getSourceVersion())
+        .setHighWaterMark(map.getHighWaterMark())
+        .setMode(map.getMode())
+        .setFingerprint(map.getFingerprint())
+        .setStateChecksum(map.getStateChecksum())
+        .setHistoryTier(map.getHistoryTier())
+        .setSourceVersionAnchored(map.getSourceVersionAnchored())
+        .build();
   }
 
   @Test
