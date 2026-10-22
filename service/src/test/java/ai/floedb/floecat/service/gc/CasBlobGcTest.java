@@ -2138,6 +2138,9 @@ class CasBlobGcTest {
             + "02".repeat(32)
             + ".pb";
     blobs.put(uploadOnlyUri, new byte[] {8}, "application/x-protobuf");
+    String identityUploadOnlyUri =
+        Keys.columnIdentityBlobUri(ACCOUNT_ID, TABLE_ID, "03".repeat(32));
+    blobs.put(identityUploadOnlyUri, new byte[] {9}, "application/x-protobuf");
     String captureUploadOnlyUri =
         Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L)
             + "pending-upload.bin";
@@ -2381,6 +2384,9 @@ class CasBlobGcTest {
     assertTrue(
         blobs.head(uploadOnlyUri).isPresent(),
         "the Begin lease protects uploads not yet named by a completed coverage manifest");
+    assertTrue(
+        blobs.head(identityUploadOnlyUri).isPresent(),
+        "the Begin lease protects the identity map before Complete publishes its reference");
   }
 
   @Test

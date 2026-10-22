@@ -384,7 +384,9 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
           candidate.setAccountId(candidate.getId());
         }
       }
-      return candidate.build();
+      ResourceId resolved = candidate.build();
+      validateStoragePathSegments(resolved, corr);
+      return resolved;
     }
 
     final String accountUuid = AccountIds.randomAccountId();
@@ -392,11 +394,23 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         (principalAccountId == null || principalAccountId.isBlank())
             ? accountUuid
             : principalAccountId;
-    return ResourceId.newBuilder()
-        .setAccountId(accountId)
-        .setId(accountUuid)
-        .setKind(ResourceKind.RK_ACCOUNT)
-        .build();
+    ResourceId resolved =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId(accountUuid)
+            .setKind(ResourceKind.RK_ACCOUNT)
+            .build();
+    validateStoragePathSegments(resolved, corr);
+    return resolved;
+  }
+
+  private static void validateStoragePathSegments(ResourceId accountId, String corr) {
+    if (!AccountIds.isStoragePathSegment(accountId.getAccountId())) {
+      throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "account_id.account_id"));
+    }
+    if (!AccountIds.isStoragePathSegment(accountId.getId())) {
+      throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "account_id.id"));
+    }
   }
 
   @Override

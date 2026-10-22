@@ -128,20 +128,16 @@ public final class ColumnIdentityMaps {
   /** Serializes and hashes a validated map once for immutable publication. */
   public static SerializedMap serialize(ColumnIdentityMap value) {
     restore(value);
-    byte[] payload = value.toByteArray();
-    return new SerializedMap(value, payload, ByteString.copyFrom(sha256(payload)));
+    ByteString payload = value.toByteString();
+    return new SerializedMap(value, payload, sha256(payload));
   }
 
-  public record SerializedMap(ColumnIdentityMap value, byte[] payload, ByteString payloadSha256) {
+  public record SerializedMap(
+      ColumnIdentityMap value, ByteString payload, ByteString payloadSha256) {
     public SerializedMap {
       Objects.requireNonNull(value, "value");
-      payload = Objects.requireNonNull(payload, "payload").clone();
+      Objects.requireNonNull(payload, "payload");
       Objects.requireNonNull(payloadSha256, "payloadSha256");
-    }
-
-    @Override
-    public byte[] payload() {
-      return payload.clone();
     }
 
     public String sha256Hex() {
@@ -153,7 +149,7 @@ public final class ColumnIdentityMaps {
       ColumnIdentityMapRef.Builder ref =
           ColumnIdentityMapRef.newBuilder()
               .setUri(uri)
-              .setPayloadBytes(payload.length)
+              .setPayloadBytes(payload.size())
               .setPayloadSha256(payloadSha256)
               .setFormatVersion(value.getFormatVersion())
               .setSourceVersion(value.getSourceVersion())
@@ -317,9 +313,11 @@ public final class ColumnIdentityMaps {
     return path;
   }
 
-  private static byte[] sha256(byte[] payload) {
+  private static ByteString sha256(ByteString payload) {
     try {
-      return MessageDigest.getInstance("SHA-256").digest(payload);
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      payload.asReadOnlyByteBufferList().forEach(digest::update);
+      return ByteString.copyFrom(digest.digest());
     } catch (NoSuchAlgorithmException impossible) {
       throw new IllegalStateException("SHA-256 is unavailable", impossible);
     }

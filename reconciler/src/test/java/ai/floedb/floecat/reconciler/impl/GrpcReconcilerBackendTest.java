@@ -121,7 +121,7 @@ import org.mockito.ArgumentCaptor;
 
 class GrpcReconcilerBackendTest {
   @Test
-  void snapshotIdentityHistoryReadsOnlyTheLatestIdentity() {
+  void latestIdentityStateReadsOnlyTheLatestIdentity() {
     GrpcReconcilerBackend backend =
         new GrpcReconcilerBackend(
             Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
@@ -159,12 +159,10 @@ class GrpcReconcilerBackendTest {
                         .build())
                 .iterator());
 
-    ReconcilerBackend.SnapshotIdentityHistory history =
-        backend.snapshotIdentityHistory(reconcileContext(), tableId);
+    ReconcilerBackend.LatestIdentityState latest =
+        backend.latestIdentityState(reconcileContext(), tableId);
 
-    assertThat(history.snapshotIds()).containsExactly(2L);
-    assertThat(history.columnIdentityMaps()).containsOnly(Map.entry(2L, identityMap));
-    assertThat(history.highWaterMark()).isEqualTo(9L);
+    assertThat(latest.columnIdentityMap()).contains(identityMap);
     verify(backend.snapshot).getLatestColumnIdentity(any());
     verify(backend.snapshot, never()).listSnapshots(any());
   }

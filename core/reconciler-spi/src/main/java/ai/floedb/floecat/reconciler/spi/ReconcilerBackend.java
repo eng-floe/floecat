@@ -103,37 +103,15 @@ public interface ReconcilerBackend {
     throw new UnsupportedOperationException("column identity persistence is not configured");
   }
 
-  /** The bounded latest identity state used to continue canonical reconciliation. */
-  record SnapshotIdentityHistory(
-      Set<Long> snapshotIds, Map<Long, ColumnIdentityMap> columnIdentityMaps, long highWaterMark) {
-    public SnapshotIdentityHistory {
-      snapshotIds = snapshotIds == null ? Set.of() : Set.copyOf(snapshotIds);
-      columnIdentityMaps = columnIdentityMaps == null ? Map.of() : Map.copyOf(columnIdentityMaps);
-      if (highWaterMark < 0L) {
-        throw new IllegalArgumentException("Identity high-water mark cannot be negative");
-      }
+  /** The single latest identity state used to continue canonical reconciliation. */
+  record LatestIdentityState(Optional<ColumnIdentityMap> columnIdentityMap) {
+    public LatestIdentityState {
+      columnIdentityMap = columnIdentityMap == null ? Optional.empty() : columnIdentityMap;
     }
   }
 
-  /** Returns the latest persisted snapshot identity state without enumerating snapshot history. */
-  default SnapshotIdentityHistory snapshotIdentityHistory(
-      ReconcileContext ctx, ResourceId tableId) {
-    Set<Long> snapshotIds = existingSnapshotIds(ctx, tableId);
-    Map<Long, ColumnIdentityMap> maps = persistedColumnIdentityMaps(ctx, tableId, snapshotIds);
-    return new SnapshotIdentityHistory(
-        snapshotIds,
-        maps,
-        maps.values().stream().mapToLong(ColumnIdentityMap::getHighWaterMark).max().orElse(0L));
-  }
-
-  /** Returns persisted column identity maps keyed by snapshot ID. */
-  default Map<Long, ColumnIdentityMap> persistedColumnIdentityMaps(
-      ReconcileContext ctx, ResourceId tableId, Set<Long> snapshotIds) {
-    // Snapshot transport deliberately contains only immutable references. Backends that perform
-    // source-side reconciliation must override this through a cache-backed reference resolver;
-    // enumerating snapshots can no longer recover inline map payloads.
-    return Map.of();
-  }
+  /** Returns the latest persisted identity state without enumerating snapshot history. */
+  LatestIdentityState latestIdentityState(ReconcileContext ctx, ResourceId tableId);
 
   void ingestSnapshot(ReconcileContext ctx, ResourceId tableId, Snapshot snapshot);
 

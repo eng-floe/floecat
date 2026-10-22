@@ -126,6 +126,30 @@ class AccountServiceImplTest {
   }
 
   @Test
+  void createRejectsAccountIdsThatRequireStoragePathEncoding() {
+    ResourceId unsafe =
+        accountId.toBuilder().setAccountId("acct/unsafe").setId("acct/unsafe").build();
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createAccount(
+                        CreateAccountRequest.newBuilder()
+                            .setAccountId(unsafe)
+                            .setSpec(AccountSpec.newBuilder().setDisplayName("alpha"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    FloecatStatus decoded = FloecatStatus.fromThrowable(failure);
+    assertEquals(Status.Code.INVALID_ARGUMENT, decoded.canonicalCode());
+    assertEquals("field", decoded.messageKey());
+    assertEquals("account_id.account_id", decoded.params().get("field"));
+  }
+
+  @Test
   void trustConfigurationReturnsTheAccountIssuedValues() {
     when(service.awsExternalIds.getOrCreate("acct")).thenReturn("floecat-external-id");
 

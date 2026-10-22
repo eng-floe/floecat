@@ -185,6 +185,40 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
         .isEqualTo(ReconcileSnapshotSelection.unspecified());
   }
 
+  @Test
+  void canonicalDeltaEnumeratesSnapshotIdsForCaptureAndHistoricalSelections() {
+    Set<Long> latestIdentityVersion = Set.of(91L);
+    Set<Long> existingSnapshots = Set.of(17L, 42L, 91L);
+
+    assertThat(
+            QueuedReconcileWorkerSupport.knownSnapshotIdsForEnumeration(
+                true,
+                true,
+                false,
+                ReconcileSnapshotSelection.current(),
+                latestIdentityVersion,
+                () -> existingSnapshots))
+        .containsExactlyInAnyOrderElementsOf(existingSnapshots);
+    assertThat(
+            QueuedReconcileWorkerSupport.knownSnapshotIdsForEnumeration(
+                true,
+                false,
+                false,
+                ReconcileSnapshotSelection.explicit(List.of(17L)),
+                latestIdentityVersion,
+                () -> existingSnapshots))
+        .containsExactlyInAnyOrderElementsOf(existingSnapshots);
+    assertThat(
+            QueuedReconcileWorkerSupport.knownSnapshotIdsForEnumeration(
+                true,
+                false,
+                false,
+                ReconcileSnapshotSelection.current(),
+                latestIdentityVersion,
+                () -> existingSnapshots))
+        .containsExactlyElementsOf(latestIdentityVersion);
+  }
+
   private static FloecatConnector deltaConnector() {
     FloecatConnector connector = mock(FloecatConnector.class);
     when(connector.format()).thenReturn(ConnectorFormat.CF_DELTA);
@@ -225,7 +259,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .buildSnapshot(
                 ctx,
                 tableId,
-                QueuedReconcileWorkerSupport.IdentityEnumerationContext.disabled(Set.of()),
+                QueuedReconcileWorkerSupport.IdentityEnumerationContext.disabled(),
                 bundle,
                 existing)
             .orElseThrow();
@@ -261,7 +295,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .buildSnapshot(
                 ctx,
                 tableId,
-                QueuedReconcileWorkerSupport.IdentityEnumerationContext.disabled(Set.of()),
+                QueuedReconcileWorkerSupport.IdentityEnumerationContext.disabled(),
                 bundle,
                 null)
             .orElseThrow();

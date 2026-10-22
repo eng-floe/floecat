@@ -514,20 +514,17 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public SnapshotIdentityHistory snapshotIdentityHistory(ReconcileContext ctx, ResourceId tableId) {
+  public LatestIdentityState latestIdentityState(ReconcileContext ctx, ResourceId tableId) {
     var latest =
         snapshot(ctx)
             .getLatestColumnIdentity(
                 GetLatestColumnIdentityRequest.newBuilder().setTableId(tableId).build());
     if (!latest.hasColumnIdentityMapRef()) {
-      return new SnapshotIdentityHistory(Set.of(), Map.of(), 0L);
+      return new LatestIdentityState(Optional.empty());
     }
     ColumnIdentityMap identityMap =
         resolveColumnIdentityMap(ctx, tableId, latest.getColumnIdentityMapRef());
-    return new SnapshotIdentityHistory(
-        Set.of(identityMap.getSourceVersion()),
-        Map.of(identityMap.getSourceVersion(), identityMap),
-        identityMap.getHighWaterMark());
+    return new LatestIdentityState(Optional.of(identityMap));
   }
 
   @Override
@@ -537,7 +534,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     String uri =
         ai.floedb.floecat.storage.kv.Keys.columnIdentityBlobUri(
             tableId.getAccountId(), tableId.getId(), serialized.sha256Hex());
-    blobStore.putImmutable(uri, serialized.payload(), "application/x-protobuf");
+    blobStore.putImmutable(uri, serialized.payload().toByteArray(), "application/x-protobuf");
     return serialized.reference(uri);
   }
 

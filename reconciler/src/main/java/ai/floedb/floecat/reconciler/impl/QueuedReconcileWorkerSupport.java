@@ -102,26 +102,32 @@ class QueuedReconcileWorkerSupport {
       FloecatConnector.SnapshotBundle bundle) {}
 
   record IdentityEnumerationContext(
-      boolean enabled,
-      Set<Long> existingSnapshotIds,
-      Map<Long, ColumnIdentityMap> persistedMaps,
-      long persistedHighWaterMark) {
+      boolean enabled, Map<Long, ColumnIdentityMap> persistedMaps, long persistedHighWaterMark) {
     IdentityEnumerationContext {
-      existingSnapshotIds = Set.copyOf(existingSnapshotIds);
       persistedMaps = Map.copyOf(persistedMaps);
     }
 
-    static IdentityEnumerationContext disabled(Set<Long> existingSnapshotIds) {
-      return new IdentityEnumerationContext(false, existingSnapshotIds, Map.of(), 0L);
+    static IdentityEnumerationContext disabled() {
+      return new IdentityEnumerationContext(false, Map.of(), 0L);
     }
 
-    static IdentityEnumerationContext canonical(ReconcilerBackend.SnapshotIdentityHistory history) {
-      return new IdentityEnumerationContext(
-          true, history.snapshotIds(), history.columnIdentityMaps(), history.highWaterMark());
+    static IdentityEnumerationContext canonical(ReconcilerBackend.LatestIdentityState latest) {
+      Map<Long, ColumnIdentityMap> persisted =
+          latest
+              .columnIdentityMap()
+              .map(map -> Map.of(map.getSourceVersion(), map))
+              .orElseGet(Map::of);
+      long highWaterMark =
+          latest.columnIdentityMap().map(ColumnIdentityMap::getHighWaterMark).orElse(0L);
+      return new IdentityEnumerationContext(true, persisted, highWaterMark);
     }
 
     static IdentityEnumerationContext canonical() {
-      return new IdentityEnumerationContext(true, Set.of(), Map.of(), 0L);
+      return new IdentityEnumerationContext(true, Map.of(), 0L);
+    }
+
+    Set<Long> persistedSnapshotIds() {
+      return persistedMaps.keySet();
     }
 
     FloecatConnector.SnapshotEnumerationOptions applyTo(
@@ -1140,10 +1146,22 @@ class QueuedReconcileWorkerSupport {
             && upstream.columnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP;
     IdentityEnumerationContext identityContext =
         canonicalDelta
-            ? IdentityEnumerationContext.canonical(backend.snapshotIdentityHistory(ctx, tableId))
-            : IdentityEnumerationContext.disabled(backend.existingSnapshotIds(ctx, tableId));
+            ? IdentityEnumerationContext.canonical(backend.latestIdentityState(ctx, tableId))
+            : IdentityEnumerationContext.disabled();
+    // The recurring canonical-Delta path publishes only the current source snapshot. Identity
+    // continuity does not require materializing every missed version: the connector replays the
+    // intervening Delta metadata commits while reconciling the current identity map. Explicit
+    // historical selections remain available for callers that deliberately request them.
+    ReconcileSnapshotSelection enumerationSelection =
+        effectiveEnumerationSelection(canonicalDelta, scope.snapshotSelection());
     Set<Long> knownSnapshotIds =
-        (captureOnly || !fullRescan) ? identityContext.existingSnapshotIds() : Set.of();
+        knownSnapshotIdsForEnumeration(
+            canonicalDelta,
+            captureOnly,
+            fullRescan,
+            enumerationSelection,
+            identityContext.persistedSnapshotIds(),
+            () -> backend.existingSnapshotIds(ctx, tableId));
     // Capture modes still require a policy even though durable content state now decides
     // completeness.
     ReconcilerService.effectiveCapturePolicy(scope, captureMode);
@@ -1156,12 +1174,6 @@ class QueuedReconcileWorkerSupport {
             ? ReconcilerService.captureOnlyEnumerationTargetSnapshotIds(
                 knownSnapshotIds, targetSnapshotIds)
             : targetSnapshotIds;
-    // The recurring canonical-Delta path publishes only the current source snapshot. Identity
-    // continuity does not require materializing every missed version: the connector replays the
-    // intervening Delta metadata commits while reconciling the current identity map. Explicit
-    // historical selections remain available for callers that deliberately request them.
-    ReconcileSnapshotSelection enumerationSelection =
-        effectiveEnumerationSelection(canonicalDelta, scope.snapshotSelection());
     boolean enumerationFullRescan = captureOnly || fullRescan;
 
     MetadataPassOutcome outcome;
@@ -1262,6 +1274,29 @@ class QueuedReconcileWorkerSupport {
     return canonicalDelta && !effective.isSpecified()
         ? ReconcileSnapshotSelection.current()
         : effective;
+  }
+
+  static Set<Long> knownSnapshotIdsForEnumeration(
+      boolean canonicalDelta,
+      boolean captureOnly,
+      boolean fullRescan,
+      ReconcileSnapshotSelection selection,
+      Set<Long> persistedIdentitySnapshotIds,
+      Supplier<Set<Long>> existingSnapshotIds) {
+    if (!captureOnly && fullRescan) {
+      return Set.of();
+    }
+    ReconcileSnapshotSelection effective =
+        selection == null ? ReconcileSnapshotSelection.unspecified() : selection;
+    if (canonicalDelta
+        && !captureOnly
+        && effective.kind() == ReconcileSnapshotSelection.Kind.CURRENT) {
+      return persistedIdentitySnapshotIds == null
+          ? Set.of()
+          : Set.copyOf(persistedIdentitySnapshotIds);
+    }
+    Set<Long> existing = existingSnapshotIds.get();
+    return existing == null ? Set.of() : Set.copyOf(existing);
   }
 
   private ResourceId resolveOrCreateDiscoveryNamespaceId(

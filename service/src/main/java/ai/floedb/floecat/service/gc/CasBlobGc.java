@@ -2189,6 +2189,8 @@ public class CasBlobGc {
       }
       activeOwnerPublications(referenced).add(lease.getPublicationId());
       ownerProtectedPrefixes(referenced).add(normalizeKey(expectedPrefix));
+      ownerProtectedPrefixes(referenced)
+          .add(normalizeKey(Keys.columnIdentityBlobPrefix(accountId, tableId)));
       for (String manifestPrefix : lease.getProtectedCaptureManifestPrefixesList()) {
         if (!isOwnerCaptureManifestPrefix(accountId, tableId, manifestPrefix)) {
           throw new IllegalStateException("invalid Owner capture-manifest lease prefix");

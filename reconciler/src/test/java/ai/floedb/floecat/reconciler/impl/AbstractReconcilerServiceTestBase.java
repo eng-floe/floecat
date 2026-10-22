@@ -283,6 +283,11 @@ abstract class AbstractReconcilerServiceTestBase {
     }
 
     @Override
+    public LatestIdentityState latestIdentityState(ReconcileContext ctx, ResourceId tableId) {
+      return new LatestIdentityState(Optional.empty());
+    }
+
+    @Override
     public void ingestSnapshot(ReconcileContext ctx, ResourceId tableId, Snapshot snapshot) {
       throw new UnsupportedOperationException();
     }

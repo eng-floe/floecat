@@ -1097,7 +1097,7 @@ public class CatalogOverlayReconciler {
     var serialized = ColumnIdentityMaps.serialize(map);
     String uri =
         Keys.columnIdentityBlobUri(tableId.getAccountId(), tableId.getId(), serialized.sha256Hex());
-    blobStore.putImmutable(uri, serialized.payload(), "application/x-protobuf");
+    blobStore.putImmutable(uri, serialized.payload().toByteArray(), "application/x-protobuf");
     return serialized.reference(uri);
   }
 
