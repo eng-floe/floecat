@@ -292,7 +292,7 @@ class CatalogOverlaysImplTest {
         .thenReturn(Optional.of(new ResourceWithMeta<>(current, overlayMeta)));
     when(service.integrations.getByIdWithMeta(integrationId()))
         .thenReturn(Optional.of(new ResourceWithMeta<>(integration, integrationMeta)));
-    when(service.reconciler.reconcile(current, overlayMeta, integration, integrationMeta))
+    when(service.reconciler.reconcile(current, overlayMeta, integration, integrationMeta, false))
         .thenReturn(new CatalogOverlayReconciler.Result(2, 1, 3, 4, 5, 6, 7, 8));
 
     var response =

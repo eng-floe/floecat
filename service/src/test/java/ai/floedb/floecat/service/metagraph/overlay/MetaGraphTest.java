@@ -21,6 +21,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.notNull;
 import static org.mockito.Mockito.*;
 
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -214,7 +215,7 @@ class MetaGraphTest {
     UserTableNode canonical = canonicalTable();
     when(system.resolve(usrTable, context)).thenReturn(Optional.empty());
     when(user.resolve(usrTable)).thenReturn(Optional.of(canonical));
-    when(user.schemaFor(eq("table-schema"), eq(usrTable), any(), eq(""), eq("")))
+    when(user.schemaFor(eq("table-schema"), eq(usrTable), notNull(), eq(""), eq("")))
         .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException());
 
     assertThat(meta.tableSchema(usrTable, context)).isEmpty();
