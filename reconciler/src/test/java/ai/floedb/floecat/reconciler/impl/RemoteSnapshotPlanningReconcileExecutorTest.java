@@ -50,6 +50,12 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.schema.identity.HistoryTier;
+import ai.floedb.floecat.schema.identity.IdentityMode;
+import ai.floedb.floecat.schema.identity.PreferredCanonicalIds;
+import ai.floedb.floecat.schema.identity.ResolvedSchema;
+import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -396,12 +402,11 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
         .thenReturn(Optional.empty());
     String baseSchemaJson = "{\"type\":\"struct\",\"fields\":[]}";
+    long baseSnapshotId = 7L;
+    ColumnIdentityMap identityMap = emptyIdentityMap(baseSnapshotId);
     String executionSchemaJson =
         ColumnIdentityExecutionSchema.attach(
-            "{\n  \"fields\": [],\n  \"type\": \"struct\"\n}",
-            ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build());
-    ColumnIdentityMap identityMap =
-        ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build();
+            "{\n  \"fields\": [],\n  \"type\": \"struct\"\n}", identityMap);
 
     ReconcileFileExecutionPlan priorPlan =
         ReconcileFileExecutionPlan.of(
@@ -432,7 +437,6 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                     .setStatsCaptureSignature(statsSignature))
             .build();
     var artifactIndex = persistArtifactIndex(blobStore, List.of(bundle));
-    long baseSnapshotId = 7L;
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
             .setFormatVersion(1)
@@ -521,6 +525,18 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                         && base.reusableArtifactIndex().equals(artifactIndex)));
     verify(workerClient, never()).submitPlanSnapshotSuccess(any(), any(), any(), any());
     verify(backend, never()).fetchSnapshotFilePlan(any(), any(), anyLong());
+  }
+
+  private static ColumnIdentityMap emptyIdentityMap(long sourceVersion) {
+    return ColumnIdentityMaps.toProto(
+        SchemaIdentityReconciler.reconcile(
+            ResolvedSchema.of(List.of()),
+            sourceVersion,
+            IdentityMode.STRUCTURED_PATH,
+            Optional.empty(),
+            0L,
+            PreferredCanonicalIds.NONE,
+            HistoryTier.VERSIONED_LOG));
   }
 
   @Test

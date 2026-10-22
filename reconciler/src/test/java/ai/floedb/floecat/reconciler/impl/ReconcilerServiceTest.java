@@ -20,7 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
-import ai.floedb.floecat.catalog.rpc.ColumnIdentityMapRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -1956,6 +1955,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
 
     class Backend extends DefaultBackend {
       @Override
+      public LatestIdentityState latestIdentityState(
+          ReconcileContext ctx, ResourceId ignoredTableId) {
+        return new LatestIdentityState(Optional.of(emptyIdentityMap(201L)));
+      }
+
+      @Override
       public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
         return activeConnector();
       }
@@ -2007,7 +2012,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                     SnapshotReuseManifestRef.newBuilder()
                         .setUri("s3://bucket/reuse/snapshot-201.pb")
                         .build())
-                .setColumnIdentityMapRef(identityMapRef(emptyIdentityMap(snapshotId)))
+                .setColumnIdentityMapRef(identityMapRef(tableId, emptyIdentityMap(snapshotId)))
                 .build());
       }
 
@@ -2424,7 +2429,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 .setSnapshotId(snapshotId)
                 .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
                 .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
-                .setColumnIdentityMapRef(identityMapRef(emptyIdentityMap(snapshotId)))
+                .setColumnIdentityMapRef(identityMapRef(tableId, emptyIdentityMap(snapshotId)))
                 .build());
       }
 
@@ -2692,6 +2697,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       int putConstraintsCalls = 0;
 
       @Override
+      public LatestIdentityState latestIdentityState(
+          ReconcileContext ctx, ResourceId ignoredTableId) {
+        return new LatestIdentityState(Optional.of(emptyIdentityMap(201L)));
+      }
+
+      @Override
       public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
         return activeConnector();
       }
@@ -2739,7 +2750,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 .setSnapshotId(snapshotId)
                 .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
                 .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
-                .setColumnIdentityMapRef(identityMapRef(emptyIdentityMap(snapshotId)))
+                .setColumnIdentityMapRef(identityMapRef(tableId, emptyIdentityMap(snapshotId)))
                 .build());
       }
 
@@ -3556,10 +3567,5 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             0L,
             PreferredCanonicalIds.NONE,
             HistoryTier.VERSIONED_LOG));
-  }
-
-  private static ColumnIdentityMapRef identityMapRef(ColumnIdentityMap map) {
-    return ColumnIdentityMaps.reference(
-        "/accounts/acct/tables/tbl/column-identities/" + map.getSourceVersion() + ".pb", map);
   }
 }
