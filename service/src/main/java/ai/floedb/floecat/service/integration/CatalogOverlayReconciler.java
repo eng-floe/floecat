@@ -187,8 +187,18 @@ public class CatalogOverlayReconciler {
       MutationMeta overlayMeta,
       CatalogIntegration integration,
       MutationMeta integrationMeta) {
+    return reconcile(overlay, overlayMeta, integration, integrationMeta, false);
+  }
+
+  public Result reconcile(
+      CatalogOverlay overlay,
+      MutationMeta overlayMeta,
+      CatalogIntegration integration,
+      MutationMeta integrationMeta,
+      boolean skipColumnIdentityReconciliation) {
     try (ReconcileLockLease ignored = acquireReconcileLock(overlay.getResourceId())) {
-      return reconcileWhileLocked(overlay, overlayMeta, integration, integrationMeta);
+      return reconcileWhileLocked(
+          overlay, overlayMeta, integration, integrationMeta, skipColumnIdentityReconciliation);
     }
   }
 
@@ -196,7 +206,8 @@ public class CatalogOverlayReconciler {
       CatalogOverlay overlay,
       MutationMeta overlayMeta,
       CatalogIntegration integration,
-      MutationMeta integrationMeta) {
+      MutationMeta integrationMeta,
+      boolean skipColumnIdentityReconciliation) {
     requireBinding(overlay, integration);
     PointerConditions fence = fence(overlay, overlayMeta, integration, integrationMeta);
     try (CatalogClientSession session = new CatalogClientSession(access.open(integration))) {
@@ -239,7 +250,8 @@ public class CatalogOverlayReconciler {
           discovery.tables(),
           localNamespaces,
           localInventory,
-          result);
+          result,
+          skipColumnIdentityReconciliation);
       reconcileViews(
           overlay, integration, fence, discovery.views(), localNamespaces, localInventory, result);
       retireNamespaces(overlay, fence, discovery, localNamespaces, result);
@@ -737,7 +749,8 @@ public class CatalogOverlayReconciler {
       Map<CatalogObjectName, CatalogTable> discovered,
       Map<NamespacePath, Namespace> localNamespaces,
       LocalInventory inventory,
-      MutableResult result) {
+      MutableResult result,
+      boolean skipColumnIdentityReconciliation) {
     // Only publications since the last successful fence assertion can need compensation. Keeping
     // this as a bounded batch prevents lost-fence recovery from turning into an uncancellable scan
     // of the entire catalog.
@@ -754,7 +767,15 @@ public class CatalogOverlayReconciler {
                 : inventory.tablesByName().get(name);
         Table mappedDesired;
         try {
-          mappedDesired = tableFor(overlay, integration, namespace, source, current, client);
+          mappedDesired =
+              tableFor(
+                  overlay,
+                  integration,
+                  namespace,
+                  source,
+                  current,
+                  client,
+                  skipColumnIdentityReconciliation);
         } catch (TableIdentityException invalidIdentity) {
           LOG.warnf(
               invalidIdentity,
@@ -959,7 +980,8 @@ public class CatalogOverlayReconciler {
       Namespace namespace,
       CatalogTable source,
       Table current,
-      CatalogClient client) {
+      CatalogClient client,
+      boolean skipColumnIdentityReconciliation) {
     ResourceId id =
         current == null
             ? randomId(overlay.getResourceId().getAccountId(), ResourceKind.RK_TABLE)
@@ -988,9 +1010,15 @@ public class CatalogOverlayReconciler {
             .setSchemaJson(source.schemaJson())
             .setUpstream(upstream)
             .putAllProperties(properties);
-    if (upstream.getFormat() == TableFormat.TF_DELTA) {
+    if (upstream.getFormat() == TableFormat.TF_DELTA && !skipColumnIdentityReconciliation) {
       builder.setColumnIdentityMap(
           reconcileDeltaIdentity(source, current, client, builder.build()));
+    } else if (upstream.getFormat() == TableFormat.TF_DELTA
+        && current != null
+        && current.hasColumnIdentityMap()) {
+      // Metadata-only discovery must not erase a map produced by a standalone reconciliation or
+      // synchronized from the current published snapshot.
+      builder.setColumnIdentityMap(current.getColumnIdentityMap());
     }
     return builder.build();
   }

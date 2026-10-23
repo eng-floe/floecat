@@ -613,6 +613,77 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void metadataOnlyReconcileMaterializesDeltaWithoutIdentityHistory() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(
+        orders,
+        new CatalogTable(
+            orders,
+            ExternalObjectIdentity.stable("delta-table-uuid"),
+            "DELTA",
+            DELTA_SCHEMA_JSON,
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of()));
+
+    CatalogOverlayReconciler.Result result = reconcileMetadataOnly();
+
+    assertEquals(1, result.tablesCreated());
+    assertEquals(0, result.objectsSkipped());
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table table =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
+        table.getUpstream().getColumnIdAlgorithm());
+    assertFalse(table.hasColumnIdentityMap());
+  }
+
+  @Test
+  void metadataOnlyReconcilePreservesExistingDeltaIdentityMap() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+    assertEquals(1, reconcile().tablesCreated());
+
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table before =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    var identity = before.getColumnIdentityMap();
+    int historyCalls = client.deltaHistoryCalls.get();
+    client.tables.put(
+        orders,
+        new CatalogTable(
+            orders,
+            ExternalObjectIdentity.stable("orders-id"),
+            "DELTA",
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":true,\"metadata\":{}},{\"name\":\"name\",\"type\":\"string\",\"nullable\":true,\"metadata\":{}}]}",
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of("delta.sharing.version", "43")));
+
+    CatalogOverlayReconciler.Result result = reconcileMetadataOnly();
+    Table after = tables.getById(before.getResourceId()).orElseThrow();
+
+    assertEquals(1, result.tablesUpdated());
+    assertEquals(0, result.objectsSkipped());
+    assertEquals(historyCalls, client.deltaHistoryCalls.get());
+    assertEquals(identity, after.getColumnIdentityMap());
+  }
+
+  @Test
   void deltaTableWithoutHistoryIsSkippedInsteadOfSynthesized() {
     NamespacePath sales = NamespacePath.of("sales");
     CatalogObjectName orders = new CatalogObjectName(sales, "orders");
@@ -2196,6 +2267,15 @@ class CatalogOverlayReconcilerTest {
         overlays.metaFor(overlay.getResourceId()),
         integration,
         integrations.metaFor(integration.getResourceId()));
+  }
+
+  private CatalogOverlayReconciler.Result reconcileMetadataOnly() {
+    return reconciler.reconcile(
+        overlay,
+        overlays.metaFor(overlay.getResourceId()),
+        integration,
+        integrations.metaFor(integration.getResourceId()),
+        true);
   }
 
   /** Reconciles a variant of the fixture overlay without persisting the variant. */

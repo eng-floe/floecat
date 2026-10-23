@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -292,13 +293,16 @@ class CatalogOverlaysImplTest {
         .thenReturn(Optional.of(new ResourceWithMeta<>(current, overlayMeta)));
     when(service.integrations.getByIdWithMeta(integrationId()))
         .thenReturn(Optional.of(new ResourceWithMeta<>(integration, integrationMeta)));
-    when(service.reconciler.reconcile(current, overlayMeta, integration, integrationMeta))
+    when(service.reconciler.reconcile(current, overlayMeta, integration, integrationMeta, true))
         .thenReturn(new CatalogOverlayReconciler.Result(2, 1, 3, 4, 5, 6, 7, 8));
 
     var response =
         service
             .reconcileCatalogOverlay(
-                ReconcileCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+                ReconcileCatalogOverlayRequest.newBuilder()
+                    .setOverlayId(overlayId)
+                    .setSkipColumnIdentityReconciliation(true)
+                    .build())
             .await()
             .indefinitely();
 
@@ -310,6 +314,7 @@ class CatalogOverlaysImplTest {
     assertEquals(6, response.getViewsCreated());
     assertEquals(7, response.getViewsUpdated());
     assertEquals(8, response.getViewsDeleted());
+    verify(service.reconciler).reconcile(current, overlayMeta, integration, integrationMeta, true);
   }
 
   @Test
@@ -341,7 +346,7 @@ class CatalogOverlaysImplTest {
                     .indefinitely());
 
     assertEquals(Status.Code.PERMISSION_DENIED, error.getStatus().getCode());
-    verify(service.reconciler, never()).reconcile(any(), any(), any(), any());
+    verify(service.reconciler, never()).reconcile(any(), any(), any(), any(), anyBoolean());
   }
 
   @Test

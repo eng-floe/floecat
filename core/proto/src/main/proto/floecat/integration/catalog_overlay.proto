@@ -124,6 +124,11 @@ message DeleteCatalogOverlayResponse {
 message ReconcileCatalogOverlayRequest {
   ai.floedb.floecat.common.ResourceId overlay_id = 1;
   ai.floedb.floecat.common.Precondition precondition = 2;
+  // Materialize upstream metadata without reconciling Delta column identities. Callers that
+  // publish an exact, snapshot-bound identity map can use this to avoid making table discovery
+  // wait for a transaction-log history scan. The default remains full reconciliation for
+  // standalone Floecat callers.
+  bool skip_column_identity_reconciliation = 3;
 }
 
 message ReconcileCatalogOverlayResponse {
