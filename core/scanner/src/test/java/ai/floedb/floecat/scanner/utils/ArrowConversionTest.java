@@ -36,8 +36,11 @@ import org.apache.arrow.vector.DecimalVector;
 import org.apache.arrow.vector.FixedSizeBinaryVector;
 import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.TimeMicroVector;
+import org.apache.arrow.vector.TimeNanoVector;
 import org.apache.arrow.vector.TimeStampMicroTZVector;
 import org.apache.arrow.vector.TimeStampMicroVector;
+import org.apache.arrow.vector.TimeStampNanoTZVector;
+import org.apache.arrow.vector.TimeStampNanoVector;
 import org.apache.arrow.vector.VarBinaryVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
@@ -276,6 +279,70 @@ class ArrowConversionTest {
 
       assertThat(tsVector.get(0)).isEqualTo(tsMicros);
       assertThat(tstzVector.get(0)).isEqualTo(tstzMicros);
+    }
+  }
+
+  @Test
+  void fill_preservesNanosecondTemporalValues() {
+    Assumptions.assumeTrue(isArrowAvailable(), "Arrow memory allocator is unavailable");
+
+    Schema schema =
+        new Schema(
+            List.of(
+                new Field(
+                    "time_col",
+                    FieldType.nullable(new ArrowType.Time(TimeUnit.NANOSECOND, 64)),
+                    List.of()),
+                new Field(
+                    "ts_col",
+                    FieldType.nullable(new ArrowType.Timestamp(TimeUnit.NANOSECOND, null)),
+                    List.of()),
+                new Field(
+                    "tstz_col",
+                    FieldType.nullable(new ArrowType.Timestamp(TimeUnit.NANOSECOND, "UTC")),
+                    List.of())));
+
+    LocalTime time = LocalTime.parse("12:34:56.123456789");
+    LocalDateTime ts = LocalDateTime.parse("2026-02-26T11:22:33.123456789");
+    Instant tstz = Instant.parse("2026-02-26T10:00:00.123456789Z");
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+      ArrowConversion.fill(root, List.of(new SystemObjectRow(new Object[] {time, ts, tstz})));
+
+      assertThat(((TimeNanoVector) root.getVector("time_col")).get(0))
+          .isEqualTo(time.toNanoOfDay());
+      assertThat(((TimeStampNanoVector) root.getVector("ts_col")).get(0))
+          .isEqualTo(ts.toInstant(ZoneOffset.UTC).getEpochSecond() * 1_000_000_000L + ts.getNano());
+      assertThat(((TimeStampNanoTZVector) root.getVector("tstz_col")).get(0))
+          .isEqualTo(tstz.getEpochSecond() * 1_000_000_000L + tstz.getNano());
+    }
+  }
+
+  @Test
+  void fill_rejectsNanosecondTimestampsOutsideArrowRange() {
+    Assumptions.assumeTrue(isArrowAvailable(), "Arrow memory allocator is unavailable");
+
+    Schema schema =
+        new Schema(
+            List.of(
+                new Field(
+                    "ts_col",
+                    FieldType.nullable(new ArrowType.Timestamp(TimeUnit.NANOSECOND, null)),
+                    List.of())));
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+      assertThatThrownBy(
+              () ->
+                  ArrowConversion.fill(
+                      root,
+                      List.of(
+                          new SystemObjectRow(
+                              new Object[] {
+                                LocalDateTime.parse("2500-01-01T00:00:00.123456789")
+                              }))))
+          .isInstanceOf(ArithmeticException.class);
     }
   }
 
