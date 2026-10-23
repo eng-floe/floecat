@@ -45,8 +45,8 @@ public final class IcebergTypeMappings {
       }
       case TIMESTAMP_NANO -> {
         var ts = (Types.TimestampNanoType) t;
-        yield LogicalType.of(
-            ts.shouldAdjustToUTC() ? LogicalKind.TIMESTAMPTZ : LogicalKind.TIMESTAMP);
+        yield LogicalType.temporal(
+            ts.shouldAdjustToUTC() ? LogicalKind.TIMESTAMPTZ : LogicalKind.TIMESTAMP, 9);
       }
       case STRING -> LogicalType.of(LogicalKind.STRING);
       case FIXED, BINARY -> LogicalType.of(LogicalKind.BINARY);

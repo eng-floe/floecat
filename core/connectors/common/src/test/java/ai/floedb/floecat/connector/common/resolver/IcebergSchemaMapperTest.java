@@ -84,7 +84,7 @@ class IcebergSchemaMapperTest {
     SchemaColumn col =
         singleColumn(
             Types.NestedField.optional(1, "ts_utc_nano", Types.TimestampNanoType.withZone()));
-    assertThat(typeTag(col)).isEqualTo("TIMESTAMPTZ");
+    assertThat(typeTag(col)).isEqualTo("TIMESTAMPTZ(9)");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -93,7 +93,7 @@ class IcebergSchemaMapperTest {
     SchemaColumn col =
         singleColumn(
             Types.NestedField.optional(1, "ts_ntz_nano", Types.TimestampNanoType.withoutZone()));
-    assertThat(typeTag(col)).isEqualTo("TIMESTAMP");
+    assertThat(typeTag(col)).isEqualTo("TIMESTAMP(9)");
     assertThat(col.getLeaf()).isTrue();
   }
 

@@ -91,15 +91,28 @@ public final class TemporalCoercions {
         instant, defaultSessionZone(), defaultTimestampNoTzPolicy());
   }
 
+  /** Converts a zoned value for a TIMESTAMP column while retaining the requested precision. */
+  public static LocalDateTime localDateTimeFromInstantNoTzAtPrecision(
+      Instant instant, int precision) {
+    return localDateTimeFromInstantNoTzAtPrecision(
+        instant, defaultSessionZone(), defaultTimestampNoTzPolicy(), precision);
+  }
+
   public static LocalDateTime localDateTimeFromInstantNoTz(
       Instant instant, ZoneId sessionZone, TimestampNoTzPolicy policy) {
+    return localDateTimeFromInstantNoTzAtPrecision(instant, sessionZone, policy, 6);
+  }
+
+  public static LocalDateTime localDateTimeFromInstantNoTzAtPrecision(
+      Instant instant, ZoneId sessionZone, TimestampNoTzPolicy policy, int precision) {
+    int normalizedPrecision = normalizeTemporalPrecision(precision);
     Objects.requireNonNull(instant, "instant");
     if (policy == TimestampNoTzPolicy.REJECT_ZONED) {
       throw new IllegalArgumentException(
           "TIMESTAMP must be timezone-naive, got zoned value: " + instant);
     }
     ZoneId zone = (sessionZone == null) ? ZoneOffset.UTC : sessionZone;
-    return truncateToMicros(LocalDateTime.ofInstant(instant, zone));
+    return truncateToTemporalPrecision(LocalDateTime.ofInstant(instant, zone), normalizedPrecision);
   }
 
   public enum TimestampNoTzPolicy {
@@ -117,10 +130,23 @@ public final class TemporalCoercions {
     return parseTimestampNoTz(raw, defaultSessionZone(), defaultTimestampNoTzPolicy());
   }
 
+  /** Parses a TIMESTAMP value while retaining the requested fractional-second precision. */
+  public static LocalDateTime parseTimestampNoTzAtPrecision(String raw, int precision) {
+    return parseTimestampNoTzAtPrecision(
+        raw, defaultSessionZone(), defaultTimestampNoTzPolicy(), precision);
+  }
+
   public static LocalDateTime parseTimestampNoTz(
       String raw, ZoneId sessionZone, TimestampNoTzPolicy policy) {
+    return parseTimestampNoTzAtPrecision(raw, sessionZone, policy, 6);
+  }
+
+  public static LocalDateTime parseTimestampNoTzAtPrecision(
+      String raw, ZoneId sessionZone, TimestampNoTzPolicy policy, int precision) {
+    int normalizedPrecision = normalizeTemporalPrecision(precision);
     try {
-      return truncateToMicros(LocalDateTime.parse(raw, DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+      return truncateToTemporalPrecision(
+          LocalDateTime.parse(raw, DateTimeFormatter.ISO_LOCAL_DATE_TIME), normalizedPrecision);
     } catch (DateTimeParseException ignore) {
       // fall through
     }
@@ -131,7 +157,7 @@ public final class TemporalCoercions {
           "TIMESTAMP must be timezone-naive, got zoned value: " + raw);
     }
     ZoneId zone = (sessionZone == null) ? ZoneOffset.UTC : sessionZone;
-    return truncateToMicros(LocalDateTime.ofInstant(instant, zone));
+    return truncateToTemporalPrecision(LocalDateTime.ofInstant(instant, zone), normalizedPrecision);
   }
 
   /** Coerce a TIMESTAMP (no timezone) from LocalDateTime, Instant, or ISO string. */

@@ -73,9 +73,11 @@ public final class ArrowSchemaUtil {
       case DECIMAL -> ArrowDecimalTypes.decimalType(logicalType.precision(), logicalType.scale());
       case STRING, JSON -> new ArrowType.Utf8();
       case DATE -> new ArrowType.Date(DateUnit.DAY);
-      case TIME -> new ArrowType.Time(TimeUnit.MICROSECOND, 64);
-      case TIMESTAMP -> new ArrowType.Timestamp(TimeUnit.MICROSECOND, null);
-      case TIMESTAMPTZ -> new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC");
+      case TIME -> new ArrowType.Time(temporalUnit(logicalType.temporalPrecision()), 64);
+      case TIMESTAMP ->
+          new ArrowType.Timestamp(temporalUnit(logicalType.temporalPrecision()), null);
+      case TIMESTAMPTZ ->
+          new ArrowType.Timestamp(temporalUnit(logicalType.temporalPrecision()), "UTC");
       case UUID -> new ArrowType.FixedSizeBinary(16);
       case BINARY -> new ArrowType.Binary();
       case INTERVAL ->
@@ -171,5 +173,13 @@ public final class ArrowSchemaUtil {
       case MICROSECOND -> 6;
       case NANOSECOND -> 9;
     };
+  }
+
+  private static TimeUnit temporalUnit(Integer precision) {
+    int normalized = precision == null ? LogicalType.DEFAULT_TEMPORAL_PRECISION : precision;
+    if (normalized <= 6) {
+      return TimeUnit.MICROSECOND;
+    }
+    return TimeUnit.NANOSECOND;
   }
 }
