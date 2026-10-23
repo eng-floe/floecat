@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.connector.common.auth.AwsCredentialFailureClassifier;
 import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
 import ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus;
 import io.grpc.Status;
@@ -66,8 +67,12 @@ final class ReconcileFailureClassifier {
       if (cur instanceof ForbiddenException || cur instanceof NotAuthorizedException) {
         return terminalInternal(cur.getMessage(), cur);
       }
-      if (cur instanceof AwsServiceException aws && isTerminalAwsAuthFailure(aws)) {
-        return terminalInternal(aws.getMessage(), aws);
+      if (cur instanceof AwsServiceException aws) {
+        var classified =
+            AwsCredentialFailureClassifier.classifyTerminalAuthenticationFailure(aws).orElse(null);
+        if (classified != null) {
+          return terminalInternal(classified.cause().getMessage(), classified.cause());
+        }
       }
       seen.add(cur);
       cur = cur.getCause();
@@ -81,28 +86,5 @@ final class ReconcileFailureClassifier {
         ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
         message,
         cause);
-  }
-
-  private static boolean isTerminalAwsAuthFailure(AwsServiceException aws) {
-    int statusCode = aws.statusCode();
-    if (statusCode == 401 || statusCode == 403) {
-      return true;
-    }
-    if (aws.awsErrorDetails() == null || aws.awsErrorDetails().errorCode() == null) {
-      return false;
-    }
-    return switch (aws.awsErrorDetails().errorCode()) {
-      case "AccessDenied",
-          "AccessDeniedException",
-          "ExpiredToken",
-          "ExpiredTokenException",
-          "Forbidden",
-          "InvalidClientTokenId",
-          "InvalidToken",
-          "SignatureDoesNotMatch",
-          "UnrecognizedClientException" ->
-          true;
-      default -> false;
-    };
   }
 }

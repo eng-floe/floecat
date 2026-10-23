@@ -1119,12 +1119,17 @@ public class SourceCatalogCredentialVendor {
    * worth a stack trace, a timeout on a per-file-group path is not.
    */
   private static StatusRuntimeException terminalStatus(RuntimeException cause, String description) {
-    // Typed exceptions only. Substring-matching the cause chain for 401/403/"access denied" gets
-    // the risk backwards: a transient failure whose text merely contains one of those tokens -- a
-    // gateway page echoing "Access Denied", an S3 denial during IAM propagation lag, a URL with 403
-    // in it -- would be classified terminal and stop the reconciler retrying a job that would have
-    // recovered. Iceberg's REST client raises NotAuthorizedException for 401 and ForbiddenException
-    // for 403, so classification uses those and nothing else.
+    // Typed exceptions only. HTTP/client exception types and AWS error codes are stable transport
+    // signals; message text is not. A bare AWS authentication rejection here has no provider-level
+    // refreshability verdict, so it is permanent. Catalog Integrations are handled separately
+    // below:
+    // their CatalogAccessException classification takes precedence when it says re-vending can
+    // replace an expired or temporarily unavailable credential.
+    var aws = AwsCredentialFailureGrpcStatus.findTerminalAuthenticationFailure(cause).orElse(null);
+    if (aws != null) {
+      return SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(
+          aws.grpcCode(), aws.errorCode(), description, cause);
+    }
     // Membership, not self-reference: `c.getCause() == c` catches only a one-node loop, so a chain
     // where A causes B and B causes A spins here forever. SourceCatalogVendingGrpcStatus.hasReason
     // walks a cause chain the same way and already guards it this way.
@@ -1257,6 +1262,12 @@ public class SourceCatalogCredentialVendor {
   private static StatusRuntimeException integrationStatus(
       CatalogAccessException accessFailure, RuntimeException cause, String detail) {
     if (accessFailure == null) {
+      var aws =
+          AwsCredentialFailureGrpcStatus.findTerminalAuthenticationFailure(cause).orElse(null);
+      if (aws != null) {
+        return SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(
+            aws.grpcCode(), aws.errorCode(), detail, cause);
+      }
       return io.grpc.Status.INTERNAL.withDescription(detail).withCause(cause).asRuntimeException();
     }
     return switch (accessFailure.code()) {

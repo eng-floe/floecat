@@ -355,6 +355,18 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
               } catch (StorageAuthorityResolver.CredentialVendingUnavailableException error) {
                 throw GrpcErrors.unavailable(
                     correlationId(), null, Map.of("operation", "assume-role"), error);
+              } catch (RuntimeException error) {
+                var aws =
+                    AwsCredentialFailureGrpcStatus.findTerminalAuthenticationFailure(error)
+                        .orElse(null);
+                if (aws == null) {
+                  throw error;
+                }
+                Map<String, String> params = Map.of("operation", "assume-role");
+                if (aws.grpcCode() == io.grpc.Status.Code.UNAUTHENTICATED) {
+                  throw GrpcErrors.unauthenticated(correlationId(), null, params, error);
+                }
+                throw GrpcErrors.permissionDenied(correlationId(), null, params, error);
               }
             }),
         correlationId());
