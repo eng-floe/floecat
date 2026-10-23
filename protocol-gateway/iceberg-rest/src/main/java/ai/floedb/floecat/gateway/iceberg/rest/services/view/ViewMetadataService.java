@@ -461,7 +461,8 @@ public class ViewMetadataService {
                   new LogicalField(
                       String.valueOf(fieldMap.get("name")),
                       !Boolean.TRUE.equals(fieldMap.get("required")),
-                      icebergTypeValueToLogical(fieldMap.get("type"), depth + 1)));
+                      icebergTypeValueToLogical(fieldMap.get("type"), depth + 1),
+                      fieldMap.get("id") instanceof Number id ? id.longValue() : 0L));
             }
             yield LogicalType.struct(structFields);
           }

@@ -19,6 +19,7 @@ package ai.floedb.floecat.connector.iceberg.impl;
 import ai.floedb.floecat.connector.common.PlannedFile;
 import ai.floedb.floecat.connector.common.Planner;
 import ai.floedb.floecat.connector.common.ndv.NdvProvider;
+import ai.floedb.floecat.connector.common.resolver.IcebergNestedPaths;
 import ai.floedb.floecat.types.LogicalCoercions;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -96,9 +97,13 @@ final class IcebergPlanner implements Planner<Integer> {
     this.specsById = table.specs();
     this.defaultSpec = table.spec();
 
-    for (Types.NestedField field : schema.columns()) {
-      collectFieldMetadata(field);
-    }
+    IcebergNestedPaths.walk(
+        schema,
+        (field, path, ordinal) -> {
+          idToName.put(field.fieldId(), path);
+          idToLogical.put(field.fieldId(), IcebergTypeMapper.toLogical(field.type()));
+          idToIceType.put(field.fieldId(), field.type());
+        });
 
     this.columnSet =
         (colIds == null || colIds.isEmpty())
@@ -205,27 +210,6 @@ final class IcebergPlanner implements Planner<Integer> {
         deleteFile.specId(),
         deleteFile.fileSequenceNumber(),
         equalityFieldIds);
-  }
-
-  private void collectFieldMetadata(Types.NestedField field) {
-    if (field == null) {
-      return;
-    }
-    idToName.put(field.fieldId(), field.name());
-    idToLogical.put(field.fieldId(), IcebergTypeMapper.toLogical(field.type()));
-    idToIceType.put(field.fieldId(), field.type());
-
-    Type type = field.type();
-    if (type.isStructType()) {
-      for (Types.NestedField child : type.asStructType().fields()) {
-        collectFieldMetadata(child);
-      }
-    } else if (type.isListType()) {
-      collectFieldMetadata(type.asListType().fields().getFirst());
-    } else if (type.isMapType()) {
-      collectFieldMetadata(type.asMapType().fields().get(0));
-      collectFieldMetadata(type.asMapType().fields().get(1));
-    }
   }
 
   private PlannedFile<Integer> toPlanned(DataFile dataFile) {
