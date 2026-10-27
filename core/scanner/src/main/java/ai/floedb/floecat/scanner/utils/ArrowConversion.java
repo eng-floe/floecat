@@ -40,8 +40,11 @@ import org.apache.arrow.vector.Float8Vector;
 import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.IntervalDayVector;
 import org.apache.arrow.vector.TimeMicroVector;
+import org.apache.arrow.vector.TimeNanoVector;
 import org.apache.arrow.vector.TimeStampMicroTZVector;
 import org.apache.arrow.vector.TimeStampMicroVector;
+import org.apache.arrow.vector.TimeStampNanoTZVector;
+import org.apache.arrow.vector.TimeStampNanoVector;
 import org.apache.arrow.vector.VarBinaryVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
@@ -120,12 +123,24 @@ public final class ArrowConversion {
       time.setSafe(idx, toTimeMicros(value));
       return;
     }
+    if (vector instanceof TimeNanoVector time) {
+      time.setSafe(idx, toTimeNanos(value));
+      return;
+    }
     if (vector instanceof TimeStampMicroVector timestamp) {
       timestamp.setSafe(idx, toTimestampMicrosNoTz(value));
       return;
     }
     if (vector instanceof TimeStampMicroTZVector timestamptz) {
       timestamptz.setSafe(idx, toTimestampMicrosTz(value));
+      return;
+    }
+    if (vector instanceof TimeStampNanoVector timestamp) {
+      timestamp.setSafe(idx, toTimestampNanosNoTz(value));
+      return;
+    }
+    if (vector instanceof TimeStampNanoTZVector timestamptz) {
+      timestamptz.setSafe(idx, toTimestampNanosTz(value));
       return;
     }
     if (vector instanceof Decimal256Vector decimal256) {
@@ -177,6 +192,16 @@ public final class ArrowConversion {
     throw new IllegalArgumentException("TIME value must be LocalTime or ISO time string");
   }
 
+  private static long toTimeNanos(Object value) {
+    if (value instanceof LocalTime time) {
+      return time.toNanoOfDay();
+    }
+    if (value instanceof CharSequence text) {
+      return LocalTime.parse(text.toString()).toNanoOfDay();
+    }
+    throw new IllegalArgumentException("TIME value must be LocalTime or ISO time string");
+  }
+
   private static long toTimestampMicrosNoTz(Object value) {
     if (value instanceof Instant instant) {
       LocalDateTime local = TemporalCoercions.localDateTimeFromInstantNoTz(instant);
@@ -198,6 +223,22 @@ public final class ArrowConversion {
         "TIMESTAMP value must be Instant, LocalDateTime, or ISO local/instant string");
   }
 
+  private static long toTimestampNanosNoTz(Object value) {
+    LocalDateTime local;
+    if (value instanceof Instant instant) {
+      local = TemporalCoercions.localDateTimeFromInstantNoTzAtPrecision(instant, 9);
+    } else if (value instanceof LocalDateTime localDateTime) {
+      local = localDateTime;
+    } else if (value instanceof CharSequence text) {
+      local = TemporalCoercions.parseTimestampNoTzAtPrecision(text.toString(), 9);
+    } else {
+      throw new IllegalArgumentException(
+          "TIMESTAMP value must be Instant, LocalDateTime, or ISO local/instant string");
+    }
+    Instant instant = local.toInstant(ZoneOffset.UTC);
+    return toEpochNanos(instant);
+  }
+
   private static long toTimestampMicrosTz(Object value) {
     Instant instant;
     if (value instanceof Instant i) {
@@ -209,6 +250,23 @@ public final class ArrowConversion {
       throw new IllegalArgumentException("TIMESTAMPTZ value must be Instant or ISO instant string");
     }
     return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
+  }
+
+  private static long toTimestampNanosTz(Object value) {
+    Instant instant;
+    if (value instanceof Instant i) {
+      instant = i;
+    } else if (value instanceof CharSequence text) {
+      instant = TemporalCoercions.parseZonedInstant(text.toString());
+    } else {
+      throw new IllegalArgumentException("TIMESTAMPTZ value must be Instant or ISO instant string");
+    }
+    return toEpochNanos(instant);
+  }
+
+  private static long toEpochNanos(Instant instant) {
+    return Math.addExact(
+        Math.multiplyExact(instant.getEpochSecond(), 1_000_000_000L), instant.getNano());
   }
 
   private static BigDecimal toDecimal(Object value) {

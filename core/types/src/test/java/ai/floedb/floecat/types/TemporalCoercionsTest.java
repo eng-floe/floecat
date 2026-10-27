@@ -63,6 +63,22 @@ class TemporalCoercionsTest {
   }
 
   @Test
+  void precisionAwareParsingRejectsInvalidPrecision() {
+    assertThatThrownBy(
+            () ->
+                TemporalCoercions.parseTimestampNoTzAtPrecision(
+                    "2026-02-26T12:34:56.123456789", -1))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid temporal precision");
+    assertThatThrownBy(
+            () ->
+                TemporalCoercions.parseTimestampNoTzAtPrecision(
+                    "2026-02-26T12:34:56.123456789", 10))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid temporal precision");
+  }
+
+  @Test
   void formatInstantUtcPrecisionZeroOmitsFractionalPart() {
     Instant instant = Instant.parse("2026-02-26T12:34:56.123456789Z");
     assertThat(TemporalCoercions.formatInstantUtc(instant, 0)).isEqualTo("2026-02-26T12:34:56Z");

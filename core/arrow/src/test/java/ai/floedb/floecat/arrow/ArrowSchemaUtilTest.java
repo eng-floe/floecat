@@ -113,6 +113,32 @@ class ArrowSchemaUtilTest {
   }
 
   @Test
+  void mapsNanosecondTemporalTypesToNanosecondArrowTypes() {
+    Schema schema =
+        ArrowSchemaUtil.toArrowSchema(
+            List.of(
+                SchemaColumn.newBuilder()
+                    .setName("t")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("TIME(9)"))
+                    .build(),
+                SchemaColumn.newBuilder()
+                    .setName("ts")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("TIMESTAMP(9)"))
+                    .build(),
+                SchemaColumn.newBuilder()
+                    .setName("tstz")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("TIMESTAMPTZ(9)"))
+                    .build()));
+
+    assertThat(((ArrowType.Time) schema.getFields().get(0).getType()).getUnit())
+        .isEqualTo(TimeUnit.NANOSECOND);
+    assertThat(((ArrowType.Timestamp) schema.getFields().get(1).getType()).getUnit())
+        .isEqualTo(TimeUnit.NANOSECOND);
+    assertThat(((ArrowType.Timestamp) schema.getFields().get(2).getType()).getUnit())
+        .isEqualTo(TimeUnit.NANOSECOND);
+  }
+
+  @Test
   void mapsCanonicalDecimalAndBinaryFamilyToArrowSpecificTypes() {
     Schema schema =
         ArrowSchemaUtil.toArrowSchema(

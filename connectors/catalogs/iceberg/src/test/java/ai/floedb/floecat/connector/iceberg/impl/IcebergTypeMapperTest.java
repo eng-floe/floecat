@@ -147,12 +147,16 @@ class IcebergTypeMapperTest {
 
   @Test
   void timestampNanoWithZoneMapsToTimestamptz() {
-    assertKind(Types.TimestampNanoType.withZone(), LogicalKind.TIMESTAMPTZ);
+    LogicalType result = IcebergTypeMapper.toLogical(Types.TimestampNanoType.withZone());
+    assertThat(result.kind()).isEqualTo(LogicalKind.TIMESTAMPTZ);
+    assertThat(result.temporalPrecision()).isEqualTo(9);
   }
 
   @Test
   void timestampNanoWithoutZoneMapsToTimestamp() {
-    assertKind(Types.TimestampNanoType.withoutZone(), LogicalKind.TIMESTAMP);
+    LogicalType result = IcebergTypeMapper.toLogical(Types.TimestampNanoType.withoutZone());
+    assertThat(result.kind()).isEqualTo(LogicalKind.TIMESTAMP);
+    assertThat(result.temporalPrecision()).isEqualTo(9);
   }
 
   // ---------------------------------------------------------------------------
