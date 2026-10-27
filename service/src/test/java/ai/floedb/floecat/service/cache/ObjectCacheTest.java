@@ -66,6 +66,27 @@ class ObjectCacheTest {
   }
 
   @Test
+  void pathOrdinalDeltaSchemaMapsWithoutIdentityMap() {
+    ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
+    UserTableNode table =
+        table(
+            "account",
+            "table",
+            TableFormat.TF_DELTA,
+            ColumnIdAlgorithm.CID_PATH_ORDINAL,
+            List.of());
+
+    var schema =
+        cache.mappedSchema(
+            table,
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":false,\"metadata\":{}}]}",
+            ColumnIdentityMap.getDefaultInstance());
+
+    assertThat(schema.getColumnsCount()).isEqualTo(1);
+    assertThat(schema.getColumns(0).getId()).isNotZero();
+  }
+
+  @Test
   void mappedSchemaIdentityIncludesEveryMappingInput() {
     UserTableNode base = table("account", "table", TableFormat.TF_ICEBERG, List.of("part"));
     String schema = "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[]}";

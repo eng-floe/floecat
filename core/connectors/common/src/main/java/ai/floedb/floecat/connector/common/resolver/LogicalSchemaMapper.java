@@ -94,8 +94,12 @@ public class LogicalSchemaMapper {
     return switch (format) {
       case TF_ICEBERG -> IcebergSchemaMapper.map(cid_algo, schemaJson, partitionKeys);
       case TF_DELTA ->
-          ai.floedb.floecat.delta.identity.DeltaSchemaMapper.map(
-              schemaJson, partitionKeys, columnIdentityMap);
+          cid_algo == ColumnIdAlgorithm.CID_CANONICAL_MAP
+              ? ai.floedb.floecat.delta.identity.DeltaSchemaMapper.map(
+                  schemaJson, partitionKeys, columnIdentityMap)
+              // Path-ordinal Delta tables exist only while the overlay canonical-identity rollout
+              // gate is off; remove this branch with that gate.
+              : DeltaSchemaMapper.map(cid_algo, schemaJson, partitionKeys);
       default -> GenericSchemaMapper.map(cid_algo, schemaJson);
     };
   }

@@ -227,6 +227,42 @@ class LogicalSchemaMapperTest {
     assertEquals("Canonical column identity map is required", error.getMessage());
   }
 
+  @Test
+  void pathOrdinalDeltaSchemaMapsWithoutIdentityMap() {
+    String deltaJson =
+        """
+        {"type":"struct",
+          "fields":[
+            {"name":"id","type":"long","nullable":false},
+            {"name":"location","type":{
+                 "type":"struct",
+                 "fields":[
+                   {"name":"lat","type":"double","nullable":true},
+                   {"name":"lon","type":"double","nullable":true}
+                 ]
+              },"nullable":true}
+          ]
+        }
+        """;
+
+    UpstreamRef upstream =
+        UpstreamRef.newBuilder()
+            .setFormat(TableFormat.TF_DELTA)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_PATH_ORDINAL)
+            .build();
+
+    SchemaDescriptor desc = map(baseTable(deltaJson, upstream), deltaJson);
+
+    assertEquals(
+        DeltaSchemaMapper.map(ColumnIdAlgorithm.CID_PATH_ORDINAL, deltaJson, java.util.Set.of()),
+        desc);
+    assertEquals(4, desc.getColumnsCount());
+    for (SchemaColumn column : desc.getColumnsList()) {
+      assertNotEquals(0L, column.getId(), "expected non-zero id for " + column.getPhysicalPath());
+    }
+    assertEquals("location.lat", desc.getColumns(2).getPhysicalPath());
+  }
+
   // -------------------------------------------------------------------------
   // ICEBERG fallback to generic
   // -------------------------------------------------------------------------
