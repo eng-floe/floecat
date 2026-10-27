@@ -263,6 +263,25 @@ class LogicalSchemaMapperTest {
     assertEquals("location.lat", desc.getColumns(2).getPhysicalPath());
   }
 
+  @Test
+  void deltaSchemaRejectsUnspecifiedColumnIdAlgorithm() {
+    String deltaJson =
+        """
+        {"type":"struct","fields":[{"name":"id","type":"long","nullable":false}]}
+        """;
+    UpstreamRef upstream =
+        UpstreamRef.newBuilder()
+            .setFormat(TableFormat.TF_DELTA)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_UNSPECIFIED)
+            .build();
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class, () -> map(baseTable(deltaJson, upstream), deltaJson));
+
+    assertEquals("Unsupported Delta column ID algorithm: CID_UNSPECIFIED", error.getMessage());
+  }
+
   // -------------------------------------------------------------------------
   // ICEBERG fallback to generic
   // -------------------------------------------------------------------------

@@ -93,13 +93,20 @@ public class LogicalSchemaMapper {
       ColumnIdentityMap columnIdentityMap) {
     return switch (format) {
       case TF_ICEBERG -> IcebergSchemaMapper.map(cid_algo, schemaJson, partitionKeys);
-      case TF_DELTA ->
-          cid_algo == ColumnIdAlgorithm.CID_CANONICAL_MAP
-              ? ai.floedb.floecat.delta.identity.DeltaSchemaMapper.map(
-                  schemaJson, partitionKeys, columnIdentityMap)
-              // Path-ordinal Delta tables exist only while the overlay canonical-identity rollout
-              // gate is off; remove this branch with that gate.
-              : DeltaSchemaMapper.map(cid_algo, schemaJson, partitionKeys);
+      case TF_DELTA -> {
+        if (cid_algo == ColumnIdAlgorithm.CID_CANONICAL_MAP) {
+          yield ai.floedb.floecat.delta.identity.DeltaSchemaMapper.map(
+              schemaJson, partitionKeys, columnIdentityMap);
+        }
+        if (cid_algo == ColumnIdAlgorithm.CID_PATH_ORDINAL) {
+          // Path-ordinal Delta tables exist only while the overlay canonical-identity rollout gate
+          // is off; remove this branch with that gate.
+          yield DeltaSchemaMapper.map(cid_algo, schemaJson, partitionKeys);
+        }
+        throw new IllegalArgumentException(
+            "Unsupported Delta column ID algorithm: "
+                + (cid_algo == null ? "null" : cid_algo.name()));
+      }
       default -> GenericSchemaMapper.map(cid_algo, schemaJson);
     };
   }

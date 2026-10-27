@@ -997,6 +997,13 @@ public class CatalogOverlayReconciler {
     var properties = objectProperties(overlay, integration, source.identity());
     source.metadataLocation().ifPresent(value -> properties.put(METADATA_LOCATION_PROPERTY, value));
     source.storageLocation().ifPresent(value -> properties.put(STORAGE_LOCATION_PROPERTY, value));
+    boolean useCanonicalDeltaIdentity =
+        deltaCanonicalColumnIdentity
+            || (current != null
+                && current.hasUpstream()
+                && current.getUpstream().getFormat() == TableFormat.TF_DELTA
+                && current.getUpstream().getColumnIdAlgorithm()
+                    == ColumnIdAlgorithm.CID_CANONICAL_MAP);
     var upstream =
         UpstreamRef.newBuilder()
             .setCatalogIntegrationId(integration.getResourceId())
@@ -1006,7 +1013,7 @@ public class CatalogOverlayReconciler {
             .setTableDisplayName(source.name().name())
             .setFormat(tableFormat(source.format()))
             .addAllPartitionKeys(source.partitionKeys())
-            .setColumnIdAlgorithm(columnIdAlgorithm(source.format(), deltaCanonicalColumnIdentity))
+            .setColumnIdAlgorithm(columnIdAlgorithm(source.format(), useCanonicalDeltaIdentity))
             .build();
     var builder =
         Table.newBuilder()

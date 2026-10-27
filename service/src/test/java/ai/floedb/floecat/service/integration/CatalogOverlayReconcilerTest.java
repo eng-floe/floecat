@@ -710,7 +710,7 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
-  void disabledCanonicalGateReturnsCanonicalDeltaToPathOrdinalAndDropsItsMap() {
+  void disabledCanonicalGateDoesNotDowngradeCanonicalDelta() {
     client.provideDeltaHistory = true;
     NamespacePath sales = NamespacePath.of("sales");
     CatalogObjectName orders = new CatalogObjectName(sales, "orders");
@@ -731,15 +731,16 @@ class CatalogOverlayReconcilerTest {
     int historyCalls = client.deltaHistoryCalls.get();
 
     reconciler.deltaCanonicalColumnIdentity = false;
-    CatalogOverlayReconciler.Result result = reconcile();
+    CatalogOverlayReconciler.Result result = reconcileMetadataOnly();
     Table after = tables.getById(before.getResourceId()).orElseThrow();
 
-    assertEquals(1, result.tablesUpdated());
+    assertEquals(0, result.tablesUpdated());
     assertEquals(historyCalls, client.deltaHistoryCalls.get());
     assertEquals(
-        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
         after.getUpstream().getColumnIdAlgorithm());
-    assertFalse(after.hasColumnIdentityMap());
+    assertTrue(after.hasColumnIdentityMap());
+    assertEquals(before.getColumnIdentityMap(), after.getColumnIdentityMap());
   }
 
   @Test

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.common.resolver;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.types.LogicalField;
@@ -27,27 +28,12 @@ import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-import io.delta.kernel.internal.types.DataTypeJsonSerDe;
 import io.delta.kernel.types.ArrayType;
-import io.delta.kernel.types.BinaryType;
-import io.delta.kernel.types.BooleanType;
-import io.delta.kernel.types.ByteType;
 import io.delta.kernel.types.DataType;
-import io.delta.kernel.types.DateType;
-import io.delta.kernel.types.DecimalType;
-import io.delta.kernel.types.DoubleType;
 import io.delta.kernel.types.FieldMetadata;
-import io.delta.kernel.types.FloatType;
-import io.delta.kernel.types.IntegerType;
-import io.delta.kernel.types.LongType;
 import io.delta.kernel.types.MapType;
-import io.delta.kernel.types.ShortType;
-import io.delta.kernel.types.StringType;
 import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
-import io.delta.kernel.types.TimestampNTZType;
-import io.delta.kernel.types.TimestampType;
-import io.delta.kernel.types.VariantType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -71,7 +57,7 @@ final class DeltaSchemaMapper {
     try {
       Set<String> effectivePartitionKeys = partitionKeys == null ? Set.of() : partitionKeys;
       try {
-        StructType root = DataTypeJsonSerDe.deserializeStructType(schemaJson);
+        StructType root = KernelAdapter.deserializeSchema(schemaJson);
         SchemaDescriptor.Builder sb = SchemaDescriptor.newBuilder();
         walkDeltaStruct(cid_algo, sb, root, "", effectivePartitionKeys);
         return sb.build();
@@ -130,7 +116,8 @@ final class DeltaSchemaMapper {
     // match would wrongly flag synthetic nested rows (a partition column literally named "key"
     // must not mark every map-key row).
     boolean isPartition = partitionKeys.contains(physical);
-    LogicalType logicalType = toLogicalType(dataType);
+    LogicalType logicalType =
+        ai.floedb.floecat.delta.identity.DeltaSchemaMapper.toLogical(dataType);
 
     sb.addColumns(
         ColumnIdComputer.withComputedId(
@@ -174,53 +161,6 @@ final class DeltaSchemaMapper {
       return 0;
     }
     return fieldId.intValue();
-  }
-
-  private static LogicalType toLogicalType(DataType dataType) {
-    if (dataType instanceof BooleanType) return LogicalType.of(LogicalKind.BOOLEAN);
-    if (dataType instanceof ByteType
-        || dataType instanceof ShortType
-        || dataType instanceof IntegerType
-        || dataType instanceof LongType) {
-      return LogicalType.of(LogicalKind.INT);
-    }
-    if (dataType instanceof FloatType) return LogicalType.of(LogicalKind.FLOAT);
-    if (dataType instanceof DoubleType) return LogicalType.of(LogicalKind.DOUBLE);
-    if (dataType instanceof StringType) return LogicalType.of(LogicalKind.STRING);
-    if (dataType instanceof BinaryType) return LogicalType.of(LogicalKind.BINARY);
-    if (dataType instanceof DateType) return LogicalType.of(LogicalKind.DATE);
-    if (dataType instanceof TimestampType) return LogicalType.of(LogicalKind.TIMESTAMPTZ);
-    if (dataType instanceof TimestampNTZType) return LogicalType.of(LogicalKind.TIMESTAMP);
-    if (dataType instanceof ArrayType arrayType) {
-      return LogicalType.array(toLogicalType(arrayType.getElementType()), arrayType.containsNull());
-    }
-    if (dataType instanceof MapType mapType) {
-      return LogicalType.map(
-          toLogicalType(mapType.getKeyType()),
-          toLogicalType(mapType.getValueType()),
-          mapType.isValueContainsNull());
-    }
-    if (dataType instanceof StructType structType) {
-      List<LogicalField> fields =
-          structType.fields().stream()
-              .map(
-                  f ->
-                      new LogicalField(f.getName(), f.isNullable(), toLogicalType(f.getDataType())))
-              .toList();
-      // An explicitly empty source struct is a known-empty shape, not the legacy tag.
-      return LogicalType.struct(fields);
-    }
-    if (dataType instanceof VariantType) return LogicalType.of(LogicalKind.VARIANT);
-    if (dataType instanceof DecimalType decimalType) {
-      LogicalType logicalType =
-          LogicalType.decimal(decimalType.getPrecision(), decimalType.getScale());
-      DecimalPrecisionConstraints.validateDecimalPrecision(
-          logicalType, "Delta", decimalType.toString(), MAX_DECIMAL_PRECISION);
-      return logicalType;
-    }
-
-    throw new IllegalArgumentException(
-        "Unrecognized Delta type: '" + dataType.getClass().getSimpleName() + "'");
   }
 
   private static void walkFallbackStruct(
