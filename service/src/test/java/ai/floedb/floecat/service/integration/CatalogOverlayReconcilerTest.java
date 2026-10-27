@@ -684,6 +684,65 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void disabledCanonicalGateMaterializesDeltaAsPathOrdinalWithoutIdentityHistory() {
+    reconciler.deltaCanonicalColumnIdentity = false;
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+
+    CatalogOverlayReconciler.Result result = reconcile();
+
+    assertEquals(1, result.tablesCreated());
+    assertEquals(0, result.objectsSkipped());
+    assertEquals(0, client.deltaHistoryCalls.get());
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table table =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+        table.getUpstream().getColumnIdAlgorithm());
+    assertFalse(table.hasColumnIdentityMap());
+  }
+
+  @Test
+  void disabledCanonicalGateReturnsCanonicalDeltaToPathOrdinalAndDropsItsMap() {
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+    assertEquals(1, reconcile().tablesCreated());
+
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table before =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
+        before.getUpstream().getColumnIdAlgorithm());
+    assertTrue(before.hasColumnIdentityMap());
+    int historyCalls = client.deltaHistoryCalls.get();
+
+    reconciler.deltaCanonicalColumnIdentity = false;
+    CatalogOverlayReconciler.Result result = reconcile();
+    Table after = tables.getById(before.getResourceId()).orElseThrow();
+
+    assertEquals(1, result.tablesUpdated());
+    assertEquals(historyCalls, client.deltaHistoryCalls.get());
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+        after.getUpstream().getColumnIdAlgorithm());
+    assertFalse(after.hasColumnIdentityMap());
+  }
+
+  @Test
   void deltaTableWithoutHistoryIsSkippedInsteadOfSynthesized() {
     NamespacePath sales = NamespacePath.of("sales");
     CatalogObjectName orders = new CatalogObjectName(sales, "orders");
