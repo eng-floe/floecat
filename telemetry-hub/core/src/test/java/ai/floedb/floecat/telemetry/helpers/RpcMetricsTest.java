@@ -58,4 +58,21 @@ class RpcMetricsTest {
 
     assertThat(observability.scopes()).containsKey(Category.RPC.name());
   }
+
+  @Test
+  void recordsBytesTaggedByDirection() {
+    TestObservability observability = new TestObservability();
+    RpcMetrics metrics = new RpcMetrics(observability, "svc", "op");
+
+    metrics.recordBytes("inbound", 128);
+    metrics.recordBytes("outbound", 64);
+
+    assertThat(observability.counterValue(Telemetry.Metrics.RPC_BYTES)).isEqualTo(192d);
+    assertThat(observability.counterTagHistory(Telemetry.Metrics.RPC_BYTES)).hasSize(2);
+    assertThat(observability.counterTagHistory(Telemetry.Metrics.RPC_BYTES).get(0))
+        .contains(
+            Tag.of(TagKey.COMPONENT, "svc"),
+            Tag.of(TagKey.OPERATION, "op"),
+            Tag.of(TagKey.DIRECTION, "inbound"));
+  }
 }
