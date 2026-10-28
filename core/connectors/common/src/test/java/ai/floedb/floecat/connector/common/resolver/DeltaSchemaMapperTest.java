@@ -47,7 +47,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li>Integer collapsing: all Delta int flavours → {@code "INT"}
  *   <li>Complex object nodes (struct/array/map/variant) → correct canonical name
  *   <li>DECIMAL passthrough: {@code "decimal(10,2)"} → {@code "DECIMAL(10,2)"}
- *   <li>Unknown/malformed source types fail fast (no silent fallback)
+ *   <li>Anything Delta Kernel rejects fails fast, including SQL type aliases that are not Delta
+ *       protocol type names
  * </ul>
  */
 class DeltaSchemaMapperTest {
@@ -60,7 +61,7 @@ class DeltaSchemaMapperTest {
 
   private static String singleFieldSchema(String fieldName, String deltaType) {
     return """
-        {"fields":[{"name":"%s","type":"%s","nullable":true}]}
+        {"type":"struct","fields":[{"name":"%s","type":"%s","nullable":true,"metadata":{}}]}
         """
         .formatted(fieldName, deltaType);
   }
@@ -92,12 +93,11 @@ class DeltaSchemaMapperTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Integer aliases (all collapse to INT)
+  // Integer types (all collapse to INT)
   // ---------------------------------------------------------------------------
 
   @ParameterizedTest(name = "''{0}'' -> INT")
-  @ValueSource(
-      strings = {"byte", "tinyint", "short", "smallint", "integer", "int", "long", "bigint"})
+  @ValueSource(strings = {"byte", "short", "integer", "long"})
   void integerAliasesMapsToInt(String deltaType) {
     SchemaColumn col = firstColumn(singleFieldSchema("n", deltaType));
     assertThat(typeTag(col)).isEqualTo("INT");
@@ -115,7 +115,6 @@ class DeltaSchemaMapperTest {
     "string,  STRING",
     "binary,  BINARY",
     "date,    DATE",
-    "interval,INTERVAL",
   })
   void scalarTypesMappedCorrectly(String deltaType, String expected) {
     SchemaColumn col = firstColumn(singleFieldSchema("col", deltaType));
@@ -146,8 +145,8 @@ class DeltaSchemaMapperTest {
             () -> DeltaSchemaMapper.map(CID, singleFieldSchema("x", "decimal(39,0)"), Set.of()))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Failed to parse Delta schema JSON")
-        .hasRootCauseMessage(
-            "Unsupported DECIMAL precision 39 for Delta declared type 'decimal(39,0)'; max supported precision is 38");
+        .rootCause()
+        .hasMessageContaining("(39, 0)");
   }
 
   // ---------------------------------------------------------------------------
@@ -160,21 +159,32 @@ class DeltaSchemaMapperTest {
             () -> DeltaSchemaMapper.map(CID, singleFieldSchema("x", "someunknowntype"), Set.of()))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Failed to parse Delta schema JSON")
-        .hasRootCauseMessage("Unrecognized Delta scalar type: 'someunknowntype'");
+        .rootCause()
+        .hasMessageContaining("someunknowntype is not a supported delta data type");
+  }
+
+  @ParameterizedTest(name = "''{0}'' is rejected")
+  @ValueSource(
+      strings = {"tinyint", "smallint", "int", "bigint", "interval", "varchar(32)", "char(5)"})
+  void nonDeltaTypeNamesFailFast(String sqlType) {
+    // SQL aliases and length-annotated strings are not Delta protocol type names; Delta records
+    // char/varchar as "string" with field metadata.
+    assertThatThrownBy(() -> DeltaSchemaMapper.map(CID, singleFieldSchema("x", sqlType), Set.of()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Failed to parse Delta schema JSON");
   }
 
   @Test
   void unknownComplexTypeFailsFast() {
     String json =
         """
-        {"fields":[
-          {"name":"x","type":{"type":"some_unknown_complex","fields":[]},"nullable":true}
+        {"type":"struct","fields":[
+          {"name":"x","type":{"type":"some_unknown_complex","fields":[]},"nullable":true,"metadata":{}}
         ]}
         """;
     assertThatThrownBy(() -> DeltaSchemaMapper.map(CID, json, Set.of()))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Failed to parse Delta schema JSON")
-        .hasRootCauseMessage("Unrecognized Delta complex type: 'some_unknown_complex'");
+        .hasMessageContaining("Failed to parse Delta schema JSON");
   }
 
   // ---------------------------------------------------------------------------
@@ -185,10 +195,10 @@ class DeltaSchemaMapperTest {
   void structObjectNodeMapsToStructAndIsNotLeaf() {
     String json =
         """
-        {"fields":[
+        {"type":"struct","fields":[
           {"name":"addr","type":{"type":"struct","fields":[
-            {"name":"city","type":"string","nullable":true}
-          ]},"nullable":true}
+            {"name":"city","type":"string","nullable":true,"metadata":{}}
+          ]},"nullable":true,"metadata":{}}
         ]}
         """;
     SchemaColumn col = firstColumn(json);
@@ -200,9 +210,9 @@ class DeltaSchemaMapperTest {
   void arrayObjectNodeMapsToArrayAndIsNotLeaf() {
     String json =
         """
-        {"fields":[
+        {"type":"struct","fields":[
           {"name":"items","type":{"type":"array","elementType":"string","containsNull":true},
-           "nullable":true}
+           "nullable":true,"metadata":{}}
         ]}
         """;
     SchemaColumn col = firstColumn(json);
@@ -214,9 +224,9 @@ class DeltaSchemaMapperTest {
   void mapObjectNodeMapsToMapAndIsNotLeaf() {
     String json =
         """
-        {"fields":[
+        {"type":"struct","fields":[
           {"name":"props","type":{"type":"map","keyType":"string","valueType":"string",
-           "valueContainsNull":true},"nullable":true}
+           "valueContainsNull":true},"nullable":true,"metadata":{}}
         ]}
         """;
     SchemaColumn col = firstColumn(json);
@@ -225,16 +235,7 @@ class DeltaSchemaMapperTest {
   }
 
   @Test
-  void charAndVarcharScalarsCollapseToString() {
-    // Databricks surfaces char/varchar length annotations in schema JSON.
-    assertThat(typeTag(firstColumn(singleFieldSchema("c", "varchar(32)")))).isEqualTo("STRING");
-    assertThat(typeTag(firstColumn(singleFieldSchema("c", "char(5)")))).isEqualTo("STRING");
-  }
-
-  @Test
-  void kernelFailoverDoesNotDuplicateColumns() {
-    // A string-valued delta.columnMapping.id makes the kernel walk throw mid-traversal, after
-    // emitting earlier columns; the fallback re-walk must start from a fresh builder/ordinals.
+  void nonNumericColumnMappingIdFailsFast() {
     String json =
         """
         {"type":"struct","fields":[
@@ -243,18 +244,18 @@ class DeltaSchemaMapperTest {
            "metadata":{"delta.columnMapping.id":"not-a-number"}}
         ]}
         """;
-    SchemaDescriptor desc = DeltaSchemaMapper.map(CID, json, Set.of());
-    assertThat(desc.getColumnsList()).extracting(SchemaColumn::getName).containsExactly("a", "b");
-    assertThat(desc.getColumnsList()).extracting(SchemaColumn::getOrdinal).containsExactly(1, 2);
+    assertThatThrownBy(() -> DeltaSchemaMapper.map(CID, json, Set.of()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Failed to parse Delta schema JSON");
   }
 
   @Test
   void arrayOfPrimitiveCarriesElementTypeInFullType() {
     String json =
         """
-        {"fields":[
+        {"type":"struct","fields":[
           {"name":"items","type":{"type":"array","elementType":"string","containsNull":true},
-           "nullable":true}
+           "nullable":true,"metadata":{}}
         ]}
         """;
     SchemaColumn col = firstColumn(json);
@@ -266,10 +267,10 @@ class DeltaSchemaMapperTest {
   void mapCarriesKeyAndValueTypesInFullType() {
     String json =
         """
-        {"fields":[
+        {"type":"struct","fields":[
           {"name":"props","type":{"type":"map","keyType":"string",
            "valueType":{"type":"array","elementType":"integer","containsNull":false},
-           "valueContainsNull":true},"nullable":true}
+           "valueContainsNull":true},"nullable":true,"metadata":{}}
         ]}
         """;
     SchemaColumn col = firstColumn(json);
@@ -283,9 +284,9 @@ class DeltaSchemaMapperTest {
         """
         {"type":"struct","fields":[
           {"name":"events","type":{"type":"array","elementType":{"type":"struct","fields":[
-            {"name":"name","type":"string","nullable":false},
-            {"name":"ts","type":"timestamp","nullable":true}
-          ]},"containsNull":true},"nullable":true}
+            {"name":"name","type":"string","nullable":false,"metadata":{}},
+            {"name":"ts","type":"timestamp","nullable":true,"metadata":{}}
+          ]},"containsNull":true},"nullable":true,"metadata":{}}
         ]}
         """;
     SchemaColumn col = firstColumn(json);
@@ -296,34 +297,34 @@ class DeltaSchemaMapperTest {
   void scalarColumnHasNoFullType() {
     String json =
         """
-        {"fields":[
-          {"name":"n","type":"integer","nullable":true}
+        {"type":"struct","fields":[
+          {"name":"n","type":"integer","nullable":true,"metadata":{}}
         ]}
         """;
     assertThat(hasTypeTree(firstColumn(json))).isFalse();
   }
 
   @Test
-  void variantObjectNodeMapsToVariantAndIsLeaf() {
+  void variantObjectNodeFailsFast() {
     String json =
         """
-        {"fields":[
-          {"name":"v","type":{"type":"variant"},"nullable":true}
+        {"type":"struct","fields":[
+          {"name":"v","type":{"type":"variant"},"nullable":true,"metadata":{}}
         ]}
         """;
-    SchemaColumn col = firstColumn(json);
-    assertThat(typeTag(col)).isEqualTo("VARIANT");
-    assertThat(col.getLeaf()).isTrue();
+    assertThatThrownBy(() -> DeltaSchemaMapper.map(CID, json, Set.of()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Failed to parse Delta schema JSON");
   }
 
   @Test
   void variantScalarNodeMapsToVariantAndIsLeaf() {
     // Databricks/Unity Delta schemas emit variant as a scalar type string ("type":"variant"),
-    // not the object node form. The fallback parser must recognise it.
+    // not the object node form.
     String json =
         """
-        {"fields":[
-          {"name":"v","type":"variant","nullable":true}
+        {"type":"struct","fields":[
+          {"name":"v","type":"variant","nullable":true,"metadata":{}}
         ]}
         """;
     SchemaColumn col = firstColumn(json);
@@ -339,15 +340,15 @@ class DeltaSchemaMapperTest {
   void nestedStructExpandsChildColumns() {
     String json =
         """
-        {"fields":[
-          {"name":"id","type":"long","nullable":false},
+        {"type":"struct","fields":[
+          {"name":"id","type":"long","nullable":false,"metadata":{}},
           {"name":"location","type":{
             "type":"struct",
             "fields":[
-              {"name":"lat","type":"double","nullable":true},
-              {"name":"lon","type":"double","nullable":true}
+              {"name":"lat","type":"double","nullable":true,"metadata":{}},
+              {"name":"lon","type":"double","nullable":true,"metadata":{}}
             ]
-          },"nullable":true}
+          },"nullable":true,"metadata":{}}
         ]}
         """;
     SchemaDescriptor desc = DeltaSchemaMapper.map(CID, json, Set.of());
@@ -380,9 +381,9 @@ class DeltaSchemaMapperTest {
   void partitionKeyIsMarkedOnMatchingColumn() {
     String json =
         """
-        {"fields":[
-          {"name":"id","type":"long","nullable":false},
-          {"name":"dt","type":"date","nullable":true}
+        {"type":"struct","fields":[
+          {"name":"id","type":"long","nullable":false,"metadata":{}},
+          {"name":"dt","type":"date","nullable":true,"metadata":{}}
         ]}
         """;
     SchemaDescriptor desc = DeltaSchemaMapper.map(CID, json, Set.of("dt"));
@@ -399,10 +400,10 @@ class DeltaSchemaMapperTest {
   void topLevelOrdinalsAreOneBased() {
     String json =
         """
-        {"fields":[
-          {"name":"a","type":"long","nullable":false},
-          {"name":"b","type":"string","nullable":true},
-          {"name":"c","type":"boolean","nullable":true}
+        {"type":"struct","fields":[
+          {"name":"a","type":"long","nullable":false,"metadata":{}},
+          {"name":"b","type":"string","nullable":true,"metadata":{}},
+          {"name":"c","type":"boolean","nullable":true,"metadata":{}}
         ]}
         """;
     SchemaDescriptor desc = DeltaSchemaMapper.map(CID, json, Set.of());
@@ -416,16 +417,16 @@ class DeltaSchemaMapperTest {
   void nestedOrdinalsArePerParent() {
     String json =
         """
-        {"fields":[
-          {"name":"id","type":"long","nullable":false},
+        {"type":"struct","fields":[
+          {"name":"id","type":"long","nullable":false,"metadata":{}},
           {"name":"location","type":{
             "type":"struct",
             "fields":[
-              {"name":"lat","type":"double","nullable":true},
-              {"name":"lon","type":"double","nullable":true}
+              {"name":"lat","type":"double","nullable":true,"metadata":{}},
+              {"name":"lon","type":"double","nullable":true,"metadata":{}}
             ]
-          },"nullable":true},
-          {"name":"name","type":"string","nullable":true}
+          },"nullable":true,"metadata":{}},
+          {"name":"name","type":"string","nullable":true,"metadata":{}}
         ]}
         """;
 
@@ -546,8 +547,7 @@ class DeltaSchemaMapperTest {
   void schemaWithoutFieldsArrayFailsFast() {
     assertThatThrownBy(() -> DeltaSchemaMapper.map(CID, "{}", Set.of()))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Failed to parse Delta schema JSON")
-        .hasRootCauseMessage("Delta schema JSON must contain a 'fields' array");
+        .hasMessageContaining("Failed to parse Delta schema JSON");
   }
 
   @Test

@@ -744,6 +744,47 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void enabledCanonicalGatePromotesPathOrdinalDeltaOnlyOnFullReconciliation() {
+    reconciler.deltaCanonicalColumnIdentity = false;
+    client.provideDeltaHistory = true;
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, sharedDeltaTable(orders, "orders-id", 42L));
+    assertEquals(1, reconcile().tablesCreated());
+
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    Table pathOrdinal =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+        pathOrdinal.getUpstream().getColumnIdAlgorithm());
+
+    reconciler.deltaCanonicalColumnIdentity = true;
+    CatalogOverlayReconciler.Result metadataOnly = reconcileMetadataOnly();
+    Table afterMetadataOnly = tables.getById(pathOrdinal.getResourceId()).orElseThrow();
+
+    assertEquals(0, metadataOnly.tablesUpdated());
+    assertEquals(0, client.deltaHistoryCalls.get());
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+        afterMetadataOnly.getUpstream().getColumnIdAlgorithm());
+    assertFalse(afterMetadataOnly.hasColumnIdentityMap());
+
+    CatalogOverlayReconciler.Result full = reconcile();
+    Table promoted = tables.getById(pathOrdinal.getResourceId()).orElseThrow();
+
+    assertEquals(1, full.tablesUpdated());
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
+        promoted.getUpstream().getColumnIdAlgorithm());
+    assertTrue(promoted.hasColumnIdentityMap());
+  }
+
+  @Test
   void deltaTableWithoutHistoryIsSkippedInsteadOfSynthesized() {
     NamespacePath sales = NamespacePath.of("sales");
     CatalogObjectName orders = new CatalogObjectName(sales, "orders");

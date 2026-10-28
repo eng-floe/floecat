@@ -997,13 +997,20 @@ public class CatalogOverlayReconciler {
     var properties = objectProperties(overlay, integration, source.identity());
     source.metadataLocation().ifPresent(value -> properties.put(METADATA_LOCATION_PROPERTY, value));
     source.storageLocation().ifPresent(value -> properties.put(STORAGE_LOCATION_PROPERTY, value));
-    boolean useCanonicalDeltaIdentity =
-        deltaCanonicalColumnIdentity
-            || (current != null
+    ColumnIdAlgorithm currentDeltaAlgorithm =
+        current != null
                 && current.hasUpstream()
                 && current.getUpstream().getFormat() == TableFormat.TF_DELTA
-                && current.getUpstream().getColumnIdAlgorithm()
-                    == ColumnIdAlgorithm.CID_CANONICAL_MAP);
+            ? current.getUpstream().getColumnIdAlgorithm()
+            : null;
+    // Canonical is one-way: disabling the gate never downgrades a canonical table. Promoting a
+    // path-ordinal table needs a full pass, because a metadata-only pass cannot build the map
+    // CID_CANONICAL_MAP requires and nothing else backfills one for an already-materialized table.
+    boolean useCanonicalDeltaIdentity =
+        currentDeltaAlgorithm == ColumnIdAlgorithm.CID_CANONICAL_MAP
+            || (deltaCanonicalColumnIdentity
+                && !(currentDeltaAlgorithm == ColumnIdAlgorithm.CID_PATH_ORDINAL
+                    && skipColumnIdentityReconciliation));
     var upstream =
         UpstreamRef.newBuilder()
             .setCatalogIntegrationId(integration.getResourceId())
