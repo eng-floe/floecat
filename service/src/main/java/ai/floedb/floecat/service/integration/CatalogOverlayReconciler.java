@@ -155,6 +155,14 @@ public class CatalogOverlayReconciler {
       defaultValue = "30s")
   Duration deltaIdentityTimeout = Duration.ofSeconds(30);
 
+  // Temporary rollout gate. When false, overlay Delta tables keep the path-ordinal algorithm and
+  // carry no identity map, so a capture engine that does not yet publish canonical maps and
+  // fingerprinted statistics can still advance snapshots. Remove once every engine is canonical.
+  @ConfigProperty(
+      name = "floecat.catalog-overlay.reconcile.delta-canonical-column-identity",
+      defaultValue = "true")
+  boolean deltaCanonicalColumnIdentity = true;
+
   LongSupplier nanoTime = System::nanoTime;
 
   // One entry per active or waiting overlay. This is instance-local load control; the repository
@@ -989,6 +997,20 @@ public class CatalogOverlayReconciler {
     var properties = objectProperties(overlay, integration, source.identity());
     source.metadataLocation().ifPresent(value -> properties.put(METADATA_LOCATION_PROPERTY, value));
     source.storageLocation().ifPresent(value -> properties.put(STORAGE_LOCATION_PROPERTY, value));
+    ColumnIdAlgorithm currentDeltaAlgorithm =
+        current != null
+                && current.hasUpstream()
+                && current.getUpstream().getFormat() == TableFormat.TF_DELTA
+            ? current.getUpstream().getColumnIdAlgorithm()
+            : null;
+    // Canonical is one-way: disabling the gate never downgrades a canonical table. Promoting a
+    // path-ordinal table needs a full pass, because a metadata-only pass cannot build the map
+    // CID_CANONICAL_MAP requires and nothing else backfills one for an already-materialized table.
+    boolean useCanonicalDeltaIdentity =
+        currentDeltaAlgorithm == ColumnIdAlgorithm.CID_CANONICAL_MAP
+            || (deltaCanonicalColumnIdentity
+                && !(currentDeltaAlgorithm == ColumnIdAlgorithm.CID_PATH_ORDINAL
+                    && skipColumnIdentityReconciliation));
     var upstream =
         UpstreamRef.newBuilder()
             .setCatalogIntegrationId(integration.getResourceId())
@@ -998,7 +1020,7 @@ public class CatalogOverlayReconciler {
             .setTableDisplayName(source.name().name())
             .setFormat(tableFormat(source.format()))
             .addAllPartitionKeys(source.partitionKeys())
-            .setColumnIdAlgorithm(columnIdAlgorithm(source.format()))
+            .setColumnIdAlgorithm(columnIdAlgorithm(source.format(), useCanonicalDeltaIdentity))
             .build();
     var builder =
         Table.newBuilder()
@@ -1010,12 +1032,13 @@ public class CatalogOverlayReconciler {
             .setSchemaJson(source.schemaJson())
             .setUpstream(upstream)
             .putAllProperties(properties);
-    if (upstream.getFormat() == TableFormat.TF_DELTA && !skipColumnIdentityReconciliation) {
+    boolean canonicalDelta =
+        upstream.getFormat() == TableFormat.TF_DELTA
+            && upstream.getColumnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP;
+    if (canonicalDelta && !skipColumnIdentityReconciliation) {
       builder.setColumnIdentityMap(
           reconcileDeltaIdentity(source, current, client, builder.build()));
-    } else if (upstream.getFormat() == TableFormat.TF_DELTA
-        && current != null
-        && current.hasColumnIdentityMap()) {
+    } else if (canonicalDelta && current != null && current.hasColumnIdentityMap()) {
       // Metadata-only discovery must not erase a map produced by a standalone reconciliation or
       // synchronized from the current published snapshot.
       builder.setColumnIdentityMap(current.getColumnIdentityMap());
@@ -1395,10 +1418,11 @@ public class CatalogOverlayReconciler {
     };
   }
 
-  private static ColumnIdAlgorithm columnIdAlgorithm(String format) {
+  private static ColumnIdAlgorithm columnIdAlgorithm(String format, boolean canonicalDelta) {
     return switch (tableFormat(format)) {
       case TF_ICEBERG -> ColumnIdAlgorithm.CID_FIELD_ID;
-      case TF_DELTA -> ColumnIdAlgorithm.CID_CANONICAL_MAP;
+      case TF_DELTA ->
+          canonicalDelta ? ColumnIdAlgorithm.CID_CANONICAL_MAP : ColumnIdAlgorithm.CID_PATH_ORDINAL;
       default -> throw new IllegalArgumentException("Unsupported upstream table format=" + format);
     };
   }
