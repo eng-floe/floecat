@@ -37,6 +37,7 @@ This lists all metrics currently available in the repository:
 | floecat.core.observability.invalid.metric.total | COUNTER |  | v1 | Total number of metrics rejected because they were not registered. |  | reason |
 | floecat.core.observability.registry.size | GAUGE | count | v1 | Current size of the telemetry registry. |  |  |
 | floecat.core.rpc.active | GAUGE |  | v1 | Number of in-flight RPCs per component/operation. | component, operation | component, operation |
+| floecat.core.rpc.bytes | COUNTER | bytes | v1 | Serialized protobuf payload bytes per RPC operation, tagged by direction (inbound request messages, outbound response messages). | component, direction, operation | component, direction, operation |
 | floecat.core.rpc.errors | COUNTER |  | v1 | Count of RPC failures per component/operation. | component, operation, result | account, component, exception, operation, result, status |
 | floecat.core.rpc.latency | TIMER | seconds | v1 | Latency distribution for RPC operations. | component, operation, result | account, component, exception, operation, result, status |
 | floecat.core.rpc.requests | COUNTER |  | v1 | Total RPC requests processed, tagged by account and status. | account, component, operation, status | account, component, operation, status |
@@ -58,12 +59,6 @@ This lists all metrics currently available in the repository:
 | --- | --- | --- | --- | --- | --- | --- |
 | floecat.jvm.gc.live.data.bytes | GAUGE | bytes | v1 | Estimated live data (bytes) held by each garbage collector. | component, gc, operation | component, gc, operation |
 | floecat.jvm.gc.live.data.growth.rate | GAUGE | bytes_per_second | v1 | Live data growth rate (bytes/second) for GC-managed pools. | component, gc, operation | component, gc, operation |
-
-## Profiling Metrics
-
-| Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
-| --- | --- | --- | --- | --- | --- | --- |
-| floecat.profiling.captures.total | COUNTER |  | v1 | Profiling capture lifecycle counts (started/completed/failed/dropped). | component, mode, operation, result, scope, trigger | component, mode, operation, policy, reason, result, scope, trigger |
 
 ## Service Metrics
 

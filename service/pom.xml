@@ -58,6 +58,13 @@
       <artifactId>quarkus-scheduler</artifactId>
     </dependency>
 
+    <!-- Provides the ObjectMapper CDI bean used by the reconcile job/payload stores.
+         Previously inherited transitively via telemetry-hub-integration-profiling. -->
+    <dependency>
+      <groupId>io.quarkus</groupId>
+      <artifactId>quarkus-jackson</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-grpc</artifactId>

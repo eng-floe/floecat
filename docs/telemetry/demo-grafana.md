@@ -4,16 +4,13 @@ This page describes the official Grafana dashboard that demos the Floecat teleme
 
 ## Demo flow
 
-The dashboard tells a single story: **signal → trace → log → profile**.
+The dashboard tells a single story: **signal → trace → log**.
 
 Use the **Component** and **Operation** dropdowns to scope every RPC/storage panel to the workload you are debugging.
 
-1. **Start the service** with profiling enabled:
+1. **Start the service:**
    ```bash
-   QUARKUS_PROFILE=telemetry-otlp,telemetry-prof mvn -pl service -am -DskipTests \
-     -Dfloecat.profiling.enabled=true \
-     -Dfloecat.profiling.endpoints-enabled=true \
-     quarkus:dev
+   QUARKUS_PROFILE=telemetry-otlp mvn -pl service -am -DskipTests quarkus:dev
    ```
    Quarkus exposes Micrometer metrics on `http://localhost:9100/q/metrics`.
 
@@ -33,30 +30,13 @@ Use the **Component** and **Operation** dropdowns to scope every RPC/storage pan
    tables examples.iceberg
    ```
 
-4. **Trigger a profiling capture** — either let a latency policy fire under load, or trigger one explicitly:
-   ```bash
-   # Automated: starts the stack and triggers a capture in one step
-   ./demo.sh --profiling-demo
-
-   # Or manually via REST:
-   curl -X POST http://localhost:9100/profiling/captures \
-     -H 'Content-Type: application/json' \
-     -d '{"trigger":"manual","mode":"jfr","requestedBy":"demo","duration":"PT5S"}'
-   ```
-
-5. **Download the JFR artifact and open in JMC:**
-   ```bash
-   # Replace {id} with the capture ID returned by POST or from GET /profiling/captures/latest
-   curl http://localhost:9100/profiling/captures/{id}/artifact -o demo.jfr
-   jmc -open demo.jfr
-   ```
-   In JMC: check **Method Profiling** (hot call stacks), **Allocations**, **GC** (pause patterns), and **Threads** (concurrency bottlenecks). The capture's `traceId` field from `GET /profiling/captures/latest` correlates the JFR directly to the Tempo trace visible on the latency panel.
+> Continuous JVM profiling is a separate, always-on workflow: when `floecat.profiling.enabled=true` and a Pyroscope server URL is configured, Floecat streams CPU and live-allocation profiles to Pyroscope. There is no on-demand capture step in this dashboard.
 
 ## Dashboard layout
 
-Start at **Service health** to spot a problem, drill into **RPC** to scope it by operation, then open **Profiling** (collapsed by default) to capture and download a JFR artifact.
+Start at **Service health** to spot a problem, then drill into **RPC** to scope it by operation.
 
-The dashboard has a quick-start markdown panel at the top and six sections:
+The dashboard has a quick-start markdown panel at the top and five sections:
 
 ### Service health (top row)
 
@@ -69,29 +49,6 @@ Seven stat panels for at-a-glance triage:
 - **Cache saturation** — cached bytes as a percentage of the byte budget.
 - **Heap used** — JVM heap live data vs max capacity.
 - **Dropped tags** (`floecat_core_observability_dropped_tags_total`) — telemetry contract violations. Non-zero means a metric was emitted with disallowed or missing tags.
-
-### Profiling (on-demand & policy)
-
-This row sits immediately below the Service health row so it feels like the natural escalation path. Keep it collapsed by default and open it only when you want to step from the high-level stats into a capture workflow.
-
-- **Captures by trigger/policy** — table/series showing
-  ```promql
-  sum by (result, trigger, policy)(increase(floecat_profiling_captures_total[5m]))
-  ```
-  It shows whether captures ran manually or automatically and whether they started/completed/failed/dropped.
-- **Capture in flight** — stat panel showing `sum(floecat_profiling_captures_total{result="started"}) - sum(floecat_profiling_captures_total{result="completed"})`, so you immediately see when a recording is active.
-- **Latency policy overlay** — add `increase(floecat_profiling_captures_total{trigger="policy"}[1m])` to the RPC latency chart (secondary axis) or its own small panel so captures show up aligned with latency/GC spikes.
-
-Document this row in the quick-start instructions: after you trigger a capture (either manually or via a policy), fetch `/profiling/captures/latest` and share the artifact URL that `latest` supplies.
-
-```
-POST /profiling/captures
-GET /profiling/captures/latest
-```
-
-The `/latest` response lists metadata such as `policy`, `requestedByType`, and `traceId`/`spanId`, which link directly into Tempo traces.
-
-Once the capture finishes, download `/profiling/captures/{id}/artifact` and open it in Java Mission Control or a flamegraph viewer. This lets you close the loop from dashboard spike → trace → JVM-level evidence.
 
 ### RPC
 
@@ -131,7 +88,7 @@ Standard OTel `rpc.*` attributes (`rpc.service`, `rpc.method`, `rpc.system`) are
 
 - **Background task health** — seconds since each scheduled task last completed a tick, broken down per task (`floecat_core_task_last_tick_end_ms`). Each task has its own schedule (idempotency GC: 60s, cas/pointer GC: 10m) — a rising line beyond the expected interval means a task is stalling.
 - **GC collections (rate by type)** — GC collection rate grouped by gc type (`floecat_core_gc_collections_total`). Types are `cas`, `pointer`, and `idempotency` — Floecat's application-level GC, not JVM GC.
-- **Executor queue depth** — pending task count per executor pool (`floecat_core_exec_queue_depth`). Rising depth alongside rising RPC latency is a saturation signal — a good moment to trigger a profiling capture.
+- **Executor queue depth** — pending task count per executor pool (`floecat_core_exec_queue_depth`). Rising depth alongside rising RPC latency is a saturation signal.
 
 ### System (JVM / host) — collapsed by default
 

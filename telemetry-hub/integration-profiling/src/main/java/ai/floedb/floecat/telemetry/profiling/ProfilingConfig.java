@@ -18,79 +18,24 @@ package ai.floedb.floecat.telemetry.profiling;
 
 import io.smallrye.config.ConfigMapping;
 import io.smallrye.config.WithDefault;
-import java.time.Duration;
+import java.util.Optional;
 
+/**
+ * Configuration for Floecat's single profiling workflow: continuous JVM profiling exported to
+ * Pyroscope. Lives under {@code floecat.profiling.*}.
+ */
 @ConfigMapping(prefix = "floecat.profiling")
 public interface ProfilingConfig {
+  /** Whether to start the continuous Pyroscope JVM profiler on startup. */
   @WithDefault("false")
   boolean enabled();
 
-  @WithDefault("30S")
-  Duration captureDuration();
+  /**
+   * Pyroscope server URL. Mapped from the {@code FLOECAT_PYROSCOPE_ENDPOINT} / {@code
+   * FLOESCAN_PYROSCOPE_ENDPOINT} environment variables in {@code application.properties}.
+   */
+  Optional<String> serverUrl();
 
-  @WithDefault("52428800")
-  long maxCaptureBytes();
-
-  @WithDefault("524288000")
-  long totalMaxBytes();
-
-  @WithDefault("1")
-  int rateLimit();
-
-  @WithDefault("60S")
-  Duration rateWindow();
-
-  @WithDefault("${java.io.tmpdir}/floecat/profiling/captures")
-  String artifactDir();
-
-  @WithDefault("false")
-  boolean endpointsEnabled();
-
-  Policy policy();
-
-  interface Policy {
-    @WithDefault("false")
-    boolean enabled();
-
-    LatencyPolicy latency();
-
-    ExecutorQueuePolicy executorQueue();
-
-    GcPolicy gc();
-  }
-
-  interface PolicySpec {
-    @WithDefault("false")
-    boolean enabled();
-
-    @WithDefault("PT30S")
-    Duration window();
-
-    @WithDefault("PT1M")
-    Duration cooldown();
-  }
-
-  interface LatencyPolicy extends PolicySpec {
-    @WithDefault("PT0.5S")
-    Duration threshold();
-  }
-
-  interface ExecutorQueuePolicy extends PolicySpec {
-    @WithDefault("32")
-    int threshold();
-
-    @WithDefault("vert.x-worker-thread")
-    String poolName();
-  }
-
-  interface GcPolicy extends PolicySpec {
-    @WithDefault("268435456")
-    long thresholdBytes();
-
-    @WithDefault("G1 Old Generation")
-    String gcName();
-  }
-
-  @WithDefault("30S")
-  Duration policyPollInterval();
+  /** Optional multi-tenant id forwarded to Pyroscope as the {@code X-Scope-OrgID} tenant. */
+  Optional<String> tenantId();
 }

@@ -88,6 +88,7 @@ public final class Telemetry {
     public static final String MODE = "mode";
     public static final String SCOPE = "scope";
     public static final String POLICY = "policy";
+    public static final String DIRECTION = "direction";
 
     private TagKey() {}
   }
@@ -136,6 +137,8 @@ public final class Telemetry {
           new MetricId("floecat.core.rpc.requests", MetricType.COUNTER, "", "v1", "core");
       public static final MetricId ACTIVE =
           new MetricId("floecat.core.rpc.active", MetricType.GAUGE, "", "v1", "core");
+      public static final MetricId BYTES =
+          new MetricId("floecat.core.rpc.bytes", MetricType.COUNTER, "bytes", "v1", "core");
       public static final MetricId LATENCY =
           new MetricId("floecat.core.rpc.latency", MetricType.TIMER, "seconds", "v1", "core");
       public static final MetricId ERRORS =
@@ -245,6 +248,7 @@ public final class Telemetry {
     public static final MetricId DROPPED_TAGS = Observability.DROPPED_TAGS;
     public static final MetricId RPC_REQUESTS = Rpc.REQUESTS;
     public static final MetricId RPC_ACTIVE = Rpc.ACTIVE;
+    public static final MetricId RPC_BYTES = Rpc.BYTES;
     public static final MetricId RPC_LATENCY = Rpc.LATENCY;
     public static final MetricId RPC_ERRORS = Rpc.ERRORS;
     public static final MetricId RPC_RETRIES = Rpc.RETRIES;
@@ -328,6 +332,14 @@ public final class Telemetry {
           Set.of(TagKey.COMPONENT, TagKey.OPERATION),
           Set.of(TagKey.COMPONENT, TagKey.OPERATION),
           "Number of in-flight RPCs per component/operation.");
+      Set<String> rpcBytesTags = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.DIRECTION);
+      add(
+          definitions,
+          RPC_BYTES,
+          rpcBytesTags,
+          rpcBytesTags,
+          "Serialized protobuf payload bytes per RPC operation, tagged by direction "
+              + "(inbound request messages, outbound response messages).");
       add(
           definitions,
           RPC_LATENCY,
