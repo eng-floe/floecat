@@ -1660,9 +1660,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#profiling-capture-metadata" class="md-nav__link">
+  <a href="#continuous-jvm-profiling" class="md-nav__link">
     <span class="md-ellipsis">
-      Profiling capture metadata
+      Continuous JVM profiling
     </span>
   </a>
   
@@ -1895,9 +1895,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#profiling-capture-metadata" class="md-nav__link">
+  <a href="#continuous-jvm-profiling" class="md-nav__link">
     <span class="md-ellipsis">
-      Profiling capture metadata
+      Continuous JVM profiling
     </span>
   </a>
   
@@ -2064,15 +2064,8 @@ report, where they are needed to identify an unexpected read.</p>
 <li><strong>Telemetry contract version</strong> – every meter carries <code>telemetry.contract.version</code> so you can distinguish <code>v1</code> data from future contract revisions; spans/logs should surface the same version via attributes or MDC if you rely on multiple catalog versions in the same cluster.</li>
 </ul>
 <p>Keeping these keys consistent lets Grafana/Tempo/Loki dashboards present a seamless “metric spike → trace → log” workflow without chasing per-module naming quirks.</p>
-<h2 id="profiling-capture-metadata">Profiling capture metadata<a class="headerlink" href="#profiling-capture-metadata" title="Permanent link">&para;</a></h2>
-<p>Profiling captures are <strong>on-demand and forensic-grade</strong> — triggered by a policy breach or an explicit API call, not continuously. Overhead is zero during normal operation; each capture is causally linked to a visible observability signal.</p>
-<p>Policy-driven captures emit richer metadata so dashboards can explain why a recording exists:</p>
-<ul>
-<li><code>requestedBy</code> describes the actor (e.g., <code>cli</code>, <code>policy/latency_threshold</code>) that asked for the capture.</li>
-<li><code>requestedByType</code> distinguishes manual actors (<code>manual</code>) from automated policies (<code>policy</code>).</li>
-<li><code>policyName</code> and <code>policySignal</code> record the specific monitor that triggered the capture, and the metric <code>policy</code> tag mirrors that value so you can filter the <code>floecat.profiling.captures.total</code> counter right in Prometheus/Grafana.</li>
-</ul>
-<p>Keeping those fields synced with the REST API plus the <code>policy</code> tag lets dashboards surface a “jump to profile” link annotated with the exact latency/queue/GC signal that fired the capture.</p>
+<h2 id="continuous-jvm-profiling">Continuous JVM profiling<a class="headerlink" href="#continuous-jvm-profiling" title="Permanent link">&para;</a></h2>
+<p>JVM profiling is <strong>always-on</strong> rather than on-demand: when <code>floecat.profiling.enabled</code> is set and a Pyroscope server URL is configured, Floecat streams CPU and live-allocation profiles to Pyroscope (JFR format) for the whole process lifetime. There is no capture REST API or policy-triggered recording — profiles correlate with metrics and traces through Pyroscope and the shared <code>floecat.component</code>/<code>floecat.operation</code> labels.</p>
 <h2 id="strict-vs-lenient-mode">Strict vs Lenient mode<a class="headerlink" href="#strict-vs-lenient-mode" title="Permanent link">&para;</a></h2>
 <p>The Micrometer backend supports two policies:</p>
 <ul>

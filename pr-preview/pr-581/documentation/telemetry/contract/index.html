@@ -1635,15 +1635,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#profiling-metrics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Profiling Metrics
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#service-metrics" class="md-nav__link">
     <span class="md-ellipsis">
       Service Metrics
@@ -1748,15 +1739,6 @@
   <a href="#extra-jvm-metrics" class="md-nav__link">
     <span class="md-ellipsis">
       Extra JVM Metrics
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#profiling-metrics" class="md-nav__link">
-    <span class="md-ellipsis">
-      Profiling Metrics
     </span>
   </a>
   
@@ -2101,6 +2083,15 @@
 <td>component, operation</td>
 </tr>
 <tr>
+<td>floecat.core.rpc.bytes</td>
+<td>COUNTER</td>
+<td>bytes</td>
+<td>v1</td>
+<td>Serialized protobuf payload bytes per RPC operation, tagged by direction (inbound request messages, outbound response messages).</td>
+<td>component, direction, operation</td>
+<td>component, direction, operation</td>
+</tr>
+<tr>
 <td>floecat.core.rpc.errors</td>
 <td>COUNTER</td>
 <td></td>
@@ -2259,31 +2250,6 @@
 <td>Live data growth rate (bytes/second) for GC-managed pools.</td>
 <td>component, gc, operation</td>
 <td>component, gc, operation</td>
-</tr>
-</tbody>
-</table>
-<h2 id="profiling-metrics">Profiling Metrics<a class="headerlink" href="#profiling-metrics" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Metric</th>
-<th>Type</th>
-<th>Unit</th>
-<th>Since</th>
-<th>Description</th>
-<th>Required Tags</th>
-<th>Allowed Tags</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>floecat.profiling.captures.total</td>
-<td>COUNTER</td>
-<td></td>
-<td>v1</td>
-<td>Profiling capture lifecycle counts (started/completed/failed/dropped).</td>
-<td>component, mode, operation, result, scope, trigger</td>
-<td>component, mode, operation, policy, reason, result, scope, trigger</td>
 </tr>
 </tbody>
 </table>
