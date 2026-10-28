@@ -901,6 +901,34 @@ class OwnerPublicationServiceImplTest {
   }
 
   @Test
+  void ownerSnapshotComparisonAcceptsEquivalentIcebergSchemaSerialization() {
+    Snapshot stored =
+        Snapshot.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT)
+            .setSchemaJson(icebergDecimalSchema("decimal(5,2)"))
+            .build();
+    Snapshot incoming =
+        stored.toBuilder().setSchemaJson(icebergDecimalSchema("decimal(5, 2)")).build();
+
+    assertTrue(OwnerPublicationServiceImpl.sameOwnerSnapshot(stored, incoming));
+  }
+
+  @Test
+  void ownerSnapshotComparisonRejectsDifferentIcebergSchemas() {
+    Snapshot stored =
+        Snapshot.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT)
+            .setSchemaJson(icebergDecimalSchema("decimal(5,2)"))
+            .build();
+    Snapshot incoming =
+        stored.toBuilder().setSchemaJson(icebergDecimalSchema("decimal(6,2)")).build();
+
+    assertFalse(OwnerPublicationServiceImpl.sameOwnerSnapshot(stored, incoming));
+  }
+
+  @Test
   void aLostFenceIsReportedAndNotSilentlyRebased() {
     var service = service();
     when(service.persistence.activatePreparedStatsGeneration(
@@ -1603,6 +1631,15 @@ class OwnerPublicationServiceImplTest {
         .setUpstreamCreatedAt(com.google.protobuf.Timestamp.newBuilder().setSeconds(1))
         .setSchemaJson("{}")
         .build();
+  }
+
+  private static String icebergDecimalSchema(String type) {
+    return """
+        {"schema-id":0,"type":"struct","fields":[
+          {"id":1,"name":"amount","required":false,"type":"%s"}
+        ]}
+        """
+        .formatted(type);
   }
 
   private static ai.floedb.floecat.catalog.rpc.ColumnIdentityMap columnIdentityMap() {

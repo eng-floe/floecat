@@ -68,6 +68,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import org.apache.iceberg.SchemaParser;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -975,12 +976,32 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     return builder.build();
   }
 
-  private static boolean sameOwnerSnapshot(Snapshot stored, Snapshot incoming) {
+  static boolean sameOwnerSnapshot(Snapshot stored, Snapshot incoming) {
+    if (!sameSchema(stored.getSchemaJson(), incoming.getSchemaJson())) {
+      return false;
+    }
     return stored.toBuilder()
+        .clearSchemaJson()
         .clearIngestedAt()
         .clearReuseManifestRef()
         .build()
-        .equals(incoming.toBuilder().clearIngestedAt().clearReuseManifestRef().build());
+        .equals(
+            incoming.toBuilder()
+                .clearSchemaJson()
+                .clearIngestedAt()
+                .clearReuseManifestRef()
+                .build());
+  }
+
+  private static boolean sameSchema(String stored, String incoming) {
+    if (stored.equals(incoming)) {
+      return true;
+    }
+    try {
+      return SchemaParser.fromJson(stored).sameSchema(SchemaParser.fromJson(incoming));
+    } catch (RuntimeException invalidSchema) {
+      return false;
+    }
   }
 
   private void validateManifest(
