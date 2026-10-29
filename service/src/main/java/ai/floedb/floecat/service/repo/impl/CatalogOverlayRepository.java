@@ -118,6 +118,17 @@ public class CatalogOverlayRepository {
     return deletionFenceVersion(overlayId) != 0L;
   }
 
+  /** Removes a deletion fence while the overlay identity is still unchanged. */
+  public boolean cancelDeletion(
+      ResourceId overlayId, long expectedPointerVersion, long expectedFenceVersion) {
+    String canonical = Keys.catalogOverlayPointerById(overlayId.getAccountId(), overlayId.getId());
+    String fence = Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId());
+    return pointerStore.compareAndSetBatch(
+        List.of(
+            new PointerStore.CasCheck(canonical, expectedPointerVersion),
+            new PointerStore.CasDelete(fence, expectedFenceVersion)));
+  }
+
   /** Removes the Overlay, both dependency pointers, and its deletion fence atomically. */
   public boolean deleteWithFence(
       ResourceId overlayId, long expectedPointerVersion, long expectedFenceVersion) {
@@ -127,6 +138,21 @@ public class CatalogOverlayRepository {
         expectedPointerVersion,
         PointerConditions.none(),
         Map.of(fence, expectedFenceVersion));
+  }
+
+  /** Removes an overlay and a catalog it owns in the same fenced transaction. */
+  public boolean deleteWithFenceAndCompanions(
+      ResourceId overlayId,
+      long expectedPointerVersion,
+      long expectedFenceVersion,
+      PointerConditions conditions,
+      Map<String, Long> pointerVersionsToDelete,
+      List<PointerStore.CasOp> companions) {
+    String fence = Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId());
+    var deletes = new java.util.HashMap<>(pointerVersionsToDelete);
+    deletes.put(fence, expectedFenceVersion);
+    return repo.deleteWithPreconditionWhilePointersMatchAndCompanions(
+        key(overlayId), expectedPointerVersion, conditions, Map.copyOf(deletes), companions);
   }
 
   public boolean update(CatalogOverlay overlay, long expectedPointerVersion) {
@@ -153,18 +179,23 @@ public class CatalogOverlayRepository {
       CatalogOverlay replacement,
       Map<String, Long> requiredPointerVersions,
       Set<String> requiredAbsentPointers,
-      Map<String, Long> parentMarkerVersions) {
+      Map<String, Long> parentMarkerVersions,
+      Map<String, Long> pointerVersionsToDelete,
+      List<PointerStore.CasOp> companions) {
     String deletionFence =
         Keys.catalogOverlayDeletionMarker(
             current.getResourceId().getAccountId(), current.getResourceId().getId());
     long deletionFenceVersion = deletionFenceVersion(current.getResourceId());
+    var deletes = new java.util.HashMap<>(pointerVersionsToDelete);
+    if (deletionFenceVersion != 0L) deletes.put(deletionFence, deletionFenceVersion);
     return repo.replaceIdentityWithMeta(
         current,
         expectedPointerVersion,
         replacement,
         new PointerConditions(
             requiredPointerVersions, requiredAbsentPointers, parentMarkerVersions),
-        deletionFenceVersion == 0L ? Map.of() : Map.of(deletionFence, deletionFenceVersion));
+        Map.copyOf(deletes),
+        companions);
   }
 
   public boolean deleteWithPrecondition(ResourceId overlayId, long expectedPointerVersion) {

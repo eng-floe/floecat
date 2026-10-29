@@ -275,17 +275,21 @@ final class IntegrationCliSupport {
         printOverlays(List.of(row), out);
       }
       case "create" -> {
-        if (args.size() < 4) {
+        if (args.size() < 3) {
           out.println(
-              "usage: overlay create <name> <integration-name|id> <catalog-name|id>"
+              "usage: overlay create <name> <integration-name|id> [catalog-name|id]"
                   + " [--include a.b,c.d] [--exclude x.y]");
           return;
         }
+        ResourceId catalogId =
+            args.size() > 3 && !args.get(3).startsWith("--")
+                ? CatalogCliSupport.resolveCatalogId(args.get(3), directory, accountId)
+                : null;
         var spec =
             overlaySpec(
                 Quotes.unquote(args.get(1)),
                 resolveIntegration(args.get(2), integrations, accountId),
-                CatalogCliSupport.resolveCatalogId(args.get(3), directory, accountId),
+                catalogId,
                 args);
         var row =
             overlays
@@ -481,13 +485,14 @@ final class IntegrationCliSupport {
 
   private static CatalogOverlaySpec overlaySpec(
       String name, ResourceId integrationId, ResourceId catalogId, List<String> args) {
-    return CatalogOverlaySpec.newBuilder()
-        .setDisplayName(name)
-        .setIntegrationId(integrationId)
-        .setCatalogId(catalogId)
-        .addAllIncludeNamespaces(paths(args, "--include"))
-        .addAllExcludeNamespaces(paths(args, "--exclude"))
-        .build();
+    var spec =
+        CatalogOverlaySpec.newBuilder()
+            .setDisplayName(name)
+            .setIntegrationId(integrationId)
+            .addAllIncludeNamespaces(paths(args, "--include"))
+            .addAllExcludeNamespaces(paths(args, "--exclude"));
+    if (catalogId != null) spec.setCatalogId(catalogId);
+    return spec.build();
   }
 
   private static CatalogOverlaySpec overlayUpdateSpec(List<String> args) {
@@ -726,11 +731,12 @@ final class IntegrationCliSupport {
 
   private static void printOverlayHeader(PrintStream out) {
     out.printf(
-        "%-36s  %-24s  %-36s  %-36s  %-24s  %s%n",
+        "%-36s  %-24s  %-36s  %-36s  %-7s  %-24s  %s%n",
         "OVERLAY_ID",
         "NAME",
         "INTEGRATION_ID",
         "CATALOG_ID",
+        "OWNED",
         "INCLUDE_NAMESPACES",
         "EXCLUDE_NAMESPACES");
   }
@@ -738,11 +744,12 @@ final class IntegrationCliSupport {
   private static void printOverlayRows(List<CatalogOverlay> rows, PrintStream out) {
     for (var row : rows) {
       out.printf(
-          "%-36s  %-24s  %-36s  %-36s  %-24s  %s%n",
+          "%-36s  %-24s  %-36s  %-36s  %-7s  %-24s  %s%n",
           CliUtils.rid(row.getResourceId()),
           row.getDisplayName(),
           CliUtils.rid(row.getIntegrationId()),
           CliUtils.rid(row.getCatalogId()),
+          row.getOwnsCatalog(),
           formatNamespacePaths(row.getIncludeNamespacesList()),
           formatNamespacePaths(row.getExcludeNamespacesList()));
     }

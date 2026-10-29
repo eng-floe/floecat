@@ -1429,13 +1429,14 @@ class CatalogIntegrationsImplTest {
   void cascadeFencesDeletesDependentsAndAtomicallyCompletes() {
     service.authz = new Authorizer();
     when(service.principal.get())
-        .thenReturn(principal("catalog-integration.write", "catalog-overlay.delete"));
+        .thenReturn(
+            principal("catalog-integration.write", "catalog-overlay.delete", "catalog.write"));
     var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
     var integration = CatalogIntegration.newBuilder().setResourceId(integrationId).build();
     var integrationMeta = MutationMeta.newBuilder().setPointerVersion(7L).build();
     when(service.integrations.getByIdWithMeta(integrationId))
         .thenReturn(Optional.of(new ResourceWithMeta<>(integration, integrationMeta)));
-    when(service.cascadeDeletion.delete(integrationId, integrationMeta))
+    when(service.cascadeDeletion.delete(eq(integrationId), eq(integrationMeta), eq("corr"), any()))
         .thenReturn(integrationMeta);
 
     service
@@ -1447,7 +1448,8 @@ class CatalogIntegrationsImplTest {
         .await()
         .indefinitely();
 
-    verify(service.cascadeDeletion).delete(integrationId, integrationMeta);
+    verify(service.cascadeDeletion)
+        .delete(eq(integrationId), eq(integrationMeta), eq("corr"), any());
     verify(service.integrations, never())
         .deleteWithPreconditionAndOverlayMarker(any(), anyLong(), anyLong());
   }

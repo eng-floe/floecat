@@ -786,7 +786,15 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                       corr, meta, request.getPrecondition());
                   if (request.getCascade()) {
                     credentialCleanup.schedule(current.get().value());
-                    cascadeDeletion.delete(id, meta);
+                    cascadeDeletion.delete(
+                        id,
+                        meta,
+                        corr,
+                        () -> {
+                          authz.require(pc, RolePermissions.CATALOG_WRITE);
+                          authz.require(pc, "table.write");
+                          authz.require(pc, "view.write");
+                        });
                     credentialCleanup.cleanIfSuperseded(current.get().value());
                     return DeleteCatalogIntegrationResponse.newBuilder().setMeta(meta).build();
                   }

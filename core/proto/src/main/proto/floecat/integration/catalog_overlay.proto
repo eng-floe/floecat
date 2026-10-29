@@ -27,9 +27,8 @@ message NamespacePath {
   repeated string segments = 1;
 }
 
-// A catalog overlay selects upstream namespaces from a catalog integration and maps them into an
-// existing Floecat catalog. The integration and catalog retain independent identities and
-// lifecycles.
+// A catalog overlay selects upstream namespaces from a catalog integration and maps them into a
+// Floecat catalog. The destination may be supplied by the caller or created with the overlay.
 message CatalogOverlay {
   ai.floedb.floecat.common.ResourceId resource_id = 1;
   string display_name = 2;
@@ -42,8 +41,10 @@ message CatalogOverlay {
   repeated NamespacePath exclude_namespaces = 5;
   google.protobuf.Timestamp created_at = 6;
   google.protobuf.Timestamp updated_at = 7;
-  // The existing Floecat catalog selected upstream namespaces are exposed beneath.
+  // The Floecat catalog selected upstream namespaces are exposed beneath.
   ai.floedb.floecat.common.ResourceId catalog_id = 8;
+  // True when Floecat created the destination for this overlay and owns its lifecycle.
+  bool owns_catalog = 9;
 }
 
 message CatalogOverlaySpec {
@@ -55,7 +56,8 @@ message CatalogOverlaySpec {
   repeated NamespacePath include_namespaces = 3;
   // Exclusions apply to the named namespace and all descendants and take precedence over includes.
   repeated NamespacePath exclude_namespaces = 4;
-  // Existing Floecat destination. Immutable through update; a replacing create may rebind it.
+  // Existing Floecat destination. When omitted, create a catalog named after the overlay.
+  // Immutable through update; a replacing create may rebind it.
   ai.floedb.floecat.common.ResourceId catalog_id = 5;
 }
 

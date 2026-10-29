@@ -24,9 +24,19 @@ class CatalogIntegrationCascadeDeletion {
   @Inject CatalogIntegrationRepository integrations;
   @Inject CatalogOverlayRepository overlays;
   @Inject CatalogOverlayReconciler overlayReconciler;
+  @Inject CatalogOverlayLifecycle overlayLifecycle;
   @Inject MarkerStore markerStore;
 
   MutationMeta delete(ResourceId integrationId, MutationMeta integrationMeta) {
+    return delete(integrationId, integrationMeta, "", () -> {});
+  }
+
+  MutationMeta delete(
+      ResourceId integrationId,
+      MutationMeta integrationMeta,
+      String correlationId,
+      Runnable requireOwnedCatalogDelete) {
+    preflightOwnedCatalogs(integrationId, correlationId, requireOwnedCatalogDelete);
     DurableDeletionFence.Fence fence =
         integrations
             .acquireCascadeDeletionFence(integrationId, integrationMeta.getPointerVersion())
@@ -46,6 +56,18 @@ class CatalogIntegrationCascadeDeletion {
       if (dependents.isEmpty()) break;
       for (var dependent : dependents) {
         ResourceId overlayId = dependent.value().getResourceId();
+        if (dependent.value().getOwnsCatalog()) {
+          try {
+            requireOwnedCatalogDelete.run();
+          } catch (RuntimeException denied) {
+            if (fence.newlyInstalled()) {
+              integrations.cancelCascadeDeletion(
+                  integrationId, integrationMeta.getPointerVersion(), fence.version());
+            }
+            throw denied;
+          }
+          overlayLifecycle.preflightOwnedCatalogRemoval(dependent.value(), correlationId);
+        }
         DurableDeletionFence.Fence overlayFence =
             overlays
                 .acquireDeletionFence(overlayId, dependent.meta().getPointerVersion())
@@ -53,9 +75,21 @@ class CatalogIntegrationCascadeDeletion {
                     () ->
                         new BaseResourceRepository.AbortRetryableException(
                             "overlay changed while integration cascade deletion was fenced"));
-        overlayReconciler.retireMaterializedResources(dependent.value());
-        if (!overlays.deleteWithFence(
-            overlayId, dependent.meta().getPointerVersion(), overlayFence.version())) {
+        boolean deleted;
+        if (dependent.value().getOwnsCatalog()) {
+          deleted =
+              overlayLifecycle.deleteFenced(
+                  dependent.value(),
+                  dependent.meta().getPointerVersion(),
+                  overlayFence.version(),
+                  correlationId);
+        } else {
+          overlayReconciler.retireMaterializedResources(dependent.value());
+          deleted =
+              overlays.deleteWithFence(
+                  overlayId, dependent.meta().getPointerVersion(), overlayFence.version());
+        }
+        if (!deleted) {
           throw new BaseResourceRepository.AbortRetryableException(
               "overlay changed during integration cascade deletion");
         }
@@ -73,5 +107,22 @@ class CatalogIntegrationCascadeDeletion {
           "integration changed while cascade deletion completed");
     }
     return integrationMeta;
+  }
+
+  private void preflightOwnedCatalogs(
+      ResourceId integrationId, String correlationId, Runnable requireOwnedCatalogDelete) {
+    String token = "";
+    do {
+      var next = new StringBuilder();
+      var dependents =
+          overlays.listByIntegrationWithMetaConsistent(
+              integrationId.getAccountId(), integrationId.getId(), PAGE_SIZE, token, next);
+      for (var dependent : dependents) {
+        if (!dependent.value().getOwnsCatalog()) continue;
+        requireOwnedCatalogDelete.run();
+        overlayLifecycle.preflightOwnedCatalogRemoval(dependent.value(), correlationId);
+      }
+      token = next.toString();
+    } while (!token.isEmpty());
   }
 }

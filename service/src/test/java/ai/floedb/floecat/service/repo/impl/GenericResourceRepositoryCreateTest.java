@@ -538,9 +538,11 @@ class GenericResourceRepositoryCreateTest {
     long companionVersion = ptr.get(companionKey).orElseThrow().getVersion();
 
     assertThat(
-            repo.deleteWithPreconditionAndCompanions(
+            repo.deleteWithPreconditionWhilePointersMatchAndCompanions(
                 new AccountKey("acct-1"),
                 canonical.getVersion(),
+                GenericResourceRepository.PointerConditions.none(),
+                Map.of(),
                 List.of(new PointerStore.CasDelete(companionKey, companionVersion))))
         .isTrue();
 

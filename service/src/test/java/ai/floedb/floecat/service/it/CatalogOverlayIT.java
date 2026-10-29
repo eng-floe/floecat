@@ -21,6 +21,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetCatalogRequest;
+import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
+import ai.floedb.floecat.catalog.rpc.GetTableRequest;
+import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -67,6 +71,12 @@ class CatalogOverlayIT {
 
   @GrpcClient("floecat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalogs;
+
+  @GrpcClient("floecat")
+  NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaces;
+
+  @GrpcClient("floecat")
+  TableServiceGrpc.TableServiceBlockingStub tables;
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
@@ -209,6 +219,54 @@ class CatalogOverlayIT {
         overlays
             .listCatalogOverlays(ListCatalogOverlaysRequest.newBuilder().build())
             .getEntriesCount());
+  }
+
+  @Test
+  void deletingOwningOverlayRecursivelyDeletesCatalogContents() throws Exception {
+    var parents = createParents("owned-cascade");
+    var created =
+        overlays.createCatalogOverlay(
+            CreateCatalogOverlayRequest.newBuilder()
+                .setSpec(
+                    CatalogOverlaySpec.newBuilder()
+                        .setDisplayName("owned-cascade-overlay")
+                        .setIntegrationId(parents.integrationId()))
+                .build());
+    var overlay = created.getOverlay();
+    var catalogId = overlay.getCatalogId();
+    var namespace =
+        TestSupport.createNamespace(namespaces, catalogId, "user_namespace", List.of(), "");
+    var table =
+        TestSupport.createTable(
+            tables,
+            catalogId,
+            namespace.getResourceId(),
+            "user_table",
+            "s3://owned-cascade",
+            "{}",
+            "");
+
+    overlays.deleteCatalogOverlay(
+        DeleteCatalogOverlayRequest.newBuilder()
+            .setOverlayId(overlay.getResourceId())
+            .setPrecondition(precondition(created.getMeta()))
+            .build());
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> catalogs.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(catalogId).build()));
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            namespaces.getNamespace(
+                GetNamespaceRequest.newBuilder()
+                    .setNamespaceId(namespace.getResourceId())
+                    .build()));
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            tables.getTable(
+                GetTableRequest.newBuilder().setTableId(table.getResourceId()).build()));
   }
 
   private Parents createParents(String suffix) {

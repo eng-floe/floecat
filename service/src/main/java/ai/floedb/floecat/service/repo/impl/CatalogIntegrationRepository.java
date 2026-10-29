@@ -173,6 +173,19 @@ public class CatalogIntegrationRepository {
         .isPresent();
   }
 
+  /** Removes a cascade fence while the integration identity is still unchanged. */
+  public boolean cancelCascadeDeletion(
+      ResourceId integrationId, long expectedPointerVersion, long expectedFenceVersion) {
+    String canonical =
+        Keys.catalogIntegrationPointerById(integrationId.getAccountId(), integrationId.getId());
+    String fence =
+        Keys.catalogIntegrationDeletionMarker(integrationId.getAccountId(), integrationId.getId());
+    return pointerStore.compareAndSetBatch(
+        List.of(
+            new PointerStore.CasCheck(canonical, expectedPointerVersion),
+            new PointerStore.CasDelete(fence, expectedFenceVersion)));
+  }
+
   public boolean deleteWithPreconditionForCascadeDeletion(
       ResourceId integrationId,
       long expectedPointerVersion,
