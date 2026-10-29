@@ -76,6 +76,16 @@ public class CatalogRepository {
     return repo.createWithMeta(catalog, completionFactory);
   }
 
+  /** Prepares an atomic catalog create to be committed with another resource. */
+  public List<PointerStore.CasOp> prepareCreateOps(Catalog catalog) {
+    return repo.prepareCreateOps(catalog);
+  }
+
+  /** Prepares an atomic catalog delete to be committed with its owning overlay. */
+  public List<PointerStore.CasOp> prepareDeleteOps(ResourceId catalogId) {
+    return repo.prepareDeleteOps(new CatalogKey(catalogId.getAccountId(), catalogId.getId()));
+  }
+
   public Optional<MutationMeta> completeWithMetaIfUnchanged(
       Catalog catalog,
       long expectedPointerVersion,

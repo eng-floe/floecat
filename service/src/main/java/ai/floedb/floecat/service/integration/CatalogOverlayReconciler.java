@@ -1390,7 +1390,7 @@ public class CatalogOverlayReconciler {
         .filter(value -> !value.isBlank());
   }
 
-  private static boolean ownedBy(Map<String, String> properties, CatalogOverlay overlay) {
+  static boolean ownedBy(Map<String, String> properties, CatalogOverlay overlay) {
     return overlay.getResourceId().getId().equals(properties.get(OVERLAY_ID_PROPERTY));
   }
 

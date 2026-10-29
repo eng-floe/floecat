@@ -163,10 +163,11 @@ together or neither does:
 
 A writer that loses its assertion retries; one that keeps losing fails with a retryable abort.
 
-An overlay references an existing Catalog. Its `by-integration` and `by-catalog` dependency
-pointers are written and removed atomically with the overlay resource. Fixed generation markers on
-both parents close create/delete races, and the per-overlay deletion marker fences reconciliation
-while an overlay is retired. Catalog and overlay names and lifecycles remain independent.
+An overlay references a supplied or automatically created Catalog. Its `by-integration` and
+`by-catalog` dependency pointers are written and removed atomically with the overlay resource. An
+automatically created Catalog is written in that same create batch and removed in the owning
+Overlay's final fenced delete batch. Fixed generation markers on both parents close create/delete
+races, and the per-overlay deletion marker fences reconciliation while an overlay is retired.
 
 Catalog integration secret payloads are stored outside the resource blob through SecretsManager:
 

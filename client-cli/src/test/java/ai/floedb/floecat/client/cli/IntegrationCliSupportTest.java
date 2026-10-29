@@ -7,6 +7,7 @@
 package ai.floedb.floecat.client.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -352,11 +353,24 @@ class IntegrationCliSupportTest {
   }
 
   @Test
+  void createsOverlayWithoutExistingCatalog() throws Exception {
+    try (Harness h = new Harness()) {
+      h.run("overlay", List.of("create", "sales", "lakehouse", "--include", "prod.sales"));
+
+      var spec = h.overlays.lastCreate.getSpec();
+      assertEquals(INTEGRATION_ID, spec.getIntegrationId().getId());
+      assertFalse(spec.hasCatalogId());
+      assertEquals(List.of("prod", "sales"), spec.getIncludeNamespaces(0).getSegmentsList());
+    }
+  }
+
+  @Test
   void listsAndGetsOverlayByName() throws Exception {
     try (Harness h = new Harness()) {
       String output = h.run("overlay", List.of("get", "sales"));
       assertTrue(output.contains("sales"));
       assertTrue(output.contains("CATALOG_ID"));
+      assertTrue(output.contains("OWNED"));
       assertTrue(output.contains(CATALOG_ID));
       assertTrue(output.contains("[prod.sales]"));
       assertTrue(output.contains("[tmp]"));

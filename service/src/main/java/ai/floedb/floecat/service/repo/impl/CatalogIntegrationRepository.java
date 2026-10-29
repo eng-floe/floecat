@@ -156,24 +156,35 @@ public class CatalogIntegrationRepository {
         expectedMarkerVersion == 0L ? Map.of() : Map.of(marker, expectedMarkerVersion));
   }
 
-  public boolean beginCascadeDeletion(ResourceId integrationId, long expectedPointerVersion) {
-    if (expectedPointerVersion <= 0L) return false;
+  public record DeletionFence(long version, boolean installedByCaller) {}
+
+  public Optional<DeletionFence> beginCascadeDeletionWithOwnership(
+      ResourceId integrationId, long expectedPointerVersion) {
+    if (expectedPointerVersion <= 0L) return Optional.empty();
     String canonical =
         Keys.catalogIntegrationPointerById(integrationId.getAccountId(), integrationId.getId());
     String fence =
         Keys.catalogIntegrationDeletionMarker(integrationId.getAccountId(), integrationId.getId());
-    if (pointerStore.get(fence).isPresent()) {
-      return pointerStore
-          .get(canonical)
-          .map(pointer -> pointer.getVersion() == expectedPointerVersion)
-          .orElse(false);
+    var existingFence = pointerStore.get(fence);
+    if (existingFence.isPresent()) {
+      boolean unchanged =
+          pointerStore
+              .get(canonical)
+              .map(pointer -> pointer.getVersion() == expectedPointerVersion)
+              .orElse(false);
+      return unchanged
+          ? Optional.of(new DeletionFence(existingFence.orElseThrow().getVersion(), false))
+          : Optional.empty();
     }
-    return pointerStore.compareAndSetBatch(
+    if (!pointerStore.compareAndSetBatch(
         List.of(
             new PointerStore.CasCheck(canonical, expectedPointerVersion),
             AccountDeletionFence.checkForAccountWrite(integrationId.getAccountId(), fence),
             new PointerStore.CasUpsert(
-                fence, 0L, PointerReferences.opaqueMarkerPointer(fence, fence, 1L))));
+                fence, 0L, PointerReferences.opaqueMarkerPointer(fence, fence, 1L))))) {
+      return Optional.empty();
+    }
+    return Optional.of(new DeletionFence(cascadeDeletionFenceVersion(integrationId), true));
   }
 
   public long cascadeDeletionFenceVersion(ResourceId integrationId) {
@@ -183,6 +194,19 @@ public class CatalogIntegrationRepository {
                 integrationId.getAccountId(), integrationId.getId()))
         .map(ai.floedb.floecat.common.rpc.Pointer::getVersion)
         .orElse(0L);
+  }
+
+  /** Removes a cascade fence while the integration identity is still unchanged. */
+  public boolean cancelCascadeDeletion(
+      ResourceId integrationId, long expectedPointerVersion, long expectedFenceVersion) {
+    String canonical =
+        Keys.catalogIntegrationPointerById(integrationId.getAccountId(), integrationId.getId());
+    String fence =
+        Keys.catalogIntegrationDeletionMarker(integrationId.getAccountId(), integrationId.getId());
+    return pointerStore.compareAndSetBatch(
+        List.of(
+            new PointerStore.CasCheck(canonical, expectedPointerVersion),
+            new PointerStore.CasDelete(fence, expectedFenceVersion)));
   }
 
   public boolean deleteWithPreconditionForCascadeDeletion(

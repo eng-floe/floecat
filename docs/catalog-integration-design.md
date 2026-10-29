@@ -43,14 +43,14 @@ hierarchy, a second table identity, or a second name-resolution path.
 | Shell CLI | Integration and Overlay CRUD commands, target-Catalog binding, typed authentication input, write-only credential input, authentication rotation, pagination, name resolution, namespace filters, cascade, and etag preconditions | Connectivity validation, discovery, capture, reconciliation, and query visibility |
 | Catalog-access SPI | Connector-independent catalog client SPI plus an Iceberg REST provider with validation, discovery, table and view loading, OAuth2, SigV4, and renewable AWS credential support | Wiring Catalog Integration resources to the SPI, Integration validation/listing RPCs, persistence, scheduling, and capture |
 | Integration validation and discovery | Wire persisted Integration credentials to the SPI; validate catalog authentication, credential vending, and storage access; lazily list upstream namespaces, tables, and views | Persistence of discovery results, Overlay reconciliation, scheduling, and capture |
-| Overlay metadata reconciliation | A synchronous Overlay RPC wires persisted Integration credentials to the SPI and materializes selected namespaces, table definitions, and views into an existing Catalog with generation fencing, collision checks, and contribution-scoped cleanup | Durable scheduling, snapshot/file capture, validation, and statistics |
+| Overlay metadata reconciliation | A synchronous Overlay RPC wires persisted Integration credentials to the SPI and materializes selected namespaces, table definitions, and views into a destination Catalog with generation fencing, collision checks, and contribution-scoped cleanup | Durable scheduling, snapshot/file capture, validation, and statistics |
 
 ## Goals
 
 The catalog integration model provides a way to:
 
 - authenticate Floecat to an upstream catalog once, and reuse that connection across many overlays;
-- select upstream namespaces and expose them in an existing Floecat catalog;
+- select upstream namespaces and expose them in a supplied or automatically created Floecat catalog;
 - combine non-conflicting contributions from multiple overlays and integrations in one catalog while
   retaining independently managed catalog content;
 - discover and validate upstream namespaces, tables, and views without depending on Connector
@@ -77,10 +77,11 @@ Catalog "analytics"                     independently managed target
  └── Namespace ["local"]                directly managed Floecat content
 ```
 
-An overlay is a mapping resource that references exactly one Integration and one existing Floecat
-`Catalog`. It does not own the target Catalog. Multiple overlays may target the same Catalog, and
-the Catalog retains its independent identity, name, writability, and lifecycle. An overlay owns only
-the materialized contributions produced by its mapping. Name resolution, listing, pinning, planning,
+An overlay is a mapping resource that references exactly one Integration and one Floecat `Catalog`.
+The caller may supply an independently managed Catalog, or omit it and let Floecat create an owned
+Catalog with the overlay name. Deleting an owning overlay deletes that Catalog once it is empty and
+unshared. Multiple overlays may target an independently managed Catalog. An overlay owns the
+materialized contributions produced by its mapping. Name resolution, listing, pinning, planning,
 and garbage collection operate on ordinary Catalog, Namespace, Table, View, and Snapshot resources
 with no overlay-specific read path.
 
@@ -170,27 +171,30 @@ reported as separate error entries.
 
 ### Catalog overlay
 
-`CatalogOverlay` binds one Integration and one selection of upstream namespaces to an existing
-Floecat `Catalog`. It is the direct replacement for the connector's `source` plus `destination`
-pair. The target is explicit because Catalog lifecycle remains independent from Overlay lifecycle.
+`CatalogOverlay` binds one Integration and one selection of upstream namespaces to a Floecat
+`Catalog`. It is the direct replacement for the connector's `source` plus `destination` pair. The
+caller may select an independent target or omit it to create an Overlay-owned Catalog.
 
 ```text
 CatalogOverlay
   display_name         independently managed Overlay name
   integration_id       which upstream catalog and credentials to use (immutable through update)
-  catalog_id           existing Floecat destination (immutable through update)
+  catalog_id           Floecat destination (immutable through update)
+  owns_catalog         whether Overlay deletion also removes the destination
   include_namespaces   upstream selection
   exclude_namespaces   upstream selection
 ```
 
-Creating an overlay verifies that both referenced resources exist in the same account and publishes
-dependencies on the Integration and target Catalog atomically with the Overlay. A Catalog cannot be
-deleted while an Overlay references it. Renaming either resource does not rename the other because
-the binding uses immutable resource identity rather than display name. Overlay display names remain
-unique among Overlays in the account but do not reserve Catalog names.
+Creating an overlay verifies the referenced resources in the same account and publishes dependencies
+on the Integration and target Catalog atomically with the Overlay. When the target is omitted, the
+same transaction creates a Catalog with the Overlay name. A Catalog cannot be deleted while an
+Overlay references it. Renaming either resource does not rename the other because the binding uses
+immutable resource identity rather than display name.
 
-The target Catalog remains directly manageable. Clients may create local namespaces and relations in
-it, and other overlays may contribute non-conflicting resources. Materialized Tables and Views carry
+An explicitly selected target Catalog remains directly manageable. Clients may create local
+namespaces and relations in it, and other overlays may contribute non-conflicting resources. An
+owned Catalog must be empty of user-managed namespaces, tables, and views and unshared before its
+Overlay can be deleted. Materialized Tables and Views carry
 typed Integration and Overlay provenance and reject direct mutation while managed by the Overlay.
 Namespaces are shared structural containers rather than exclusively Overlay-owned resources.
 Namespace claim state records every Overlay using a path and whether the container was originally
@@ -427,12 +431,12 @@ deletion changes invalidate older work.
 | Rename target catalog | Ordinary Catalog rename; Overlay bindings remain valid by resource ID | No additional behavior required |
 | Replace integration | New identity; rejected while dependent overlays exist | Validation may run before publication |
 | Rotate credentials | Atomic new credential generation; old generation retired after publication | Reclaim acknowledgement-uncertain orphan generations |
-| Create or replace overlay | Attaches to an existing Catalog; atomically stores the selection plus Integration and Catalog dependencies; replacement fences and retires only the prior Overlay's contributions | Trigger or join durable snapshot/file capture into the target Catalog |
+| Create or replace overlay | Attaches to a supplied Catalog or atomically creates an owned Catalog; stores the selection plus Integration and Catalog dependencies; replacement fences and retires only the prior Overlay's contributions | Trigger or join durable snapshot/file capture into the target Catalog |
 | Reconcile overlay | Completes discovery and collision preflight, publishes desired namespace claims, Table definitions, and Views, then retires stale managed contributions behind generation fences | Schedule reconciliation and capture Snapshots, files, validation, and statistics |
-| Delete overlay | Installs an Overlay deletion fence, explicitly retires its materialized relations and namespace claims, then removes the Overlay dependencies, resource, and fence; the target Catalog remains | Cancel and drain durable jobs |
+| Delete overlay | Preflights owned-Catalog emptiness and sharing, installs an Overlay deletion fence, explicitly retires its materialized relations and namespace claims, then atomically removes the Overlay and any owned Catalog | Cancel and drain durable jobs |
 | Delete integration | Rejected while overlays exist | Fence integration-owned jobs |
 | Delete target catalog | Rejected while Overlays reference it, even when it is otherwise empty | Fence Catalog-targeted jobs |
-| Cascade integration delete | Durable Integration and Overlay deletion fences, explicit retirement of each dependent Overlay's contributions, Overlay and Integration resource deletion, and credential cleanup; target Catalogs remain | Cancel and drain durable jobs |
+| Cascade integration delete | Durable Integration and Overlay deletion fences, explicit retirement of each dependent Overlay's contributions, owned-Catalog cleanup, Overlay and Integration resource deletion, and credential cleanup | Cancel and drain durable jobs |
 | Delete account | Durable deletion fence, then cleanup of overlays, integrations, and integration credentials | No additional behavior required |
 
 Overlay lifecycle code explicitly deletes its logical `Table` and `View` resources, releases its
