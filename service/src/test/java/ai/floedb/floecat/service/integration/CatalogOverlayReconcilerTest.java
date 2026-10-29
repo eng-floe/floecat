@@ -58,6 +58,7 @@ import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
+import ai.floedb.floecat.integration.rpc.NamespaceMapping;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.concurrent.MetadataResourceReader;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -167,6 +168,51 @@ class CatalogOverlayReconcilerTest {
     reconciler.markerStore = markerStoreOver(pointers);
     reconciler.fileIoProperties =
         mock(ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver.class);
+  }
+
+  @Test
+  void mapsSelectedNamespaceWithoutChangingUpstreamIdentity() {
+    NamespacePath source = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(source));
+    client.children.put(source, List.of());
+    CatalogObjectName sourceName = new CatalogObjectName(source, "query_log");
+    client.tables.put(
+        sourceName,
+        new CatalogTable(
+            sourceName,
+            ExternalObjectIdentity.stable("query-log-id"),
+            "ICEBERG",
+            SCHEMA_JSON,
+            List.of(),
+            Optional.of("s3://warehouse/query_log/metadata.json"),
+            Optional.of("s3://warehouse/query_log"),
+            Map.of()));
+    overlay =
+        overlay.toBuilder()
+            .addNamespaceMappings(
+                NamespaceMapping.newBuilder()
+                    .setSource(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("sales"))
+                    .setDestination(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("_floe_private")))
+            .build();
+    overlays.update(overlay, overlays.metaFor(overlay.getResourceId()).getPointerVersion());
+
+    var result = reconcile();
+
+    assertEquals(1, result.namespacesCreated());
+    assertTrue(namespaces.getByPath("acct", "catalog", List.of("sales")).isEmpty());
+    var destination =
+        namespaces.getByPath("acct", "catalog", List.of("_floe_private")).orElseThrow();
+    Table table =
+        tables
+            .getByName("acct", "catalog", destination.getResourceId().getId(), "query_log")
+            .orElseThrow();
+    assertEquals(List.of("sales"), table.getUpstream().getNamespacePathList());
+    assertEquals("query_log", table.getUpstream().getTableDisplayName());
+    assertEquals(0, reconcile().tablesCreated());
   }
 
   @Test

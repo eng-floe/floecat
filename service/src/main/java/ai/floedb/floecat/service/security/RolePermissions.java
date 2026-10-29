@@ -104,7 +104,8 @@ public final class RolePermissions {
           CATALOG_INTEGRATION_WRITE,
           CATALOG_INTEGRATION_USE,
           CATALOG_OVERLAY_READ,
-          CATALOG_OVERLAY_WRITE);
+          CATALOG_OVERLAY_WRITE,
+          CATALOG_OVERLAY_RECONCILE);
   private static final List<String> DELETE_ACCOUNT_PERMS = List.of("account.delete");
   private static final List<String> RECONCILE_WORKER_PERMS =
       List.of(

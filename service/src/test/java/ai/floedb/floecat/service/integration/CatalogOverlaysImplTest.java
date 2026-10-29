@@ -30,6 +30,7 @@ import ai.floedb.floecat.integration.rpc.CatalogOverlaySpec;
 import ai.floedb.floecat.integration.rpc.CreateCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.CreateCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.DeleteCatalogOverlayRequest;
+import ai.floedb.floecat.integration.rpc.NamespaceMapping;
 import ai.floedb.floecat.integration.rpc.NamespacePath;
 import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
@@ -394,6 +395,39 @@ class CatalogOverlaysImplTest {
     verify(service.reconciler).retireMaterializedResources(current);
     verify(service.overlays).deleteWithFence(overlayId, 7L, 1L);
     verify(service.catalogs, never()).delete(any());
+  }
+
+  @Test
+  void storesExplicitNamespaceMapping() {
+    NamespaceMapping mapping =
+        NamespaceMapping.newBuilder()
+            .setSource(path("acct_616263"))
+            .setDestination(path("_floe_private"))
+            .build();
+    var response =
+        create(
+            CatalogOverlaySpec.newBuilder()
+                .addIncludeNamespaces(path("acct_616263"))
+                .addNamespaceMappings(mapping));
+
+    assertEquals(List.of(mapping), response.getOverlay().getNamespaceMappingsList());
+  }
+
+  @Test
+  void rejectsMappingWithoutMatchingSelection() {
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                create(
+                    CatalogOverlaySpec.newBuilder()
+                        .addIncludeNamespaces(path("other"))
+                        .addNamespaceMappings(
+                            NamespaceMapping.newBuilder()
+                                .setSource(path("acct_616263"))
+                                .setDestination(path("_floe_private")))));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
   }
 
   @Test
