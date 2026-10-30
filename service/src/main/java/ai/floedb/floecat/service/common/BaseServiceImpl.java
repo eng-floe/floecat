@@ -18,15 +18,12 @@ package ai.floedb.floecat.service.common;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
-import ai.floedb.floecat.common.rpc.Error;
-import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
-import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
@@ -37,16 +34,10 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
-import ai.floedb.floecat.storage.errors.StorageConflictException;
-import ai.floedb.floecat.storage.errors.StorageCorruptionException;
-import ai.floedb.floecat.storage.errors.StorageNotFoundException;
-import ai.floedb.floecat.storage.errors.StoragePreconditionFailedException;
-import com.google.protobuf.Any;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
-import io.grpc.protobuf.StatusProto;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.smallrye.mutiny.Multi;
@@ -71,7 +62,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
@@ -278,62 +268,7 @@ public abstract class BaseServiceImpl {
   }
 
   protected StatusRuntimeException toStatus(Throwable t, String corrId) {
-    if (t instanceof StatusRuntimeException sre) {
-      if (containsFloecatError(sre)) {
-        return sre;
-      }
-      return GrpcErrors.build(
-          sre.getStatus(), errorCodeForStatus(sre.getStatus()), corrId, null, null, t);
-    }
-
-    if (t instanceof BaseResourceRepository.SystemObjectImmutableException) {
-      // Repository-layer backstop for system-object immutability (GenericResourceRepository
-      // #guardSystemObject). Reaching here means a write path bypassed the surface write policy;
-      // surface it as the same PERMISSION_DENIED the policy would have produced.
-      return GrpcErrors.permissionDenied(corrId, SYSTEM_OBJECT_IMMUTABLE, null, t);
-    }
-    if (t instanceof BaseResourceRepository.AccountDeletionInProgressException deleting) {
-      return GrpcErrors.preconditionFailed(
-          corrId,
-          ACCOUNT_DELETION_IN_PROGRESS,
-          Map.of("account_id", deleting.accountId()),
-          deleting);
-    }
-    if (t instanceof ReconcileJobQueue.DisabledException) {
-      return GrpcErrors.preconditionFailed(corrId, null, null, t);
-    }
-    if (t instanceof BaseResourceRepository.NameConflictException
-        || t instanceof StorageConflictException) {
-      return GrpcErrors.conflict(corrId, null, null, t);
-    }
-    if (t instanceof BaseResourceRepository.PreconditionFailedException
-        || t instanceof StoragePreconditionFailedException) {
-      return GrpcErrors.preconditionFailed(corrId, null, null, t);
-    }
-    if (t instanceof BaseResourceRepository.NotFoundException
-        || t instanceof StorageNotFoundException) {
-      return GrpcErrors.notFound(corrId, null, null, t);
-    }
-    if (t instanceof BaseResourceRepository.AbortRetryableException
-        || t instanceof StorageAbortRetryableException
-        || t instanceof IdempotencyInProgressException) {
-      return GrpcErrors.aborted(corrId, null, t);
-    }
-    if (t instanceof BaseResourceRepository.CorruptionException
-        || t instanceof StorageCorruptionException) {
-      return GrpcErrors.internal(corrId, null, null, t);
-    }
-    if (t instanceof IllegalArgumentException) {
-      return GrpcErrors.invalidArgument(corrId, null, null, t);
-    }
-    if (t instanceof TimeoutException) {
-      return GrpcErrors.timeout(corrId, null, null, t);
-    }
-    if (t instanceof CancellationException) {
-      return GrpcErrors.cancelled(corrId, null, null, t);
-    }
-
-    return GrpcErrors.internal(corrId, null, null, t);
+    return GrpcErrors.fromThrowable(t, corrId);
   }
 
   protected void ensureKind(
@@ -594,48 +529,6 @@ public abstract class BaseServiceImpl {
       }
     }
     return out;
-  }
-
-  private static boolean containsFloecatError(StatusRuntimeException ex) {
-    var statusProto = StatusProto.fromThrowable(ex);
-    if (statusProto == null) {
-      return false;
-    }
-    for (Any detail : statusProto.getDetailsList()) {
-      if (detail.is(Error.class)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private static ErrorCode errorCodeForStatus(io.grpc.Status status) {
-    switch (status.getCode()) {
-      case INVALID_ARGUMENT:
-        return ErrorCode.MC_INVALID_ARGUMENT;
-      case NOT_FOUND:
-        return ErrorCode.MC_NOT_FOUND;
-      case FAILED_PRECONDITION:
-        return ErrorCode.MC_PRECONDITION_FAILED;
-      case ALREADY_EXISTS:
-        return ErrorCode.MC_CONFLICT;
-      case PERMISSION_DENIED:
-        return ErrorCode.MC_PERMISSION_DENIED;
-      case UNAUTHENTICATED:
-        return ErrorCode.MC_UNAUTHENTICATED;
-      case RESOURCE_EXHAUSTED:
-        return ErrorCode.MC_RATE_LIMITED;
-      case UNAVAILABLE:
-        return ErrorCode.MC_UNAVAILABLE;
-      case DEADLINE_EXCEEDED:
-        return ErrorCode.MC_TIMEOUT;
-      case CANCELLED:
-        return ErrorCode.MC_CANCELLED;
-      case ABORTED:
-        return ErrorCode.MC_ABORT_RETRYABLE;
-      default:
-        return ErrorCode.MC_INTERNAL;
-    }
   }
 
   protected static String nullSafeId(ai.floedb.floecat.common.rpc.ResourceId rid) {

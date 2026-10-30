@@ -20,14 +20,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
+import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey;
 import com.google.protobuf.Any;
 import com.google.rpc.BadRequest;
 import com.google.rpc.DebugInfo;
 import com.google.rpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CompletionException;
 import org.junit.jupiter.api.Test;
 
 class GrpcErrorsTest {
@@ -41,6 +44,52 @@ class GrpcErrorsTest {
     assertTrue(GrpcErrors.isRelationScoped(io.grpc.Status.INTERNAL.asRuntimeException()));
     assertFalse(GrpcErrors.isRelationScoped(io.grpc.Status.UNAVAILABLE.asRuntimeException()));
     assertFalse(GrpcErrors.isRelationScoped(new IllegalStateException("not grpc")));
+  }
+
+  @Test
+  void relationFailureRethrowsWhatEndsTheCallAndReportsTheRest() {
+    var table = "account=acct RK_TABLE=orders";
+    for (RuntimeException endsTheCall :
+        List.of(
+            GrpcErrors.snapshotExpired("corr", null, Map.of()),
+            GrpcErrors.snapshotTooOld("corr", Map.of()),
+            GrpcErrors.notFound("corr", MessageKey.QUERY_NOT_FOUND, Map.of("query_id", "q")),
+            GrpcErrors.preconditionFailed(
+                "corr", MessageKey.QUERY_NOT_ACTIVE, Map.of("query_id", "q")),
+            GrpcErrors.preconditionFailed(
+                "corr", MessageKey.ACCOUNT_DELETION_IN_PROGRESS, Map.of("account_id", "a")),
+            GrpcErrors.internal("corr", MessageKey.QUERY_SNAPSHOT_PARSE_FAILED, Map.of()),
+            GrpcErrors.internal("corr", MessageKey.QUERY_AS_OF_DEFAULT_PARSE_FAILED, Map.of()),
+            GrpcErrors.internal(
+                "corr", MessageKey.QUERY_TABLE_DEFINITION_REF_MISSING, Map.of("table_id", "t")),
+            GrpcErrors.internal(
+                "corr", MessageKey.QUERY_PINNED_TABLE_BLOB_MISSING, Map.of("table_id", "t")),
+            GrpcErrors.internal(
+                "corr", MessageKey.QUERY_PINNED_SNAPSHOT_BLOB_MISSING, Map.of("table_id", "t")))) {
+      assertSame(
+          endsTheCall,
+          assertThrows(
+              RuntimeException.class,
+              () -> GrpcErrors.relationFailure(table, endsTheCall, "corr")));
+    }
+
+    var reported =
+        GrpcErrors.relationFailure(
+            table,
+            new CompletionException(new IllegalStateException("mapper invariant broken")),
+            "corr");
+    assertEquals(ErrorCode.MC_INTERNAL, reported.getCode());
+    assertEquals("mapper invariant broken", reported.getParamsMap().get("root_message"));
+    assertEquals("corr", reported.getCorrelationId());
+    // One table's snapshot lacking what a newer write path requires stays that relation's error.
+    assertEquals(
+        ErrorCode.MC_INTERNAL,
+        GrpcErrors.relationFailure(
+                table,
+                GrpcErrors.internal(
+                    "corr", MessageKey.SNAPSHOT_COLUMN_IDENTITY_MISSING, Map.of("table_id", "t")),
+                "corr")
+            .getCode());
   }
 
   @Test
