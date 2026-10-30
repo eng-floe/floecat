@@ -58,6 +58,7 @@ import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
+import ai.floedb.floecat.integration.rpc.NamespaceMapping;
 import ai.floedb.floecat.service.catalog.impl.RelationPurge;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.concurrent.MetadataResourceReader;
@@ -196,6 +197,108 @@ class CatalogOverlayReconcilerTest {
     assertEquals(
         List.of("id:1", "point:2"),
         view.getOutputColumnsList().stream().map(c -> c.getName() + ":" + c.getOrdinal()).toList());
+  }
+
+  @Test
+  void mapsSelectedNamespaceWithoutChangingUpstreamIdentity() {
+    NamespacePath source = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(source));
+    client.children.put(source, List.of());
+    CatalogObjectName sourceName = new CatalogObjectName(source, "orders");
+    client.tables.put(
+        sourceName,
+        new CatalogTable(
+            sourceName,
+            ExternalObjectIdentity.stable("orders-id"),
+            "ICEBERG",
+            SCHEMA_JSON,
+            List.of(),
+            Optional.of("s3://warehouse/orders/metadata.json"),
+            Optional.of("s3://warehouse/orders"),
+            Map.of()));
+    overlay =
+        overlay.toBuilder()
+            .addNamespaceMappings(
+                NamespaceMapping.newBuilder()
+                    .setSource(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("sales"))
+                    .setDestination(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("analytics")))
+            .build();
+    overlays.update(overlay, overlays.metaFor(overlay.getResourceId()).getPointerVersion());
+
+    var result = reconcile();
+
+    assertEquals(1, result.namespacesCreated());
+    assertTrue(namespaces.getByPath("acct", "catalog", List.of("sales")).isEmpty());
+    var destination = namespaces.getByPath("acct", "catalog", List.of("analytics")).orElseThrow();
+    Table table =
+        tables
+            .getByName("acct", "catalog", destination.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertEquals(List.of("sales"), table.getUpstream().getNamespacePathList());
+    assertEquals("orders", table.getUpstream().getTableDisplayName());
+    assertEquals(0, reconcile().tablesCreated());
+  }
+
+  @Test
+  void mappedViewResolvesUnqualifiedRelationsInDestinationNamespace() {
+    NamespacePath source = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(source));
+    client.children.put(source, List.of());
+    CatalogObjectName tableName = new CatalogObjectName(source, "orders");
+    client.tables.put(
+        tableName,
+        new CatalogTable(
+            tableName,
+            ExternalObjectIdentity.stable("orders-id"),
+            "ICEBERG",
+            SCHEMA_JSON,
+            List.of(),
+            Optional.of("s3://warehouse/orders/metadata.json"),
+            Optional.of("s3://warehouse/orders"),
+            Map.of()));
+    CatalogObjectName viewName = new CatalogObjectName(source, "summary");
+    client.views.put(
+        viewName,
+        new CatalogView(
+            viewName,
+            ExternalObjectIdentity.stable("summary-id"),
+            SCHEMA_JSON,
+            List.of(new CatalogViewDefinition("select id from orders", "ansi")),
+            source,
+            Map.of()));
+    overlay =
+        overlay.toBuilder()
+            .addNamespaceMappings(
+                NamespaceMapping.newBuilder()
+                    .setSource(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("sales"))
+                    .setDestination(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("reports")))
+            .build();
+    overlays.update(overlay, overlays.metaFor(overlay.getResourceId()).getPointerVersion());
+
+    var result = reconcile();
+
+    assertEquals(1, result.tablesCreated());
+    assertEquals(1, result.viewsCreated());
+    assertTrue(namespaces.getByPath("acct", "catalog", List.of("sales")).isEmpty());
+    var destination = namespaces.getByPath("acct", "catalog", List.of("reports")).orElseThrow();
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", destination.getResourceId().getId(), "orders")
+            .isPresent());
+    var view =
+        views
+            .getByName("acct", "catalog", destination.getResourceId().getId(), "summary")
+            .orElseThrow();
+    assertEquals(List.of("reports"), view.getCreationSearchPathList());
+    assertEquals("select id from orders", view.getSqlDefinitions(0).getSql());
   }
 
   @Test
