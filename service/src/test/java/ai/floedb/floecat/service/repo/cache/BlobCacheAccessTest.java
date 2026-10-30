@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.repo.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.cache.BlobCache;
 import ai.floedb.floecat.cache.BlobCacheEvents;
@@ -25,6 +26,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.testsupport.CountingBlobStore;
 import ai.floedb.floecat.service.testsupport.DiskBlobCacheTestSupport;
+import ai.floedb.floecat.storage.errors.StorageUnavailableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -45,6 +47,20 @@ class BlobCacheAccessTest {
     String uri = Keys.tableBlobUri("account/with spaces", "table", "abc");
 
     assertThat(BlobCacheAccess.partition(uri)).isEqualTo("account/with spaces");
+  }
+
+  @Test
+  void aClosedDiskCacheIsTheStoreBeingUnavailable() throws Exception {
+    var disk =
+        new DiskBlobCache(
+            tempDir.resolve("closed"), 1024, 1024, Duration.ZERO, BlobCacheEvents.none());
+    disk.close();
+    var access = new BlobCacheAccess(disk);
+
+    assertThatThrownBy(
+            () -> access.immutable("/accounts/a/one", BlobCache.Fill.FILL, () -> new byte[] {1}))
+        .isInstanceOf(StorageUnavailableException.class)
+        .hasCauseInstanceOf(DiskBlobCache.ClosedException.class);
   }
 
   @Test

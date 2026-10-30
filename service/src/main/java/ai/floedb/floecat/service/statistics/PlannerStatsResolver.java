@@ -464,6 +464,8 @@ final class PlannerStatsResolver {
     } catch (BaseResourceRepository.AbortRetryableException | StorageAbortRetryableException e) {
       throw e;
     } catch (BaseResourceRepository.CorruptionException corruption) {
+      // Stats are best-effort: a corrupt or lost stats batch reads as missing stats rather than
+      // failing the planner's request.
       LOG.debugf(
           corruption,
           "stats batch is corrupt for table=%s snapshot=%s; treating as a miss",

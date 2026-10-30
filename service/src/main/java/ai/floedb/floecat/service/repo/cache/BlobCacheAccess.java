@@ -17,8 +17,10 @@
 package ai.floedb.floecat.service.repo.cache;
 
 import ai.floedb.floecat.cache.BlobCache;
+import ai.floedb.floecat.cache.DiskBlobCache;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.errors.StorageUnavailableException;
 import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -30,6 +32,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /**
  * Floecat key policy in front of the generic disk cache.
@@ -61,18 +64,18 @@ public final class BlobCacheAccess {
 
   public Optional<BlobCache.Content> immutable(
       String uri, BlobCache.Fill fill, BlobCache.Loader loader) {
-    return cache.get(immutableKey(uri), fill, loader);
+    return whileOpen(() -> cache.get(immutableKey(uri), fill, loader));
   }
 
   public Optional<BlobCache.Content> immutableRange(
       String uri, long offset, int length, BlobCache.Fill fill, BlobCache.Loader loader) {
-    return cache.getRange(immutableKey(uri), offset, length, fill, loader);
+    return whileOpen(() -> cache.getRange(immutableKey(uri), offset, length, fill, loader));
   }
 
   public Optional<BlobCache.Content> versioned(
       Pointer pointer, BlobCache.Fill fill, BlobCache.Loader loader) {
     Objects.requireNonNull(pointer, "pointer");
-    return cache.get(versionedKey(pointer), fill, loader);
+    return whileOpen(() -> cache.get(versionedKey(pointer), fill, loader));
   }
 
   public Optional<byte[]> immutableBytes(String uri, BlobCache.Fill fill, BlobCache.Loader loader) {
@@ -109,21 +112,23 @@ public final class BlobCacheAccess {
       uriByKey.put(immutableKey(uri), uri);
     }
     Map<BlobCache.Key, BlobCache.Content> content =
-        cache.getAll(
-            List.copyOf(uriByKey.keySet()),
-            fill,
-            keys -> {
-              List<String> requested = keys.stream().map(uriByKey::get).toList();
-              Map<String, byte[]> loaded = loader.apply(requested);
-              Map<BlobCache.Key, byte[]> byKey = new LinkedHashMap<>();
-              for (BlobCache.Key key : keys) {
-                byte[] bytes = loaded.get(uriByKey.get(key));
-                if (bytes != null) {
-                  byKey.put(key, bytes);
-                }
-              }
-              return byKey;
-            });
+        whileOpen(
+            () ->
+                cache.getAll(
+                    List.copyOf(uriByKey.keySet()),
+                    fill,
+                    keys -> {
+                      List<String> requested = keys.stream().map(uriByKey::get).toList();
+                      Map<String, byte[]> loaded = loader.apply(requested);
+                      Map<BlobCache.Key, byte[]> byKey = new LinkedHashMap<>();
+                      for (BlobCache.Key key : keys) {
+                        byte[] bytes = loaded.get(uriByKey.get(key));
+                        if (bytes != null) {
+                          byKey.put(key, bytes);
+                        }
+                      }
+                      return byKey;
+                    }));
     Map<String, BlobCache.Content> byUri = new LinkedHashMap<>();
     content.forEach((key, body) -> byUri.put(uriByKey.get(key), body));
     return new Contents(byUri, content.values());
@@ -143,22 +148,27 @@ public final class BlobCacheAccess {
       pointerByKey.putIfAbsent(key, pointer);
     }
     Map<BlobCache.Key, BlobCache.Content> content =
-        cache.getAll(
-            List.copyOf(pointerByKey.keySet()),
-            fill,
-            keys -> {
-              List<String> requested =
-                  keys.stream().map(key -> pointerByKey.get(key).getBlobUri()).distinct().toList();
-              Map<String, byte[]> loaded = loader.apply(requested);
-              Map<BlobCache.Key, byte[]> byKey = new LinkedHashMap<>();
-              for (BlobCache.Key key : keys) {
-                byte[] bytes = loaded.get(pointerByKey.get(key).getBlobUri());
-                if (bytes != null) {
-                  byKey.put(key, bytes);
-                }
-              }
-              return byKey;
-            });
+        whileOpen(
+            () ->
+                cache.getAll(
+                    List.copyOf(pointerByKey.keySet()),
+                    fill,
+                    keys -> {
+                      List<String> requested =
+                          keys.stream()
+                              .map(key -> pointerByKey.get(key).getBlobUri())
+                              .distinct()
+                              .toList();
+                      Map<String, byte[]> loaded = loader.apply(requested);
+                      Map<BlobCache.Key, byte[]> byKey = new LinkedHashMap<>();
+                      for (BlobCache.Key key : keys) {
+                        byte[] bytes = loaded.get(pointerByKey.get(key).getBlobUri());
+                        if (bytes != null) {
+                          byKey.put(key, bytes);
+                        }
+                      }
+                      return byKey;
+                    }));
     Map<String, BlobCache.Content> result = new LinkedHashMap<>();
     for (Map.Entry<Pointer, BlobCache.Key> entry : keyByPointer.entrySet()) {
       BlobCache.Content body = content.get(entry.getValue());
@@ -203,11 +213,19 @@ public final class BlobCacheAccess {
   }
 
   public void putImmutable(String uri, byte[] bytes) {
-    cache.put(immutableKey(uri), bytes);
+    whileOpen(
+        () -> {
+          cache.put(immutableKey(uri), bytes);
+          return null;
+        });
   }
 
   public void putVersioned(Pointer pointer, byte[] bytes) {
-    cache.put(versionedKey(pointer), bytes);
+    whileOpen(
+        () -> {
+          cache.put(versionedKey(pointer), bytes);
+          return null;
+        });
   }
 
   /**
@@ -231,6 +249,15 @@ public final class BlobCacheAccess {
 
   public boolean enabled() {
     return cache.enabled();
+  }
+
+  /** Runs one cache call, raising a closed cache as {@link StorageUnavailableException}. */
+  private static <T> T whileOpen(Supplier<T> call) {
+    try {
+      return call.get();
+    } catch (DiskBlobCache.ClosedException closed) {
+      throw new StorageUnavailableException(closed.getMessage(), closed);
+    }
   }
 
   private static BlobCache.Key immutableKey(String uri) {

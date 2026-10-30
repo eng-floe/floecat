@@ -33,6 +33,7 @@ import ai.floedb.floecat.telemetry.NoopObservability;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.ObservationScope;
 import ai.floedb.floecat.telemetry.helpers.StoreMetrics;
+import ai.floedb.floecat.types.InfrastructureFailure;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
@@ -111,7 +112,8 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   /** A resource mutation was rejected because its owning account is being deleted. */
-  public static class AccountDeletionInProgressException extends RepoException {
+  public static class AccountDeletionInProgressException extends RepoException
+      implements InfrastructureFailure {
     private final String accountId;
 
     public AccountDeletionInProgressException(String accountId) {
@@ -124,9 +126,14 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
   }
 
-  public static class AbortRetryableException extends RepoException {
+  public static class AbortRetryableException extends RepoException
+      implements InfrastructureFailure {
     public AbortRetryableException(String msg) {
       super(msg);
+    }
+
+    public AbortRetryableException(String msg, Throwable cause) {
+      super(msg, cause);
     }
 
     /**
@@ -165,7 +172,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
   }
 
-  public static class CorruptionException extends RepoException {
+  /**
+   * Stored data that is not what Floecat wrote, such as a blob that is missing or does not parse.
+   * It is lost data, not a resource's own content, so it fails a call over many relations.
+   */
+  public static class CorruptionException extends RepoException implements InfrastructureFailure {
     public CorruptionException(String msg) {
       super(msg);
     }
@@ -474,7 +485,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     } catch (StorageNotFoundException notFound) {
       return null;
     } catch (StorageAbortRetryableException retryable) {
-      throw new AbortRetryableException("blob read retryable: " + blobUri);
+      throw new AbortRetryableException("blob read retryable: " + blobUri, retryable);
     }
   }
 
