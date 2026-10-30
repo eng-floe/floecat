@@ -29,7 +29,17 @@ public final class MessageCatalog {
     this.bundle = ResourceBundle.getBundle("errors", locale);
   }
 
+  /**
+   * The message for {@code e}: its root cause when it has no message key, its code shows causes,
+   * and a cause was recorded; otherwise its keyed template, or its code's template.
+   */
   public String render(Error e) {
+    if (e.getMessageKey().isBlank() && showsRootCause(e.getCode())) {
+      String cause = e.getParamsMap().getOrDefault("root_message", "");
+      if (!cause.isBlank()) {
+        return cause;
+      }
+    }
     String base = e.getCode().name();
     String key = !e.getMessageKey().isBlank() ? base + "." + e.getMessageKey() : base;
 
@@ -39,6 +49,14 @@ public final class MessageCatalog {
             : (bundle.containsKey(base) ? bundle.getString(base) : defaultTemplate(e.getCode()));
 
     return format(template, e.getParamsMap());
+  }
+
+  /** The codes whose cause is safe and useful to show the caller. */
+  private static boolean showsRootCause(ErrorCode code) {
+    return switch (code) {
+      case MC_INVALID_ARGUMENT, MC_PRECONDITION_FAILED, MC_NOT_FOUND -> true;
+      default -> false;
+    };
   }
 
   private static String defaultTemplate(ErrorCode code) {

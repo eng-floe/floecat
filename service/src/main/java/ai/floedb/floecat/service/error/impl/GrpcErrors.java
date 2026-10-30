@@ -489,7 +489,7 @@ public final class GrpcErrors {
       eb.setMessageKey(messageKey);
     }
 
-    String resolvedMessage = clampDetail(resolveStatusMessage(eb, canonical, t, correlationId));
+    String resolvedMessage = clampDetail(resolveStatusMessage(eb, canonical, correlationId));
     eb.setMessage(resolvedMessage);
 
     Status.Builder statusBuilder =
@@ -636,31 +636,12 @@ public final class GrpcErrors {
   }
 
   private static String resolveStatusMessage(
-      Error.Builder errorBuilder, io.grpc.Status canonical, Throwable t, String correlationId) {
+      Error.Builder errorBuilder, io.grpc.Status canonical, String correlationId) {
     if (shouldHideMessage(canonical) && !debugDetailsEnabled()) {
       return safeInternalMessage(correlationId);
     }
-    String renderedMessage =
-        renderCatalogMessage(
-            errorBuilder.getCode(), errorBuilder.getMessageKey(), errorBuilder.getParamsMap());
-    if (!renderedMessage.isBlank()) {
-      return renderedMessage;
-    }
-    String messageKey = errorBuilder.getMessageKey();
-    if (messageKey != null && !messageKey.isBlank()) {
-      return messageKey;
-    }
-    if (rootCauseAllowed(canonical)) {
-      String causeMessage = rootCauseMessage(t);
-      if (!causeMessage.isBlank()) {
-        return causeMessage;
-      }
-    }
-    String codeName = errorBuilder.getCode().name();
-    if (codeName != null && !codeName.isBlank()) {
-      return codeName;
-    }
-    return canonical.getCode().name();
+    return renderCatalogMessage(
+        errorBuilder.getCode(), errorBuilder.getMessageKey(), errorBuilder.getParamsMap());
   }
 
   private static String renderCatalogMessage(
@@ -695,22 +676,6 @@ public final class GrpcErrors {
           false;
       default -> true;
     };
-  }
-
-  private static boolean rootCauseAllowed(io.grpc.Status canonical) {
-    return switch (canonical.getCode()) {
-      case INVALID_ARGUMENT, FAILED_PRECONDITION, NOT_FOUND -> true;
-      default -> false;
-    };
-  }
-
-  private static String rootCauseMessage(Throwable t) {
-    if (t == null) {
-      return "";
-    }
-    Throwable root = rootCause(t);
-    String msg = root.getMessage();
-    return msg == null ? "" : msg;
   }
 
   private static String safeInternalMessage(String corrId) {
