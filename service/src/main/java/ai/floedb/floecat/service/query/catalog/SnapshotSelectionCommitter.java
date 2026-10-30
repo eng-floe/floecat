@@ -28,9 +28,11 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.ResolutionAttempt;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotSelectionMemo;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -88,19 +90,24 @@ final class SnapshotSelectionCommitter {
    * Resolve snapshot selections for the chunk's relations and fold them into the pending set.
    * Records the selection-collect timing into the shared tally and the selection sub-phase counters
    * into {@code diagnostics}.
+   *
+   * @return each relation whose selection failed for a reason that is not infrastructure, with its
+   *     error; it contributes no selection
    */
-  void accumulate(List<ResolvedRelation> toPin, PhaseDiagnostics diagnostics) {
-    accumulate(toPin, diagnostics, () -> false);
+  Map<ResolvedRelation, ai.floedb.floecat.common.rpc.Error> accumulate(
+      List<ResolvedRelation> toPin, PhaseDiagnostics diagnostics) {
+    return accumulate(toPin, diagnostics, () -> false);
   }
 
   /** Resolve selections for a chunk while observing cancellation. */
-  void accumulate(
+  Map<ResolvedRelation, ai.floedb.floecat.common.rpc.Error> accumulate(
       List<ResolvedRelation> toPin, PhaseDiagnostics diagnostics, BooleanSupplier cancelled) {
     long pinStartNs = System.nanoTime();
     RelationPinSet chunkPins = RelationPinSet.getDefaultInstance();
+    Map<ResolvedRelation, ai.floedb.floecat.common.rpc.Error> failures = new HashMap<>();
     try {
       throwIfCancelled(cancelled);
-      chunkPins = collectChunkPins(toPin, diagnostics, cancelled);
+      chunkPins = collectChunkPins(toPin, diagnostics, cancelled, failures);
       throwIfCancelled(cancelled);
       long accumulateStartNs = System.nanoTime();
       boolean accumulated;
@@ -112,6 +119,7 @@ final class SnapshotSelectionCommitter {
       if (!accumulated) {
         throw new CancellationException("snapshot selection accumulation cancelled");
       }
+      return failures;
     } finally {
       timings.addPinCollectNanos(System.nanoTime() - pinStartNs);
     }
@@ -152,7 +160,10 @@ final class SnapshotSelectionCommitter {
   }
 
   private RelationPinSet collectChunkPins(
-      List<ResolvedRelation> relations, PhaseDiagnostics diagnostics, BooleanSupplier cancelled) {
+      List<ResolvedRelation> relations,
+      PhaseDiagnostics diagnostics,
+      BooleanSupplier cancelled,
+      Map<ResolvedRelation, ai.floedb.floecat.common.rpc.Error> failures) {
     throwIfCancelled(cancelled);
 
     if (relations == null || relations.isEmpty()) {
@@ -160,11 +171,13 @@ final class SnapshotSelectionCommitter {
     }
     diagnostics.add("snapshot.relations", relations.size());
     List<QueryInput> inputs = new ArrayList<>(relations.size());
+    List<ResolvedRelation> inputRelations = new ArrayList<>(relations.size());
     long buildInputsStartNs = System.nanoTime();
     for (ResolvedRelation relation : relations) {
       QueryInput input = buildCanonicalQueryInput(relation);
       if (input != null) {
         inputs.add(input);
+        inputRelations.add(relation);
       }
     }
     diagnostics.nanos("pin.build_inputs", System.nanoTime() - buildInputsStartNs);
@@ -183,11 +196,12 @@ final class SnapshotSelectionCommitter {
             inputs,
             asOfDefault,
             Optional.of(ctx.getQueryDefaultCatalogId()),
-            snapshotSelectionMemo,
-            diagnostics,
-            cancelled,
-            catalogContext);
+            ResolutionAttempt.isolating(
+                snapshotSelectionMemo, diagnostics, cancelled, catalogContext));
     diagnostics.nanos("snapshot.resolver", System.nanoTime() - resolverStartNs);
+    resolution
+        .inputFailures()
+        .forEach((index, failure) -> failures.put(inputRelations.get(index), failure));
     RelationPinSet incoming = resolution.relationPinSet();
     RelationPinSet pins = incoming == null ? RelationPinSet.getDefaultInstance() : incoming;
     throwIfCancelled(cancelled);

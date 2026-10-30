@@ -38,12 +38,14 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
+import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
+import ai.floedb.floecat.types.RelationFailures;
 import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -80,6 +82,7 @@ public final class UserObjectBundleTestSupport {
     private final Map<String, CatalogNode> catalogs = new HashMap<>();
     private final Set<String> hidden = new HashSet<>();
     private final Set<String> schemaFailures = new HashSet<>();
+    private final Map<String, RuntimeException> snapshotFailures = new HashMap<>();
     private final Set<String> nullSchemas = new HashSet<>();
     private final Map<String, Integer> resolveCalls = new ConcurrentHashMap<>();
     private final Map<NameRef, Integer> resolveNameCalls = new ConcurrentHashMap<>();
@@ -93,6 +96,7 @@ public final class UserObjectBundleTestSupport {
       catalogs.clear();
       hidden.clear();
       schemaFailures.clear();
+      snapshotFailures.clear();
       nullSchemas.clear();
       resolveCalls.clear();
       resolveNameCalls.clear();
@@ -105,6 +109,11 @@ public final class UserObjectBundleTestSupport {
      */
     public void failSchemaFor(ResourceId id) {
       schemaFailures.add(id.getId());
+    }
+
+    /** Make {@link #resolvedSnapshotFor} throw {@code failure} for this table. */
+    public void failSnapshotFor(ResourceId id, RuntimeException failure) {
+      snapshotFailures.put(id.getId(), failure);
     }
 
     /** Make {@link #tableSchema(ResourceId, CatalogContext)} return null for this relation. */
@@ -331,6 +340,9 @@ public final class UserObjectBundleTestSupport {
         ai.floedb.floecat.common.rpc.SnapshotRef override,
         Optional<Timestamp> asOfDefault,
         CatalogContext context) {
+      if (snapshotFailures.containsKey(tableId.getId())) {
+        throw snapshotFailures.get(tableId.getId());
+      }
       long snapshotId = 1L;
       PinKind kind = PinKind.PIN_KIND_CURRENT;
       Timestamp originalAsOf = null;
@@ -484,6 +496,7 @@ public final class UserObjectBundleTestSupport {
   public static final class TestQueryInputResolver extends QueryInputResolver {
     private final List<List<QueryInput>> calls = new ArrayList<>();
     private int nextSnapshotId = 1;
+    private final Map<ResourceId, RuntimeException> pinFailures = new HashMap<>();
 
     public TestQueryInputResolver() {
       super(null);
@@ -498,6 +511,11 @@ public final class UserObjectBundleTestSupport {
       return new ArrayList<>(calls);
     }
 
+    /** Make pinning this relation fail; an isolating attempt reports it as that input's failure. */
+    public void failPin(ResourceId relationId, RuntimeException failure) {
+      pinFailures.put(relationId, failure);
+    }
+
     @Override
     protected ResolutionResult resolveInputsAttempt(
         String queryId,
@@ -506,14 +524,27 @@ public final class UserObjectBundleTestSupport {
         Optional<Timestamp> asOfDefault,
         Optional<ResourceId> defaultCatalogId,
         QueryInputResolver.ResolutionAttempt attempt) {
-      return resolveInputs(inputs, attempt.cancelled());
+      return resolveInputs(inputs, attempt.cancelled(), attempt.isolatesRelationFailures());
     }
 
-    private ResolutionResult resolveInputs(List<QueryInput> inputs, BooleanSupplier cancelled) {
+    private ResolutionResult resolveInputs(
+        List<QueryInput> inputs, BooleanSupplier cancelled, boolean isolateRelationFailures) {
 
       List<ResourceId> resolved = new ArrayList<>(inputs.size());
       RelationPinSet.Builder pins = RelationPinSet.newBuilder();
-      for (QueryInput input : inputs) {
+      Map<Integer, ai.floedb.floecat.common.rpc.Error> failures = new HashMap<>();
+      for (int i = 0; i < inputs.size(); i++) {
+        QueryInput input = inputs.get(i);
+        ResourceId target = input.hasViewId() ? input.getViewId() : input.getTableId();
+        RuntimeException pinFailure = pinFailures.get(target);
+        if (pinFailure != null) {
+          if (!isolateRelationFailures) {
+            throw pinFailure;
+          }
+          failures.put(
+              i, GrpcErrors.relationFailure(RelationFailures.label(target), pinFailure, "cid"));
+          continue;
+        }
         if (cancelled.getAsBoolean()) {
           throw new java.util.concurrent.CancellationException("input resolution cancelled");
         }
@@ -531,7 +562,7 @@ public final class UserObjectBundleTestSupport {
           default -> {}
         }
       }
-      return new ResolutionResult(resolved, pins.build(), null);
+      return new ResolutionResult(resolved, pins.build(), null, failures);
     }
   }
 

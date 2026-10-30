@@ -43,6 +43,7 @@ import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -294,7 +295,7 @@ class SnapshotSelectionCommitterTest {
                     .setPinKind(PinKind.PIN_KIND_SNAPSHOT_ID)
                     .build()));
       }
-      return new ResolutionResult(resolved, pins.build(), null);
+      return new ResolutionResult(resolved, pins.build(), null, Map.of());
     }
   }
 
