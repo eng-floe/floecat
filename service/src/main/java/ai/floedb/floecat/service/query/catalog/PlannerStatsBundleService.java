@@ -22,7 +22,6 @@ import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
-import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.BundleFailure;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
@@ -44,7 +43,6 @@ import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
-import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -59,7 +57,7 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
-import io.grpc.StatusRuntimeException;
+import ai.floedb.floecat.types.RelationFailures;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -769,7 +767,9 @@ public class PlannerStatsBundleService {
                       tableId,
                       target,
                       snapshot.getAsLong(),
-                      new RuntimeException(lookupResult.outcomeDetail()));
+                      ai.floedb.floecat.common.rpc.Error.newBuilder()
+                          .setMessage(lookupResult.outcomeDetail())
+                          .build());
               counter = TargetResultCounter.ERROR;
             } else if (resultStatusForMiss(lookupResult)
                 == StatsResultStatus.STATS_RESULT_SYNC_CAPTURE_TIMEOUT) {
@@ -782,24 +782,16 @@ public class PlannerStatsBundleService {
               counter = TargetResultCounter.NOT_FOUND;
             }
           }
-        } catch (CancellationException e) {
-          throw e;
-        } catch (StatusRuntimeException e) {
-          FloecatStatus status = FloecatStatus.fromThrowable(e);
-          if (status != null && status.errorCode() == ErrorCode.MC_SNAPSHOT_EXPIRED) {
-            // A selected snapshot cannot be substituted with live stats; the caller must restart
-            // the query from a fresh selection.
-            throw e;
-          }
-          result = buildErrorResult(tableId, target, snapshot.getAsLong(), e);
-          counter = TargetResultCounter.ERROR;
-          LOG.debugf(
-              e, "target stats RPC failed for %s snapshot %s", tableId, snapshot.getAsLong());
         } catch (RuntimeException e) {
-          result = buildErrorResult(tableId, target, snapshot.getAsLong(), e);
+          // Infrastructure, an expired snapshot included, fails the stream: a selected snapshot
+          // cannot be substituted with live stats.
+          result =
+              buildErrorResult(
+                  tableId,
+                  target,
+                  snapshot.getAsLong(),
+                  GrpcErrors.relationFailure(RelationFailures.label(tableId), e, correlationId));
           counter = TargetResultCounter.ERROR;
-          LOG.debugf(
-              e, "target stats lookup failed for %s snapshot %s", tableId, snapshot.getAsLong());
         }
       }
       result = stampResolvedSnapshot(work, result);
@@ -996,13 +988,14 @@ public class PlannerStatsBundleService {
     }
 
     private TargetStatsResult buildErrorResult(
-        ResourceId tableId, StatsTarget target, long snapshotId, RuntimeException e) {
+        ResourceId tableId,
+        StatsTarget target,
+        long snapshotId,
+        ai.floedb.floecat.common.rpc.Error error) {
       BundleFailure.Builder failure =
-          failureBase(tableId, TARGET_ERROR_CODE, "target stats lookup failed")
+          failureBase(tableId, TARGET_ERROR_CODE, error)
               .putDetails("snapshot_id", Long.toString(snapshotId))
-              .putDetails("target", StatsTargetIdentity.storageId(target))
-              .putDetails("exception", e.getClass().getSimpleName())
-              .putDetails("message", e.getMessage() == null ? "" : e.getMessage());
+              .putDetails("target", StatsTargetIdentity.storageId(target));
       return TargetStatsResult.newBuilder()
           .setTableId(tableId)
           .setSnapshotId(snapshotId)
@@ -1352,24 +1345,34 @@ public class PlannerStatsBundleService {
               .addAllConstraints(visible)
               .build(),
           ConstraintResolutionStatus.FOUND);
-    } catch (StatusRuntimeException e) {
-      FloecatStatus status = FloecatStatus.fromThrowable(e);
-      if (status != null && status.errorCode() == ErrorCode.MC_SNAPSHOT_EXPIRED) {
-        throw e;
-      }
-      LOG.debugf(e, "constraint lookup failed for %s snapshot %d", tableId.getId(), sidForLog);
-      return new ConstraintResolution(
-          constraintErrorResult(tableId, snapshotId, e), ConstraintResolutionStatus.ERROR);
     } catch (RuntimeException e) {
-      LOG.debugf(e, "constraint lookup failed for %s snapshot %d", tableId.getId(), sidForLog);
       return new ConstraintResolution(
-          constraintErrorResult(tableId, snapshotId, e), ConstraintResolutionStatus.ERROR);
+          constraintErrorResult(
+              tableId,
+              snapshotId,
+              GrpcErrors.relationFailure(RelationFailures.label(tableId), e, correlationId)),
+          ConstraintResolutionStatus.ERROR);
     }
   }
 
   // ---------------------------------------------------------------------------
   // Failure builders
   // ---------------------------------------------------------------------------
+
+  /**
+   * A failure from an error: its message key, or {@code fallbackCode}, with its message, params and
+   * correlation id.
+   */
+  private static BundleFailure.Builder failureBase(
+      ResourceId tableId, String fallbackCode, ai.floedb.floecat.common.rpc.Error error) {
+    String code = error.getMessageKey().isBlank() ? fallbackCode : error.getMessageKey();
+    BundleFailure.Builder failure =
+        failureBase(tableId, code, error.getMessage()).putAllDetails(error.getParamsMap());
+    if (!error.getCorrelationId().isEmpty()) {
+      failure.putDetails("correlation_id", error.getCorrelationId());
+    }
+    return failure;
+  }
 
   private static BundleFailure.Builder failureBase(
       ResourceId tableId, String code, String message) {
@@ -1403,13 +1406,9 @@ public class PlannerStatsBundleService {
   }
 
   private static TableConstraintsResult constraintErrorResult(
-      ResourceId tableId, OptionalLong snapshotId, RuntimeException exception) {
-    BundleFailure.Builder failure =
-        failureBase(tableId, CONSTRAINT_ERROR_CODE, "constraints lookup failed");
+      ResourceId tableId, OptionalLong snapshotId, ai.floedb.floecat.common.rpc.Error error) {
+    BundleFailure.Builder failure = failureBase(tableId, CONSTRAINT_ERROR_CODE, error);
     snapshotId.ifPresent(id -> failure.putDetails("snapshot_id", Long.toString(id)));
-    failure
-        .putDetails("exception", exception.getClass().getSimpleName())
-        .putDetails("message", exception.getMessage() == null ? "" : exception.getMessage());
     return TableConstraintsResult.newBuilder()
         .setTableId(tableId)
         .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR)

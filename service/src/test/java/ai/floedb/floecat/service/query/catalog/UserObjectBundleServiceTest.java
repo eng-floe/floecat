@@ -262,7 +262,9 @@ class UserObjectBundleServiceTest {
     assertThat(first.getInputIndex()).isZero();
     assertThat(first.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_ERROR);
     assertThat(first.getFailure().getCode()).isEqualTo("catalog_bundle.build_failed");
-    assertThat(first.getFailure().getDetailsMap()).containsEntry("resource_id", TABLE_A.getId());
+    assertThat(first.getFailure().getDetailsMap())
+        .containsEntry("resource_id", TABLE_A.getId())
+        .containsEntry("correlation_id", "cid");
 
     assertThat(second.getInputIndex()).isEqualTo(1);
     assertThat(second.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
@@ -272,6 +274,28 @@ class UserObjectBundleServiceTest {
     assertThat(end.getEnd().getResolutionCount()).isEqualTo(2);
     assertThat(end.getEnd().getFoundCount()).isEqualTo(1);
     assertThat(end.getEnd().getNotFoundCount()).isZero();
+  }
+
+  @Test
+  void aRelationThatFailsSelectionErrorsOnlyThatRelation() {
+    graphView.failResolveFor(TABLE_A, new IllegalStateException("node unreadable"));
+
+    List<RelationResolution> items =
+        service.stream("cid", ctx, List.of(byId(TABLE_A), byId(TABLE_B)))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely()
+            .get(1)
+            .getResolutions()
+            .getItemsList();
+
+    assertThat(items)
+        .extracting(RelationResolution::getStatus)
+        .containsExactly(
+            ResolutionStatus.RESOLUTION_STATUS_ERROR, ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(items.get(0).getFailure().getDetailsMap())
+        .containsEntry("root_message", "node unreadable");
   }
 
   @Test

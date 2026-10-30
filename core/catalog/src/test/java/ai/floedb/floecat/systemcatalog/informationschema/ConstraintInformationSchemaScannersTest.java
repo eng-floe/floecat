@@ -502,13 +502,27 @@ class ConstraintInformationSchemaScannersTest {
   }
 
   private static SystemObjectScanContext contextWithConstraints() {
-    return contextWithConstraints(null);
+    return contextWithConstraints(null, null, false);
+  }
+
+  @Test
+  void aConstraintWhoseReferencedTableCannotBeReadIsLeftOut() {
+    var unreadableSchema =
+        contextWithConstraints(null, new IllegalStateException("schema unreadable"), false);
+    var unresolvable =
+        contextWithConstraints(null, new IllegalStateException("cannot resolve"), true);
+
+    for (SystemObjectScanContext ctx : List.of(unreadableSchema, unresolvable)) {
+      assertThat(new TableConstraintsScanner().scan(ctx).map(r -> r.values()[2]).toList())
+          .contains("pk_orders")
+          .doesNotContain("fk_orders_customer");
+    }
   }
 
   @Test
   void scannersReuseConstraintIndexPerContext() {
     AtomicInteger providerCalls = new AtomicInteger();
-    SystemObjectScanContext ctx = contextWithConstraints(providerCalls);
+    SystemObjectScanContext ctx = contextWithConstraints(providerCalls, null, false);
 
     new TableConstraintsScanner().scan(ctx).toList();
     new KeyColumnUsageScanner().scan(ctx).toList();
@@ -518,7 +532,15 @@ class ConstraintInformationSchemaScannersTest {
         .isEqualTo(2); // one lookup per visible table, once per shared index build
   }
 
-  private static SystemObjectScanContext contextWithConstraints(AtomicInteger providerCalls) {
+  /**
+   * The context with the orders constraints. {@code customersFailure} fails reading the customers
+   * schema, or, when {@code failReferenceResolution}, resolving the foreign key's reference by
+   * name.
+   */
+  private static SystemObjectScanContext contextWithConstraints(
+      AtomicInteger providerCalls,
+      RuntimeException customersFailure,
+      boolean failReferenceResolution) {
     var builder = TestTableScanContextBuilder.builder("catalog");
     var sales = builder.addNamespace("sales");
     var orders =
@@ -530,6 +552,12 @@ class ConstraintInformationSchemaScannersTest {
     var customers =
         builder.addTable(
             sales, "customers", Map.of("id", 1, "name", 2), Map.of("id", "INT", "name", "VARCHAR"));
+    if (customersFailure != null && !failReferenceResolution) {
+      builder.graphView().failTableSchema(customers.id(), customersFailure);
+    }
+    if (customersFailure != null && failReferenceResolution) {
+      builder.graphView().failResolveTable(customersFailure);
+    }
 
     ConstraintDefinition pk =
         ConstraintDefinition.newBuilder()
@@ -544,7 +572,8 @@ class ConstraintInformationSchemaScannersTest {
             .setType(ConstraintType.CT_FOREIGN_KEY)
             .setEnforcement(ConstraintEnforcement.CE_NOT_ENFORCED)
             .addColumns(column("customer_id", 2L, 1))
-            .setReferencedTableId(customers.id())
+            .setReferencedTableId(
+                failReferenceResolution ? ResourceId.getDefaultInstance() : customers.id())
             .setReferencedTable(NameRef.newBuilder().addPath("sales").setName("customers").build())
             .setReferencedConstraintName("pk_customers")
             .setMatchOption(ForeignKeyMatchOption.FK_MATCH_OPTION_FULL)

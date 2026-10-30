@@ -33,6 +33,7 @@ import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.systemcatalog.informationschema.NamespaceScanSupport.NamespaceEntry;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
+import ai.floedb.floecat.types.RelationFailures;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -82,11 +83,11 @@ public final class ConstraintScanIndex {
     Map<ResourceId, TableRef> tableRefs = new LinkedHashMap<>();
     Map<ResourceId, TableRef> tablesWithConstraints = new LinkedHashMap<>();
     Map<ResourceId, String> catalogNames = new HashMap<>();
-    Map<ResourceId, Map<Long, String>> columnsById = new HashMap<>();
+    Map<ResourceId, Optional<Map<Long, String>>> columnsById = new HashMap<>();
     Map<ResourceId, List<ConstraintDefinition>> constraintsByTable = new HashMap<>();
     Map<ResourceId, Map<List<ColumnRef>, String>> referencedConstraintNameByColumnsByTable =
         new HashMap<>();
-    Map<String, Optional<TableRef>> referencedTablesByName = new HashMap<>();
+    Map<String, Optional<Referenced>> referencedTablesByName = new HashMap<>();
 
     for (NamespaceEntry namespace : NamespaceScanSupport.entries(ctx, request, schemaColumnName)) {
       String catalogName =
@@ -101,7 +102,10 @@ public final class ConstraintScanIndex {
         TableRef tableRef =
             new TableRef(table.id(), catalogName, schemaName, relation.displayName());
         tableRefs.put(table.id(), tableRef);
-        var viewOpt = ctx.constraintProvider().latestConstraints(table.id());
+        var viewOpt =
+            ctx.forRelation(
+                RelationFailures.label(table.id()),
+                () -> ctx.constraintProvider().latestConstraints(table.id()));
         if (viewOpt.isEmpty() || viewOpt.get().constraints().isEmpty()) {
           continue;
         }
@@ -112,8 +116,12 @@ public final class ConstraintScanIndex {
 
     List<ConstraintEntry> out = new ArrayList<>();
     for (TableRef table : tablesWithConstraints.values()) {
-      Map<Long, String> localById =
-          columnsById.computeIfAbsent(table.tableId(), id -> columnsById(ctx, id));
+      Optional<Map<Long, String>> local =
+          columnsById.computeIfAbsent(table.tableId(), id -> columnsById(ctx, table));
+      if (local.isEmpty()) {
+        continue;
+      }
+      Map<Long, String> localById = local.get();
       for (ConstraintDefinition constraint :
           constraintsByTable.getOrDefault(table.tableId(), List.of())) {
         String constraintName = constraint.getName().trim();
@@ -122,19 +130,13 @@ public final class ConstraintScanIndex {
         }
 
         ConstraintType type = constraint.getType();
-        TableRef referenced =
-            resolveReferencedTable(
-                ctx,
-                tableRefs,
-                referencedTablesByName,
-                constraint.hasReferencedTable() ? constraint.getReferencedTable() : null,
-                constraint.hasReferencedTableId() ? constraint.getReferencedTableId() : null);
-        Map<Long, String> referencedById =
-            referenced == null
-                    || referenced.tableId() == null
-                    || referenced.tableId().getId().isBlank()
-                ? Map.of()
-                : columnsById.computeIfAbsent(referenced.tableId(), id -> columnsById(ctx, id));
+        Optional<Referenced> resolved =
+            referenced(ctx, constraint, tableRefs, referencedTablesByName, columnsById);
+        if (resolved.isEmpty()) {
+          continue;
+        }
+        TableRef referenced = resolved.get().ref();
+        Map<Long, String> referencedById = resolved.get().columnsById();
 
         List<ColumnRef> localColumns = normalizeColumns(constraint.getColumnsList(), localById);
         List<ColumnRef> referencedColumns =
@@ -175,39 +177,68 @@ public final class ConstraintScanIndex {
     return new ConstraintScanIndex(List.copyOf(out));
   }
 
-  private static TableRef resolveReferencedTable(
+  /** A constraint's referenced table, {@code null} when it has none, with its column names. */
+  private record Referenced(TableRef ref, Map<Long, String> columnsById) {}
+
+  /**
+   * The table {@code constraint} references and its column names; empty when resolving that table
+   * or reading its schema fails.
+   */
+  private static Optional<Referenced> referenced(
       SystemObjectScanContext ctx,
+      ConstraintDefinition constraint,
       Map<ResourceId, TableRef> byId,
-      Map<String, Optional<TableRef>> byName,
-      NameRef referencedTable,
-      ResourceId referencedTableId) {
-    if (referencedTableId != null && !referencedTableId.getId().isBlank()) {
-      TableRef fromId = byId.get(referencedTableId);
+      Map<String, Optional<Referenced>> byName,
+      Map<ResourceId, Optional<Map<Long, String>>> columnsById) {
+    if (constraint.hasReferencedTableId() && !constraint.getReferencedTableId().getId().isBlank()) {
+      TableRef fromId = byId.get(constraint.getReferencedTableId());
       if (fromId != null) {
-        return fromId;
+        return withColumns(ctx, fromId, columnsById);
       }
     }
-    if (referencedTable == null) {
-      return null;
+    if (!constraint.hasReferencedTable()) {
+      return withColumns(ctx, null, columnsById);
     }
+    NameRef referencedTable = constraint.getReferencedTable();
     if (referencedTable.hasResourceId()) {
       TableRef fromResource = byId.get(referencedTable.getResourceId());
       if (fromResource != null) {
-        return fromResource;
+        return withColumns(ctx, fromResource, columnsById);
       }
     }
     if (referencedTable.getName().isBlank()) {
-      return null;
+      return withColumns(ctx, null, columnsById);
     }
-    String key = referencedTableCacheKey(referencedTable);
-    return byName
-        .computeIfAbsent(
-            key,
-            ignored ->
-                ctx.graph()
-                    .resolveTable(RESOLVE_CORRELATION_ID, referencedTable, ctx.catalogContext())
-                    .map(byId::get))
-        .orElse(null);
+    return byName.computeIfAbsent(
+        referencedTableCacheKey(referencedTable),
+        ignored ->
+            ctx.forRelation(
+                    RelationFailures.label(
+                        ctx.queryDefaultCatalogId().getAccountId(), referencedTable),
+                    () ->
+                        Optional.of(
+                            new Referenced(
+                                ctx.graph()
+                                    .resolveTable(
+                                        RESOLVE_CORRELATION_ID,
+                                        referencedTable,
+                                        ctx.catalogContext())
+                                    .map(byId::get)
+                                    .orElse(null),
+                                Map.of())))
+                .flatMap(found -> withColumns(ctx, found.ref(), columnsById)));
+  }
+
+  private static Optional<Referenced> withColumns(
+      SystemObjectScanContext ctx,
+      TableRef ref,
+      Map<ResourceId, Optional<Map<Long, String>>> columnsById) {
+    if (ref == null || ref.tableId() == null || ref.tableId().getId().isBlank()) {
+      return Optional.of(new Referenced(ref, Map.of()));
+    }
+    return columnsById
+        .computeIfAbsent(ref.tableId(), id -> columnsById(ctx, ref))
+        .map(columns -> new Referenced(ref, columns));
   }
 
   private static String referencedTableCacheKey(NameRef referencedTable) {
@@ -288,9 +319,18 @@ public final class ConstraintScanIndex {
     return List.copyOf(out);
   }
 
-  private static Map<Long, String> columnsById(SystemObjectScanContext ctx, ResourceId tableId) {
-    List<SchemaColumn> columns =
-        SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(tableId, ctx.catalogContext()));
+  /** A table's column names by field id; empty when reading its schema fails. */
+  private static Optional<Map<Long, String>> columnsById(
+      SystemObjectScanContext ctx, TableRef table) {
+    return ctx.forRelation(
+        RelationFailures.label(table.tableId()),
+        () ->
+            Optional.of(
+                columnsById(ctx.graph().tableSchema(table.tableId(), ctx.catalogContext()))));
+  }
+
+  private static Map<Long, String> columnsById(List<SchemaColumn> schema) {
+    List<SchemaColumn> columns = SchemaColumns.withoutSyntheticNodes(schema);
     if (columns.isEmpty()) {
       return Map.of();
     }

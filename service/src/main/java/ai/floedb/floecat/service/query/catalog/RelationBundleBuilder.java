@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
@@ -38,11 +39,11 @@ import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.cache.ObjectCache;
-import ai.floedb.floecat.service.error.impl.FloecatStatus;
+import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
-import io.grpc.StatusRuntimeException;
+import ai.floedb.floecat.types.RelationFailures;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -82,19 +83,16 @@ final class RelationBundleBuilder {
     this.objects = objects;
   }
 
-  /** A build error for one relation. Never sinks the whole bundle; the driver maps it to ERROR. */
-  record BuildError(String code, String message, String resourceId) {}
-
   /**
    * The outcome of a full build: exactly one of {@code info} / {@code error} is non-null, together
    * with the per-task {@link TimingAccumulator} the driver folds back in.
    */
   static final class BuildResult {
     private final RelationInfo info;
-    private final BuildError error;
+    private final Error error;
     private final TimingAccumulator timings;
 
-    private BuildResult(RelationInfo info, BuildError error, TimingAccumulator timings) {
+    private BuildResult(RelationInfo info, Error error, TimingAccumulator timings) {
       this.info = info;
       this.error = error;
       this.timings = timings;
@@ -104,7 +102,7 @@ final class RelationBundleBuilder {
       return new BuildResult(info, null, timings);
     }
 
-    static BuildResult failure(BuildError error, TimingAccumulator timings) {
+    static BuildResult failure(Error error, TimingAccumulator timings) {
       return new BuildResult(null, error, timings);
     }
 
@@ -116,7 +114,7 @@ final class RelationBundleBuilder {
       return info;
     }
 
-    BuildError error() {
+    Error error() {
       return error;
     }
 
@@ -127,8 +125,9 @@ final class RelationBundleBuilder {
 
   /**
    * Assemble one relation's full payload. Times the stats and decoration sub-phases into a fresh
-   * per-task {@link TimingAccumulator}, and isolates a build fault to this relation as a {@link
-   * BuildError} — one relation's decoration/schema/stats fault must not sink the whole bundle.
+   * per-task {@link TimingAccumulator}. A failure that is not infrastructure is this relation's
+   * error, as {@link GrpcErrors#relationFailure} reports and logs it; infrastructure, including an
+   * expired snapshot, fails the bundle.
    */
   BuildResult build(
       String correlationId,
@@ -151,27 +150,12 @@ final class RelationBundleBuilder {
               timings,
               payloadIdentity);
       return BuildResult.success(info, timings);
-    } catch (java.util.concurrent.CancellationException e) {
-      throw e;
     } catch (RuntimeException e) {
-      return BuildResult.failure(buildError(relation, e), timings);
+      return BuildResult.failure(
+          GrpcErrors.relationFailure(
+              RelationFailures.label(relation.relationId()), e, correlationId),
+          timings);
     }
-  }
-
-  private static BuildError buildError(ResolvedRelation relation, RuntimeException failure) {
-    if (failure instanceof StatusRuntimeException e) {
-      // Preserve structured catalog-integrity codes and diagnostics instead of flattening them to
-      // build_failed. Statuses without structured payloads use the ordinary fallback below.
-      FloecatStatus status = FloecatStatus.fromThrowable(e);
-      if (status != null && !status.messageKey().isBlank()) {
-        String message =
-            status.params().isEmpty() ? status.message() : status.message() + " " + status.params();
-        return new BuildError(status.messageKey(), message, relation.relationId().getId());
-      }
-    }
-    String message =
-        failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();
-    return new BuildError(BUILD_FAILED_CODE, message, relation.relationId().getId());
   }
 
   /**

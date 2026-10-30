@@ -81,7 +81,8 @@ public final class UserObjectBundleTestSupport {
     private final Map<String, NameRef> names = new HashMap<>();
     private final Map<String, CatalogNode> catalogs = new HashMap<>();
     private final Set<String> hidden = new HashSet<>();
-    private final Set<String> schemaFailures = new HashSet<>();
+    private final Map<String, RuntimeException> schemaFailures = new HashMap<>();
+    private final Map<String, RuntimeException> resolveFailures = new HashMap<>();
     private final Map<String, RuntimeException> snapshotFailures = new HashMap<>();
     private final Set<String> nullSchemas = new HashSet<>();
     private final Map<String, Integer> resolveCalls = new ConcurrentHashMap<>();
@@ -96,6 +97,7 @@ public final class UserObjectBundleTestSupport {
       catalogs.clear();
       hidden.clear();
       schemaFailures.clear();
+      resolveFailures.clear();
       snapshotFailures.clear();
       nullSchemas.clear();
       resolveCalls.clear();
@@ -108,12 +110,17 @@ public final class UserObjectBundleTestSupport {
      * Make {@link #tableSchema} throw for this relation, to exercise per-relation build failures.
      */
     public void failSchemaFor(ResourceId id) {
-      schemaFailures.add(id.getId());
+      schemaFailures.put(id.getId(), new RuntimeException("schema unavailable for " + id.getId()));
     }
 
     /** Make {@link #resolvedSnapshotFor} throw {@code failure} for this table. */
     public void failSnapshotFor(ResourceId id, RuntimeException failure) {
       snapshotFailures.put(id.getId(), failure);
+    }
+
+    /** Make {@link #resolve} throw {@code failure} for this relation. */
+    public void failResolveFor(ResourceId id, RuntimeException failure) {
+      resolveFailures.put(id.getId(), failure);
     }
 
     /** Make {@link #tableSchema(ResourceId, CatalogContext)} return null for this relation. */
@@ -177,6 +184,9 @@ public final class UserObjectBundleTestSupport {
     public Optional<GraphNode> resolve(ResourceId id, CatalogContext context) {
       resolveCalls.merge(
           id.getAccountId() + ":" + id.getKind() + ":" + id.getId(), 1, Integer::sum);
+      if (resolveFailures.containsKey(id.getId())) {
+        throw resolveFailures.get(id.getId());
+      }
       if (hidden.contains(id.getId())) {
         return Optional.empty();
       }
@@ -438,8 +448,8 @@ public final class UserObjectBundleTestSupport {
     public List<ai.floedb.floecat.query.rpc.SchemaColumn> tableSchema(
         ResourceId tableId, ai.floedb.floecat.scanner.utils.CatalogContext context) {
       tableSchemaCalls.merge(tableId, 1, Integer::sum);
-      if (schemaFailures.contains(tableId.getId())) {
-        throw new RuntimeException("schema unavailable for " + tableId.getId());
+      if (schemaFailures.containsKey(tableId.getId())) {
+        throw schemaFailures.get(tableId.getId());
       }
       if (nullSchemas.contains(tableId.getId())) {
         return null;

@@ -35,6 +35,7 @@ import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.systemcatalog.informationschema.NamespaceScanSupport.NamespaceEntry;
 import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.RelationFailures;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -43,6 +44,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.function.Consumer;
@@ -219,6 +221,17 @@ public final class ColumnsScanner implements SystemObjectScanner {
     return Stream.empty();
   }
 
+  /** A table's top-level columns; none when reading its schema fails, which leaves it out. */
+  private static List<SchemaColumn> columnsOf(SystemObjectScanContext ctx, TableNode table) {
+    return ctx.forRelation(
+            RelationFailures.label(table.id()),
+            () ->
+                Optional.of(
+                    SchemaColumns.topLevelOnly(
+                        ctx.graph().tableSchema(table.id(), ctx.catalogContext()))))
+        .orElse(List.of());
+  }
+
   private Stream<SystemObjectRow> scanTable(
       SystemObjectScanContext ctx,
       NamespaceEntry namespace,
@@ -233,7 +246,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
     String schemaName = namespace.schemaName();
 
     return numberedColumns(
-        SchemaColumns.topLevelOnly(ctx.graph().tableSchema(table.id(), ctx.catalogContext())),
+        columnsOf(ctx, table),
         (col, position) ->
             new SystemObjectRow(
                 new Object[] {
@@ -332,7 +345,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
     if (node instanceof TableNode table) {
       return numberedColumns(
-          SchemaColumns.topLevelOnly(ctx.graph().tableSchema(table.id(), ctx.catalogContext())),
+          columnsOf(ctx, table),
           (col, position) ->
               ColumnEntry.of(
                   catalogName,

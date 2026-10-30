@@ -87,6 +87,21 @@ class ColumnsScannerTest {
   }
 
   @Test
+  void scan_leavesOutOnlyARelationThatFails() {
+    var builder = TestTableScanContextBuilder.builder("marketing");
+    var ns = builder.addNamespace("finance.sales");
+    var broken = builder.addTable(ns, "broken", Map.of("id", 1), Map.of("id", "long"));
+    builder.addTable(ns, "orders", Map.of("id", 1), Map.of("id", "long"));
+    builder.graphView().failTableSchema(broken.id(), new IllegalStateException("unreadable"));
+
+    var rows =
+        new ColumnsScanner().scan(builder.build()).map(r -> Arrays.asList(r.values())).toList();
+
+    assertThat(rows)
+        .containsExactly(List.of("marketing", "finance.sales", "orders", "id", "INT", 1));
+  }
+
+  @Test
   void scan_dedupesLeafWhenPathAlreadyContainsDisplayName() {
     var builder = TestTableScanContextBuilder.builder("marketing");
     var ns = builder.addNamespace(List.of("org", "sales"), "sales", "org.sales");

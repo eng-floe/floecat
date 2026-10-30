@@ -22,6 +22,7 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.types.RelationFailures;
 import java.util.List;
 import java.util.Set;
 
@@ -92,7 +93,10 @@ final class NamespaceScanSupport {
                 ? ctx.listRelationRefs(namespaceId)
                 : ctx.listRelationRefsByName(namespaceId, relationNames))
             .stream()
-                .map(ref -> ctx.tryResolve(ref.id()))
+                .map(
+                    ref ->
+                        ctx.forRelation(
+                            RelationFailures.label(ref.id()), () -> ctx.tryResolve(ref.id())))
                 .flatMap(java.util.Optional::stream)
                 .filter(RelationNode.class::isInstance)
                 .map(RelationNode.class::cast)

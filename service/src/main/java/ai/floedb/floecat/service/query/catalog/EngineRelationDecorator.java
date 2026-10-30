@@ -34,6 +34,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.RelationFailures;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -165,15 +166,9 @@ final class EngineRelationDecorator {
         } finally {
           timings.addDecorateRelationNanos(System.nanoTime() - startNs);
         }
-      } catch (java.util.concurrent.CancellationException e) {
-        throw e;
       } catch (RuntimeException e) {
+        RelationFailures.isolate(RelationFailures.label(relation.relationId()), e);
         relationSucceeded = false;
-        LOG.debugf(
-            e,
-            "Decorator threw while decorating relation %s (engine=%s)",
-            relation.relationId(),
-            context.normalizedKind());
       }
 
       if (viewDecoration != null) {
@@ -184,15 +179,9 @@ final class EngineRelationDecorator {
           } finally {
             timings.addDecorateViewNanos(System.nanoTime() - startNs);
           }
-        } catch (java.util.concurrent.CancellationException e) {
-          throw e;
         } catch (RuntimeException e) {
+          RelationFailures.isolate(RelationFailures.label(relation.relationId()), e);
           viewSucceeded = false;
-          LOG.debugf(
-              e,
-              "Decorator threw while decorating view %s (engine=%s)",
-              relation.relationId(),
-              context.normalizedKind());
         }
       }
     }
@@ -337,9 +326,14 @@ final class EngineRelationDecorator {
         // A decorator that emits nothing has decided this column needs nothing; one with an
         // invariant of its own raises DecorationException.
         decorated.add(readyColumn(columnDecoration.builder().build()));
-      } catch (java.util.concurrent.CancellationException e) {
-        throw e;
+      } catch (DecorationException e) {
+        // A decorator's own verdict on this column, reported in the column's result.
+        if (RelationFailures.isInfrastructure(e)) {
+          throw e;
+        }
+        decorated.add(failedColumn(column, mapFailure(e, context)));
       } catch (RuntimeException e) {
+        RelationFailures.isolate(RelationFailures.label(relationId), e);
         decorated.add(failedColumn(column, mapFailure(e, context)));
       } finally {
         timings.addDecorateColumnsNanos(System.nanoTime() - totalStartNs);
