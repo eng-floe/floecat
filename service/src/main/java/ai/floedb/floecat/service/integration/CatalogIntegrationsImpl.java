@@ -19,6 +19,7 @@ import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.catalog.access.IcebergRestAccessDelegationMode;
 import ai.floedb.floecat.common.rpc.CreateMode;
+import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.integration.rpc.AwsAssumeRoleAuthentication;
@@ -30,6 +31,7 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegrationEntry;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationSpec;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrations;
+import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.integration.rpc.CreateCatalogIntegrationRequest;
 import ai.floedb.floecat.integration.rpc.CreateCatalogIntegrationResponse;
 import ai.floedb.floecat.integration.rpc.DeleteCatalogIntegrationRequest;
@@ -62,6 +64,7 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -98,6 +101,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   @Inject CatalogIntegrationCredentialCleanup credentialCleanup;
   @Inject CatalogIntegrationDiscovery discovery;
   @Inject CatalogOverlayReconciler overlayReconciler;
+  @Inject CatalogOverlayLifecycle overlayLifecycle;
   @Inject CatalogIntegrationAwsCredentialPolicy awsCredentialPolicy;
 
   @Override
@@ -786,7 +790,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                       corr, meta, request.getPrecondition());
                   if (request.getCascade()) {
                     credentialCleanup.schedule(current.get().value());
-                    cascadeDeleteIntegration(id, meta);
+                    cascadeDeleteIntegration(id, meta, corr, pc);
                     credentialCleanup.cleanIfSuperseded(current.get().value());
                     return DeleteCatalogIntegrationResponse.newBuilder().setMeta(meta).build();
                   }
@@ -828,48 +832,118 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   }
 
   private void cascadeDeleteIntegration(
-      ResourceId integrationId, ai.floedb.floecat.common.rpc.MutationMeta integrationMeta) {
-    if (!integrations.beginCascadeDeletion(integrationId, integrationMeta.getPointerVersion())) {
-      throw new BaseResourceRepository.AbortRetryableException(
-          "integration changed while cascade deletion was fenced");
-    }
+      ResourceId integrationId,
+      ai.floedb.floecat.common.rpc.MutationMeta integrationMeta,
+      String corr,
+      PrincipalContext pc) {
+    preflightCascadeOwnedCatalogs(integrationId, corr, pc);
+    var integrationFence =
+        integrations
+            .beginCascadeDeletionWithOwnership(integrationId, integrationMeta.getPointerVersion())
+            .orElseThrow(
+                () ->
+                    new BaseResourceRepository.AbortRetryableException(
+                        "integration changed while cascade deletion was fenced"));
 
-    while (true) {
+    try {
+      while (true) {
+        var next = new StringBuilder();
+        var dependents =
+            overlays.listByIntegrationWithMetaConsistent(
+                integrationId.getAccountId(), integrationId.getId(), 100, "", next);
+        if (dependents.isEmpty()) break;
+        for (var dependent : dependents) {
+          ResourceId overlayId = dependent.value().getResourceId();
+          if (dependent.value().getOwnsCatalog()) {
+            authz.require(pc, RolePermissions.CATALOG_WRITE);
+          }
+          overlayLifecycle.preflightOwnedCatalogRemoval(dependent.value(), corr);
+          var overlayFence =
+              overlays
+                  .beginDeletionWithOwnership(overlayId, dependent.meta().getPointerVersion())
+                  .orElseThrow(
+                      () ->
+                          new BaseResourceRepository.AbortRetryableException(
+                              "overlay changed while integration cascade deletion was fenced"));
+          retireMaterializedResourcesWithFenceCleanup(dependent, overlayFence);
+          long overlayFenceVersion = overlayFence.version();
+          if (overlayFenceVersion == 0L
+              || !overlayLifecycle.deleteFenced(
+                  dependent.value(),
+                  dependent.meta().getPointerVersion(),
+                  overlayFenceVersion,
+                  overlayFence.installedByCaller(),
+                  corr)) {
+            throw new BaseResourceRepository.AbortRetryableException(
+                "overlay changed during integration cascade deletion");
+          }
+        }
+      }
+
+      int remaining =
+          overlays.countByIntegration(integrationId.getAccountId(), integrationId.getId());
+      if (remaining != 0) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "overlays appeared during integration cascade deletion");
+      }
+      long markerVersion = markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId);
+      if (!integrations.deleteWithPreconditionForCascadeDeletion(
+          integrationId,
+          integrationMeta.getPointerVersion(),
+          markerVersion,
+          integrationFence.version())) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "integration changed while cascade deletion completed");
+      }
+    } catch (RuntimeException failure) {
+      if (integrationFence.installedByCaller()) {
+        cancelCascadeFenceOrRetry(integrationId, integrationMeta, integrationFence.version());
+      }
+      throw failure;
+    }
+  }
+
+  private void retireMaterializedResourcesWithFenceCleanup(
+      ResourceWithMeta<CatalogOverlay> dependent,
+      CatalogOverlayRepository.DeletionFence overlayFence) {
+    try {
+      overlayReconciler.retireMaterializedResources(dependent.value());
+    } catch (RuntimeException failure) {
+      if (overlayFence.installedByCaller()) {
+        overlayLifecycle.cancelFenceOrRetry(
+            dependent.value(), dependent.meta().getPointerVersion(), overlayFence.version());
+      }
+      throw failure;
+    }
+  }
+
+  private void preflightCascadeOwnedCatalogs(
+      ResourceId integrationId, String corr, PrincipalContext pc) {
+    String token = "";
+    do {
       var next = new StringBuilder();
       var dependents =
           overlays.listByIntegrationWithMetaConsistent(
-              integrationId.getAccountId(), integrationId.getId(), 100, "", next);
-      if (dependents.isEmpty()) break;
-      for (var dependent : dependents) {
-        ResourceId overlayId = dependent.value().getResourceId();
-        if (!overlays.beginDeletion(overlayId, dependent.meta().getPointerVersion())) {
-          throw new BaseResourceRepository.AbortRetryableException(
-              "overlay changed while integration cascade deletion was fenced");
-        }
-        overlayReconciler.retireMaterializedResources(dependent.value());
-        long overlayFenceVersion = overlays.deletionFenceVersion(overlayId);
-        if (overlayFenceVersion == 0L
-            || !overlays.deleteWithFence(
-                overlayId, dependent.meta().getPointerVersion(), overlayFenceVersion)) {
-          throw new BaseResourceRepository.AbortRetryableException(
-              "overlay changed during integration cascade deletion");
-        }
-      }
-    }
+              integrationId.getAccountId(), integrationId.getId(), 100, token, next);
+      dependents.forEach(
+          row -> {
+            if (row.value().getOwnsCatalog()) {
+              authz.require(pc, RolePermissions.CATALOG_WRITE);
+            }
+            overlayLifecycle.preflightOwnedCatalogRemoval(row.value(), corr);
+          });
+      token = next.toString();
+    } while (!token.isEmpty());
+  }
 
-    int remaining =
-        overlays.countByIntegration(integrationId.getAccountId(), integrationId.getId());
-    if (remaining != 0) {
+  private void cancelCascadeFenceOrRetry(
+      ResourceId integrationId,
+      ai.floedb.floecat.common.rpc.MutationMeta integrationMeta,
+      long fenceVersion) {
+    if (!integrations.cancelCascadeDeletion(
+        integrationId, integrationMeta.getPointerVersion(), fenceVersion)) {
       throw new BaseResourceRepository.AbortRetryableException(
-          "overlays appeared during integration cascade deletion");
-    }
-    long markerVersion = markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId);
-    long fenceVersion = integrations.cascadeDeletionFenceVersion(integrationId);
-    if (fenceVersion == 0L
-        || !integrations.deleteWithPreconditionForCascadeDeletion(
-            integrationId, integrationMeta.getPointerVersion(), markerVersion, fenceVersion)) {
-      throw new BaseResourceRepository.AbortRetryableException(
-          "integration changed while cascade deletion completed");
+          "integration changed while its cascade deletion fence was being cancelled");
     }
   }
 

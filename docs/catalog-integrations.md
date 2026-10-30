@@ -65,8 +65,8 @@ the storage authority the operator configured for it.
 
 ## Shell workflow
 
-Create the integration record, then map its selected namespaces into an existing destination
-catalog:
+Create the integration record, then map its selected namespaces into a destination catalog. When
+the catalog is omitted, Floecat creates one with the overlay name and deletes it with the overlay:
 
 ```text
 integration create lakehouse iceberg-rest https://catalog.example/v1 \
@@ -74,7 +74,7 @@ integration create lakehouse iceberg-rest https://catalog.example/v1 \
   --auth client_id=floecat token_uri=https://identity.example/token \
   --cred client_secret=secret \
   --props warehouse=analytics
-overlay create sales-overlay lakehouse local-catalog --include prod.sales,prod.reference
+overlay create sales-overlay lakehouse --include prod.sales,prod.reference
 integration validate lakehouse
 integration namespaces lakehouse
 integration objects lakehouse prod.sales --kinds table,view
@@ -156,7 +156,7 @@ integration delete <name|id>
 overlays [--integration <name|id>]
 overlay list [--integration <name|id>]
 overlay get <name|id>
-overlay create <name> <integration-name|id> <catalog-name|id> [options]
+overlay create <name> <integration-name|id> [catalog-name|id] [options]
 overlay update <name|id> [options]
 overlay reconcile <name|id> [--etag <etag>]
 overlay delete <name|id>
@@ -318,11 +318,17 @@ the region for both validation and reads. Only when none is set does the deploym
 
 ## Lifecycle
 
-- Overlay creation requires an existing integration.
+- Overlay creation requires an existing integration. When no destination catalog is supplied,
+  Floecat creates and owns a catalog with the overlay name.
 - Overlay display names are unique within an account and identify the mapping into a destination
   catalog.
 - An integration cannot be deleted while overlays refer to it.
 - Integration deletion supports `--cascade` to delete dependent overlays.
+- Deleting an overlay also deletes a catalog that Floecat created for it. The catalog must contain
+  no user-managed namespaces, tables, or views and must not be shared by another overlay.
+- Renaming an overlay does not rename its owned catalog.
+- Supplying the owned catalog ID explicitly in a replacing create makes the catalog independent;
+  subsequent overlay deletion leaves it in place.
 - Integration and overlay mutations support optimistic `--etag` preconditions.
 - Authentication replacement uses the dedicated `integration update-auth` command so credential
   values remain write-only.

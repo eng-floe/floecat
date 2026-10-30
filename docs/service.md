@@ -119,9 +119,10 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   exact display name. Reads require
   `catalog-integration.read`; writes require `catalog-integration.write`, and cascading deletion of
   dependent overlays also requires `catalog-overlay.delete`.
-- **CatalogOverlaysImpl** – Binds an integration and optional upstream namespace filters to an
-  existing Catalog. The Catalog remains independently named, writable, and managed, and multiple
-  overlays may target it. Creating an overlay atomically publishes Integration and Catalog
+- **CatalogOverlaysImpl** – Binds an integration and optional upstream namespace filters to a
+  supplied Catalog, or atomically creates an owned Catalog when the target is omitted. Supplied
+  Catalogs remain independently managed and may be shared; owned Catalogs are removed with their
+  Overlay once empty and unshared. Creating an overlay atomically publishes Integration and Catalog
   dependency pointers while requiring both parents to remain at their validated versions, and
   advances both dependency markers in the same transaction. `CM_REPLACE` atomically swaps in a new
   overlay identity and may bind it to another Integration or Catalog while advancing all affected
