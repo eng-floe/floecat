@@ -67,7 +67,8 @@ class RolePermissionsTest {
           RolePermissions.CATALOG_INTEGRATION_WRITE,
           RolePermissions.CATALOG_INTEGRATION_USE,
           RolePermissions.CATALOG_OVERLAY_READ,
-          RolePermissions.CATALOG_OVERLAY_WRITE);
+          RolePermissions.CATALOG_OVERLAY_WRITE,
+          RolePermissions.CATALOG_OVERLAY_RECONCILE);
   private static final List<String> DELETE_ACCOUNT_PERMS = List.of("account.delete");
   private static final List<String> PLATFORM_PERMS =
       List.of("account.read", "account.write", "account.delete");
@@ -163,9 +164,7 @@ class RolePermissionsTest {
         RolePermissions.permissionsForRoles(List.of(RolePermissions.INIT_ACCOUNT_ROLE), false);
 
     assertThat(permissions).containsExactlyInAnyOrderElementsOf(INIT_ACCOUNT_PERMS);
-    assertThat(permissions)
-        .doesNotContain(
-            RolePermissions.CATALOG_OVERLAY_RECONCILE, RolePermissions.CATALOG_OVERLAY_DELETE);
+    assertThat(permissions).doesNotContain(RolePermissions.CATALOG_OVERLAY_DELETE);
   }
 
   @Test

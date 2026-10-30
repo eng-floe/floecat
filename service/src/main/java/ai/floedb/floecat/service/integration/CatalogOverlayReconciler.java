@@ -48,6 +48,7 @@ import ai.floedb.floecat.delta.identity.IdentityResult;
 import ai.floedb.floecat.delta.identity.PersistedIdentityLookup;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
+import ai.floedb.floecat.integration.rpc.NamespaceMapping;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.service.catalog.impl.RelationPurge;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
@@ -224,7 +225,7 @@ public class CatalogOverlayReconciler {
             client.validate();
             return null;
           });
-      Discovery discovery = discover(session, overlay);
+      Discovery discovery = projectDiscovery(overlay, discover(session, overlay));
 
       var result = new MutableResult();
       Map<NamespacePath, Namespace> localNamespaces =
@@ -631,6 +632,79 @@ public class CatalogOverlayReconciler {
       throw new IllegalStateException(
           "Upstream " + kind.label + " names collide after normalization: " + localName);
     }
+  }
+
+  /**
+   * Keeps provider paths on loaded objects while translating local inventory and retirement keys.
+   */
+  private static Discovery projectDiscovery(CatalogOverlay overlay, Discovery source) {
+    if (overlay.getNamespaceMappingsCount() == 0) return source;
+    List<NamespaceMapping> mappings = overlay.getNamespaceMappingsList();
+    Set<NamespacePath> materialized = new LinkedHashSet<>();
+    for (NamespacePath path : source.materializedNamespaces()) {
+      projectPath(mappings, path).ifPresent(mapped -> addAncestors(mapped, materialized));
+    }
+    return new Discovery(
+        immutableSetCopyCancellable(materialized),
+        projectObjects(mappings, source.tables()),
+        projectObjects(mappings, source.views()),
+        projectPaths(mappings, source.skippedPrefixes()),
+        projectPaths(mappings, source.skippedTablePrefixes()),
+        projectPaths(mappings, source.skippedViewPrefixes()),
+        projectNames(mappings, source.unobservedTables()),
+        projectNames(mappings, source.unobservedViews()),
+        projectPaths(mappings, source.tableIdentityUnknownIn()),
+        projectPaths(mappings, source.viewIdentityUnknownIn()));
+  }
+
+  private static <T> Map<CatalogObjectName, T> projectObjects(
+      List<NamespaceMapping> mappings, Map<CatalogObjectName, T> source) {
+    Map<CatalogObjectName, T> projected = new LinkedHashMap<>();
+    source.forEach(
+        (name, object) -> {
+          CatalogObjectName destination = projectName(mappings, name);
+          if (projected.putIfAbsent(destination, object) != null) {
+            throw new IllegalStateException("Overlay namespace mappings collide at " + destination);
+          }
+        });
+    return immutableMapCopyCancellable(projected);
+  }
+
+  private static Set<CatalogObjectName> projectNames(
+      List<NamespaceMapping> mappings, Set<CatalogObjectName> source) {
+    Set<CatalogObjectName> projected = new LinkedHashSet<>();
+    source.forEach(name -> projected.add(projectName(mappings, name)));
+    return immutableSetCopyCancellable(projected);
+  }
+
+  private static CatalogObjectName projectName(
+      List<NamespaceMapping> mappings, CatalogObjectName source) {
+    return new CatalogObjectName(
+        projectPath(mappings, source.namespace())
+            .orElseThrow(
+                () -> new IllegalStateException("Selected source has no namespace mapping")),
+        source.name());
+  }
+
+  private static Set<NamespacePath> projectPaths(
+      List<NamespaceMapping> mappings, Set<NamespacePath> source) {
+    Set<NamespacePath> projected = new LinkedHashSet<>();
+    for (NamespacePath path : source) {
+      projectPath(mappings, path).ifPresent(projected::add);
+    }
+    return immutableSetCopyCancellable(projected);
+  }
+
+  private static Optional<NamespacePath> projectPath(
+      List<NamespaceMapping> mappings, NamespacePath path) {
+    for (NamespaceMapping mapping : mappings) {
+      List<String> source = mapping.getSource().getSegmentsList();
+      if (!startsWith(path.segments(), source)) continue;
+      List<String> destination = new ArrayList<>(mapping.getDestination().getSegmentsList());
+      destination.addAll(path.segments().subList(source.size(), path.segments().size()));
+      return Optional.of(new NamespacePath(destination));
+    }
+    return Optional.empty();
   }
 
   private Map<NamespacePath, Namespace> reconcileNamespaces(
@@ -1205,6 +1279,12 @@ public class CatalogOverlayReconciler {
     var schema =
         IcebergSchemaMapper.map(
             ColumnIdAlgorithm.CID_FIELD_ID, source.outputSchemaJson(), Set.of());
+    NamespacePath defaultNamespace = normalizePath(source.defaultNamespace());
+    if (overlay.getNamespaceMappingsCount() > 0) {
+      defaultNamespace =
+          projectPath(overlay.getNamespaceMappingsList(), defaultNamespace)
+              .orElse(defaultNamespace);
+    }
     var builder =
         View.newBuilder()
             .setResourceId(id)
@@ -1212,7 +1292,7 @@ public class CatalogOverlayReconciler {
             .setNamespaceId(namespace.getResourceId())
             .setDisplayName(normalizeName(source.name().name()))
             .setCreatedAt(current == null ? now() : current.getCreatedAt())
-            .addAllCreationSearchPath(normalizePath(source.defaultNamespace()).segments())
+            .addAllCreationSearchPath(defaultNamespace.segments())
             .addAllOutputColumns(ViewOutputColumns.of(schema))
             .putAllProperties(objectProperties(overlay, integration, source.identity()));
     for (var definition : source.definitions()) {
