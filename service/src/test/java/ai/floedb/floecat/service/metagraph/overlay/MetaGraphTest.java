@@ -26,6 +26,7 @@ import static org.mockito.Mockito.*;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
@@ -41,6 +42,7 @@ import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
+import ai.floedb.floecat.service.integration.AccountLogSysTables;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
@@ -105,6 +107,42 @@ class MetaGraphTest {
     Optional<ResourceId> out = meta.resolveTable("c", ref, context);
 
     assertThat(out).contains(sysTable);
+  }
+
+  @Test
+  void accountLogResolvesUnderExistingSysAsUserTable() {
+    ResourceId namespaceId = AccountLogSysTables.namespaceId();
+    ResourceId tableId = AccountLogSysTables.tableId("acct", "query_log");
+    NameRef ref = NameRef.newBuilder().addPath("sys").setName("query_log").build();
+    when(system.resolveNamespace(NameRef.newBuilder().setName("sys").build(), context))
+        .thenReturn(Optional.of(namespaceId));
+    when(system.resolve(namespaceId, context)).thenReturn(Optional.of(mock(NamespaceNode.class)));
+    when(user.currentAccountId()).thenReturn("acct");
+    UserTableNode table = mock(UserTableNode.class);
+    when(table.id()).thenReturn(tableId);
+    when(table.namespaceId()).thenReturn(namespaceId);
+    when(table.displayName()).thenReturn("query_log");
+    when(user.table(tableId)).thenReturn(Optional.of(table));
+    when(user.resolve(tableId)).thenReturn(Optional.of(table));
+
+    assertThat(meta.resolveName("c", ref, context)).contains(tableId);
+    assertThat(meta.resolveTable("c", ref, context)).contains(tableId);
+    assertThat(meta.listRelationRefs(ResourceId.getDefaultInstance(), namespaceId, context))
+        .extracting(CatalogGraphView.RelationRef::id)
+        .contains(tableId);
+    assertThat(meta.tableName(tableId, context))
+        .contains(ref.toBuilder().setResourceId(tableId).build());
+    assertThat(meta.resolve(tableId, context)).contains(table);
+    SnapshotRef snapshot = SnapshotRef.getDefaultInstance();
+    TablePin pin = TablePin.getDefaultInstance();
+    when(user.resolvedSnapshotFor("c", tableId, snapshot, Optional.empty())).thenReturn(pin);
+    assertThat(meta.resolvedSnapshotFor("c", tableId, snapshot, Optional.empty(), context))
+        .isSameAs(pin);
+
+    when(user.currentAccountId()).thenReturn("other-account");
+    assertThat(meta.resolveName("c", ref, context)).isEmpty();
+    assertThat(meta.listRelationRefs(ResourceId.getDefaultInstance(), namespaceId, context))
+        .isEmpty();
   }
 
   @Test

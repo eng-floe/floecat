@@ -29,6 +29,7 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.integration.AccountLogSysTables;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
@@ -247,6 +248,9 @@ public final class CatalogSurfaceWritePolicy {
 
   private void enforceWritableTableNode(GraphNode node, ResourceId tableId, String corr) {
     if (node instanceof UserTableNode) {
+      if (AccountLogSysTables.isTableId(tableId)) {
+        throw systemObjectImmutable(corr, tableId, "table");
+      }
       return;
     }
 

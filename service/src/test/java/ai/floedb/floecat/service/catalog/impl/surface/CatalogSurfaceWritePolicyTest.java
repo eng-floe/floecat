@@ -39,6 +39,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
+import ai.floedb.floecat.service.integration.AccountLogSysTables;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
@@ -84,6 +85,15 @@ class CatalogSurfaceWritePolicyTest {
     assertEquals(namespace, writePolicy.requireWritableNamespace(namespaceId, CORRELATION_ID));
     assertEquals(table, writePolicy.requireWritableTable(tableId, CORRELATION_ID));
     assertEquals(view, writePolicy.requireWritableView(viewId, CORRELATION_ID));
+  }
+
+  @Test
+  void accountLogTableHasOrdinaryReadIdentityButCannotBeMutated() {
+    ResourceId id = AccountLogSysTables.tableId(ACCOUNT_ID, "query_log");
+    graphView.addRelation(AccountLogSysTables.namespaceId(), userTableNode(id));
+
+    assertStatus(
+        Status.Code.PERMISSION_DENIED, () -> writePolicy.requireWritableTable(id, CORRELATION_ID));
   }
 
   @Test

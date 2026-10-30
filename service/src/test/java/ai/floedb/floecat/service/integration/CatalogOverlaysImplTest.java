@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -30,6 +31,7 @@ import ai.floedb.floecat.integration.rpc.CatalogOverlaySpec;
 import ai.floedb.floecat.integration.rpc.CreateCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.CreateCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.DeleteCatalogOverlayRequest;
+import ai.floedb.floecat.integration.rpc.NamespaceMapping;
 import ai.floedb.floecat.integration.rpc.NamespacePath;
 import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
@@ -394,6 +396,71 @@ class CatalogOverlaysImplTest {
     verify(service.reconciler).retireMaterializedResources(current);
     verify(service.overlays).deleteWithFence(overlayId, 7L, 1L);
     verify(service.catalogs, never()).delete(any());
+  }
+
+  @Test
+  void storesExplicitNamespaceMapping() {
+    NamespaceMapping mapping =
+        NamespaceMapping.newBuilder()
+            .setSource(path("acct_616263"))
+            .setDestination(path("_floe_private"))
+            .build();
+    var response =
+        create(
+            CatalogOverlaySpec.newBuilder()
+                .addIncludeNamespaces(path("acct_616263"))
+                .addNamespaceMappings(mapping));
+
+    assertEquals(List.of(mapping), response.getOverlay().getNamespaceMappingsList());
+  }
+
+  @Test
+  void rejectsMappingWithoutMatchingSelection() {
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                create(
+                    CatalogOverlaySpec.newBuilder()
+                        .addIncludeNamespaces(path("other"))
+                        .addNamespaceMappings(
+                            NamespaceMapping.newBuilder()
+                                .setSource(path("acct_616263"))
+                                .setDestination(path("_floe_private")))));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+  }
+
+  @Test
+  void includeOnlyUpdateExplainsMappingConstraint() {
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .addIncludeNamespaces(path("sales"))
+            .addNamespaceMappings(
+                NamespaceMapping.newBuilder().setSource(path("sales")).setDestination(path("sys")))
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .updateCatalogOverlay(
+                        UpdateCatalogOverlayRequest.newBuilder()
+                            .setOverlayId(overlayId)
+                            .setSpec(
+                                CatalogOverlaySpec.newBuilder().addIncludeNamespaces(path("other")))
+                            .setUpdateMask(FieldMask.newBuilder().addPaths("include_namespaces"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    assertTrue(error.getStatus().getDescription().contains("include_namespaces"));
+    assertTrue(error.getStatus().getDescription().contains("namespace_mappings.source"));
+    verify(service.overlays, never()).updateWithMetaUnlessIntegrationDeleting(any(), anyLong());
   }
 
   @Test

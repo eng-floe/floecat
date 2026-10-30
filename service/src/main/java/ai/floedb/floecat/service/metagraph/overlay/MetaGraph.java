@@ -38,6 +38,7 @@ import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.PageTokens;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.integration.AccountLogSysTables;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.systemcatalog.graph.SystemCatalogTranslator;
@@ -121,8 +122,15 @@ public final class MetaGraph implements CatalogGraphView {
    */
   @Override
   public List<RelationNode> listRelations(ResourceId catalogId, CatalogContext ctx) {
-    return mergeLists(
-        () -> systemGraph.listRelations(catalogId, ctx), () -> listUserRelations(catalogId, ctx));
+    List<RelationNode> result =
+        mergeLists(
+            () -> systemGraph.listRelations(catalogId, ctx),
+            () -> listUserRelations(catalogId, ctx));
+    for (CatalogGraphView.RelationRef ref :
+        accountLogRefs(AccountLogSysTables.namespaceId(), ctx)) {
+      resolveUserRelation(ref, ctx).ifPresent(result::add);
+    }
+    return result;
   }
 
   /**
@@ -138,9 +146,16 @@ public final class MetaGraph implements CatalogGraphView {
   @Override
   public List<RelationNode> listRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, CatalogContext ctx) {
-    return mergeLists(
-        () -> systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx),
-        () -> listUserRelations(catalogId, namespaceId, ctx));
+    List<RelationNode> result =
+        mergeLists(
+            () -> systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx),
+            () -> listUserRelations(catalogId, namespaceId, ctx));
+    for (CatalogGraphView.RelationRef ref : accountLogRefs(namespaceId, ctx)) {
+      if (result.stream().noneMatch(node -> node.id().equals(ref.id()))) {
+        resolveUserRelation(ref, ctx).ifPresent(result::add);
+      }
+    }
+    return result;
   }
 
   /**
@@ -264,7 +279,9 @@ public final class MetaGraph implements CatalogGraphView {
   @Override
   public Optional<ResourceId> resolveTable(String correlationId, NameRef ref, CatalogContext ctx) {
     Optional<ResourceId> system = systemGraph.resolveTable(ref, ctx);
-    return system.isPresent() ? system : userGraph.resolveTable(correlationId, ref);
+    return system.isPresent()
+        ? system
+        : accountLogTable(ref, ctx).or(() -> userGraph.resolveTable(correlationId, ref));
   }
 
   /**
@@ -299,7 +316,9 @@ public final class MetaGraph implements CatalogGraphView {
   public Optional<ResourceId> resolveName(String correlationId, NameRef ref, CatalogContext ctx) {
     Optional<ResourceId> system = systemGraph.resolveName(ref, ctx);
     Optional<ResourceId> resolved =
-        system.isPresent() ? system : userGraph.resolveName(correlationId, ref);
+        system.isPresent()
+            ? system
+            : accountLogTable(ref, ctx).or(() -> userGraph.resolveName(correlationId, ref));
     if (resolved.isEmpty() && !ctx.engine().hasEngineKind()) {
       // A lookup that misses both graphs with an empty engine context while MDC proves the
       // request DID declare an engine is how a lost engine context manifests: engine-gated system
@@ -330,7 +349,8 @@ public final class MetaGraph implements CatalogGraphView {
       if (out.containsKey(ref)) {
         continue;
       }
-      Optional<ResourceId> system = systemGraph.resolveName(ref, ctx);
+      Optional<ResourceId> system =
+          systemGraph.resolveName(ref, ctx).or(() -> accountLogTable(ref, ctx));
       out.put(ref, system);
       if (system.isEmpty()) {
         userRefs.add(ref);
@@ -610,6 +630,12 @@ public final class MetaGraph implements CatalogGraphView {
     if (user.isPresent()) {
       return user;
     }
+    for (String name : AccountLogSysTables.NAMES) {
+      if (id.equals(AccountLogSysTables.tableId(id.getAccountId(), name))
+          && mountedAccountLog(id.getAccountId(), name).isPresent()) {
+        return Optional.of(NameRefUtil.name("sys", name).toBuilder().setResourceId(id).build());
+      }
+    }
     return systemGraph.tableName(id, context);
   }
 
@@ -847,7 +873,9 @@ public final class MetaGraph implements CatalogGraphView {
     for (NameRef ref : refs) {
       Optional<ResourceId> sysId =
           tables
-              ? systemGraph.resolveTable(SystemCatalogTranslator.toSystemRelationRef(ref, ctx), ctx)
+              ? systemGraph
+                  .resolveTable(SystemCatalogTranslator.toSystemRelationRef(ref, ctx), ctx)
+                  .or(() -> accountLogTable(ref, ctx))
               : systemGraph.resolveView(SystemCatalogTranslator.toSystemRelationRef(ref, ctx), ctx);
       if (sysId.isEmpty()) {
         continue;
@@ -855,7 +883,7 @@ public final class MetaGraph implements CatalogGraphView {
 
       NameRef systemName =
           tables
-              ? systemGraph.tableName(sysId.get(), ctx).orElse(ref)
+              ? tableName(sysId.get(), ctx).orElse(ref)
               : systemGraph.viewName(sysId.get(), ctx).orElse(ref);
       NameRef alias = SystemCatalogTranslator.aliasToUserCatalog(ref, systemName);
       CatalogGraphView.QualifiedRelation relation =
@@ -898,6 +926,7 @@ public final class MetaGraph implements CatalogGraphView {
         count++;
       }
     }
+    if (tables) count += accountLogRefs(sysNsId.get(), ctx).size();
     return count;
   }
 
@@ -936,7 +965,57 @@ public final class MetaGraph implements CatalogGraphView {
       }
     }
 
+    if (tables && sysNsId.get().equals(AccountLogSysTables.namespaceId())) {
+      for (CatalogGraphView.RelationRef ref : accountLogRefs(sysNsId.get(), ctx)) {
+        NameRef name =
+            SystemCatalogTranslator.aliasToUserCatalog(prefix, NameRefUtil.name("sys", ref.name()))
+                .toBuilder()
+                .setResourceId(ref.id())
+                .build();
+        out.add(new CatalogGraphView.QualifiedRelation(name, ref.id()));
+      }
+    }
+
     return out;
+  }
+
+  private Optional<ResourceId> accountLogTable(NameRef ref, CatalogContext ctx) {
+    if (!AccountLogSysTables.NAMES.contains(ref.getName())
+        || !NameRefUtil.matchKey(ref).equals("sys." + ref.getName())
+        || systemGraph
+            .resolveNamespace(NameRef.newBuilder().setName("sys").build(), ctx)
+            .filter(AccountLogSysTables.namespaceId()::equals)
+            .isEmpty()) {
+      return Optional.empty();
+    }
+    return mountedAccountLog(userGraph.currentAccountId(), ref.getName()).map(UserTableNode::id);
+  }
+
+  private Optional<UserTableNode> mountedAccountLog(String accountId, String name) {
+    ResourceId id = AccountLogSysTables.tableId(accountId, name);
+    return userGraph
+        .table(id)
+        .filter(
+            table ->
+                table.namespaceId().equals(AccountLogSysTables.namespaceId())
+                    && table.displayName().equals(name));
+  }
+
+  private List<CatalogGraphView.RelationRef> accountLogRefs(
+      ResourceId namespaceId, CatalogContext ctx) {
+    if (!namespaceId.equals(AccountLogSysTables.namespaceId())
+        || systemGraph.resolve(namespaceId, ctx).isEmpty()) {
+      return List.of();
+    }
+    String accountId = userGraph.currentAccountId();
+    List<CatalogGraphView.RelationRef> result = new ArrayList<>();
+    for (String name : AccountLogSysTables.NAMES) {
+      ResourceId id = AccountLogSysTables.tableId(accountId, name);
+      if (mountedAccountLog(accountId, name).isPresent()) {
+        result.add(new CatalogGraphView.RelationRef(id, name, ResourceKind.RK_TABLE));
+      }
+    }
+    return result;
   }
 
   // ---- Lightweight pointer-backed ref listing ----
@@ -1008,15 +1087,20 @@ public final class MetaGraph implements CatalogGraphView {
     List<RelationNode> sysRels = systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx);
     List<CatalogGraphView.RelationRef> userRels =
         userGraph.listRelationRefs(catalogId, namespaceId);
-    if (sysRels.isEmpty()) {
+    List<CatalogGraphView.RelationRef> accountLogs = accountLogRefs(namespaceId, ctx);
+    if (sysRels.isEmpty() && accountLogs.isEmpty()) {
       return userRels;
     }
-    List<CatalogGraphView.RelationRef> result = new ArrayList<>(sysRels.size() + userRels.size());
+    List<CatalogGraphView.RelationRef> result =
+        new ArrayList<>(sysRels.size() + userRels.size() + accountLogs.size());
     for (RelationNode rel : sysRels) {
       ResourceKind kind = rel instanceof ViewNode ? ResourceKind.RK_VIEW : ResourceKind.RK_TABLE;
       result.add(new CatalogGraphView.RelationRef(rel.id(), rel.displayName(), kind));
     }
     result.addAll(userRels);
+    for (CatalogGraphView.RelationRef log : accountLogs) {
+      if (result.stream().noneMatch(ref -> ref.id().equals(log.id()))) result.add(log);
+    }
     return result;
   }
 
@@ -1032,15 +1116,23 @@ public final class MetaGraph implements CatalogGraphView {
             .toList();
     List<CatalogGraphView.RelationRef> userRels =
         userGraph.listRelationRefsByName(catalogId, namespaceId, names);
-    if (sysRels.isEmpty()) {
+    List<CatalogGraphView.RelationRef> accountLogs =
+        accountLogRefs(namespaceId, ctx).stream()
+            .filter(ref -> names.contains(ref.name()))
+            .toList();
+    if (sysRels.isEmpty() && accountLogs.isEmpty()) {
       return userRels;
     }
-    List<CatalogGraphView.RelationRef> result = new ArrayList<>(sysRels.size() + userRels.size());
+    List<CatalogGraphView.RelationRef> result =
+        new ArrayList<>(sysRels.size() + userRels.size() + accountLogs.size());
     for (RelationNode rel : sysRels) {
       ResourceKind kind = rel instanceof ViewNode ? ResourceKind.RK_VIEW : ResourceKind.RK_TABLE;
       result.add(new CatalogGraphView.RelationRef(rel.id(), rel.displayName(), kind));
     }
     result.addAll(userRels);
+    for (CatalogGraphView.RelationRef log : accountLogs) {
+      if (result.stream().noneMatch(ref -> ref.id().equals(log.id()))) result.add(log);
+    }
     return result;
   }
 }

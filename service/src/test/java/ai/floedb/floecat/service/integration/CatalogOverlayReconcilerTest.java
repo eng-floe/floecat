@@ -58,6 +58,7 @@ import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
+import ai.floedb.floecat.integration.rpc.NamespaceMapping;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.concurrent.MetadataResourceReader;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -167,6 +168,154 @@ class CatalogOverlayReconcilerTest {
     reconciler.markerStore = markerStoreOver(pointers);
     reconciler.fileIoProperties =
         mock(ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver.class);
+  }
+
+  @Test
+  void mapsSelectedNamespaceWithoutChangingUpstreamIdentity() {
+    NamespacePath source = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(source));
+    client.children.put(source, List.of());
+    CatalogObjectName sourceName = new CatalogObjectName(source, "query_log");
+    client.tables.put(
+        sourceName,
+        new CatalogTable(
+            sourceName,
+            ExternalObjectIdentity.stable("query-log-id"),
+            "ICEBERG",
+            SCHEMA_JSON,
+            List.of(),
+            Optional.of("s3://warehouse/query_log/metadata.json"),
+            Optional.of("s3://warehouse/query_log"),
+            Map.of()));
+    overlay =
+        overlay.toBuilder()
+            .addNamespaceMappings(
+                NamespaceMapping.newBuilder()
+                    .setSource(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("sales"))
+                    .setDestination(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("_floe_private")))
+            .build();
+    overlays.update(overlay, overlays.metaFor(overlay.getResourceId()).getPointerVersion());
+
+    var result = reconcile();
+
+    assertEquals(1, result.namespacesCreated());
+    assertTrue(namespaces.getByPath("acct", "catalog", List.of("sales")).isEmpty());
+    var destination =
+        namespaces.getByPath("acct", "catalog", List.of("_floe_private")).orElseThrow();
+    Table table =
+        tables
+            .getByName("acct", "catalog", destination.getResourceId().getId(), "query_log")
+            .orElseThrow();
+    assertEquals(List.of("sales"), table.getUpstream().getNamespacePathList());
+    assertEquals("query_log", table.getUpstream().getTableDisplayName());
+    assertEquals(0, reconcile().tablesCreated());
+  }
+
+  @Test
+  void mountsAccountLogTableUnderBuiltInSysWithoutCreatingNamespace() {
+    NamespacePath source = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(source));
+    client.children.put(source, List.of());
+    CatalogObjectName sourceName = new CatalogObjectName(source, "query_log");
+    client.tables.put(
+        sourceName,
+        new CatalogTable(
+            sourceName,
+            ExternalObjectIdentity.stable("query-log-id"),
+            "ICEBERG",
+            SCHEMA_JSON,
+            List.of(),
+            Optional.of("s3://warehouse/query_log/metadata.json"),
+            Optional.of("s3://warehouse/query_log"),
+            Map.of()));
+    overlay =
+        overlay.toBuilder()
+            .addNamespaceMappings(
+                NamespaceMapping.newBuilder()
+                    .setSource(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("sales"))
+                    .setDestination(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("sys")))
+            .build();
+    overlays.update(overlay, overlays.metaFor(overlay.getResourceId()).getPointerVersion());
+
+    assertEquals(1, reconcile().tablesCreated());
+    assertTrue(namespaces.getByPath("acct", "catalog", List.of("sys")).isEmpty());
+    var id = AccountLogSysTables.tableId("acct", "query_log");
+    assertFalse(ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator.isSystemId(id));
+    Table table = tables.getById(id).orElseThrow();
+    assertEquals(AccountLogSysTables.namespaceId(), table.getNamespaceId());
+    assertEquals(List.of("sales"), table.getUpstream().getNamespacePathList());
+    assertEquals(0, reconcile().tablesCreated());
+    assertEquals(id, tables.getById(id).orElseThrow().getResourceId());
+
+    client.tables.remove(sourceName);
+    assertEquals(1, reconcile().tablesDeleted());
+    assertTrue(tables.getById(id).isEmpty());
+  }
+
+  @Test
+  void mappedViewResolvesUnqualifiedRelationsInDestinationNamespace() {
+    NamespacePath source = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(source));
+    client.children.put(source, List.of());
+    CatalogObjectName tableName = new CatalogObjectName(source, "query_log");
+    client.tables.put(
+        tableName,
+        new CatalogTable(
+            tableName,
+            ExternalObjectIdentity.stable("query-log-id"),
+            "ICEBERG",
+            SCHEMA_JSON,
+            List.of(),
+            Optional.of("s3://warehouse/query_log/metadata.json"),
+            Optional.of("s3://warehouse/query_log"),
+            Map.of()));
+    CatalogObjectName viewName = new CatalogObjectName(source, "summary");
+    client.views.put(
+        viewName,
+        new CatalogView(
+            viewName,
+            ExternalObjectIdentity.stable("summary-id"),
+            SCHEMA_JSON,
+            List.of(new CatalogViewDefinition("select id from query_log", "ansi")),
+            source,
+            Map.of()));
+    overlay =
+        overlay.toBuilder()
+            .addNamespaceMappings(
+                NamespaceMapping.newBuilder()
+                    .setSource(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("sales"))
+                    .setDestination(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("mounted")))
+            .build();
+    overlays.update(overlay, overlays.metaFor(overlay.getResourceId()).getPointerVersion());
+
+    var result = reconcile();
+
+    assertEquals(1, result.tablesCreated());
+    assertEquals(1, result.viewsCreated());
+    assertTrue(namespaces.getByPath("acct", "catalog", List.of("sales")).isEmpty());
+    var destination = namespaces.getByPath("acct", "catalog", List.of("mounted")).orElseThrow();
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", destination.getResourceId().getId(), "query_log")
+            .isPresent());
+    var view =
+        views
+            .getByName("acct", "catalog", destination.getResourceId().getId(), "summary")
+            .orElseThrow();
+    assertEquals(List.of("mounted"), view.getCreationSearchPathList());
+    assertEquals("select id from query_log", view.getSqlDefinitions(0).getSql());
   }
 
   @Test

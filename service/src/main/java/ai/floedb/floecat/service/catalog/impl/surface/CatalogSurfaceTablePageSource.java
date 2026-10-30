@@ -98,6 +98,11 @@ final class CatalogSurfaceTablePageSource implements CatalogSurfaceRelationPager
 
   @Override
   public List<CatalogGraphView.RelationRef> systemRelations() {
+    if (!userNamespace) {
+      return graphView.listRelationRefs(catalogId, namespaceId, context).stream()
+          .filter(ref -> ref.kind() == ResourceKind.RK_TABLE)
+          .toList();
+    }
     return graphView.listSystemRelationsInNamespace(catalogId, namespaceId, context).stream()
         .filter(TableNode.class::isInstance)
         .map(TableNode.class::cast)

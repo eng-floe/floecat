@@ -48,6 +48,7 @@ import ai.floedb.floecat.delta.identity.IdentityResult;
 import ai.floedb.floecat.delta.identity.PersistedIdentityLookup;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
+import ai.floedb.floecat.integration.rpc.NamespaceMapping;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -225,7 +226,7 @@ public class CatalogOverlayReconciler {
             client.validate();
             return null;
           });
-      Discovery discovery = discover(session, overlay);
+      Discovery discovery = projectDiscovery(overlay, discover(session, overlay));
 
       var result = new MutableResult();
       Map<NamespacePath, Namespace> localNamespaces =
@@ -272,10 +273,12 @@ public class CatalogOverlayReconciler {
   public void retireMaterializedResources(CatalogOverlay overlay) {
     ResourceId catalogId = overlay.getCatalogId();
     List<Namespace> catalogNamespaces =
-        sortedCancellable(
-            listNamespaces(catalogId),
-            Comparator.comparingInt((Namespace namespace) -> path(namespace).segments().size())
-                .reversed());
+        new ArrayList<>(
+            sortedCancellable(
+                listNamespaces(catalogId),
+                Comparator.comparingInt((Namespace namespace) -> path(namespace).segments().size())
+                    .reversed()));
+    catalogNamespaces.add(accountLogSysNamespace(catalogId));
     for (Namespace namespace : catalogNamespaces) {
       throwIfCancelled();
       for (Table table : listTables(namespace)) {
@@ -602,6 +605,79 @@ public class CatalogOverlayReconciler {
     }
   }
 
+  /**
+   * Keeps provider paths on loaded objects while translating local inventory and retirement keys.
+   */
+  private static Discovery projectDiscovery(CatalogOverlay overlay, Discovery source) {
+    if (overlay.getNamespaceMappingsCount() == 0) return source;
+    List<NamespaceMapping> mappings = overlay.getNamespaceMappingsList();
+    Set<NamespacePath> materialized = new LinkedHashSet<>();
+    for (NamespacePath path : source.materializedNamespaces()) {
+      projectPath(mappings, path).ifPresent(mapped -> addAncestors(mapped, materialized));
+    }
+    return new Discovery(
+        immutableSetCopyCancellable(materialized),
+        projectObjects(mappings, source.tables()),
+        projectObjects(mappings, source.views()),
+        projectPaths(mappings, source.skippedPrefixes()),
+        projectPaths(mappings, source.skippedTablePrefixes()),
+        projectPaths(mappings, source.skippedViewPrefixes()),
+        projectNames(mappings, source.unobservedTables()),
+        projectNames(mappings, source.unobservedViews()),
+        projectPaths(mappings, source.tableIdentityUnknownIn()),
+        projectPaths(mappings, source.viewIdentityUnknownIn()));
+  }
+
+  private static <T> Map<CatalogObjectName, T> projectObjects(
+      List<NamespaceMapping> mappings, Map<CatalogObjectName, T> source) {
+    Map<CatalogObjectName, T> projected = new LinkedHashMap<>();
+    source.forEach(
+        (name, object) -> {
+          CatalogObjectName destination = projectName(mappings, name);
+          if (projected.putIfAbsent(destination, object) != null) {
+            throw new IllegalStateException("Overlay namespace mappings collide at " + destination);
+          }
+        });
+    return immutableMapCopyCancellable(projected);
+  }
+
+  private static Set<CatalogObjectName> projectNames(
+      List<NamespaceMapping> mappings, Set<CatalogObjectName> source) {
+    Set<CatalogObjectName> projected = new LinkedHashSet<>();
+    source.forEach(name -> projected.add(projectName(mappings, name)));
+    return immutableSetCopyCancellable(projected);
+  }
+
+  private static CatalogObjectName projectName(
+      List<NamespaceMapping> mappings, CatalogObjectName source) {
+    return new CatalogObjectName(
+        projectPath(mappings, source.namespace())
+            .orElseThrow(
+                () -> new IllegalStateException("Selected source has no namespace mapping")),
+        source.name());
+  }
+
+  private static Set<NamespacePath> projectPaths(
+      List<NamespaceMapping> mappings, Set<NamespacePath> source) {
+    Set<NamespacePath> projected = new LinkedHashSet<>();
+    for (NamespacePath path : source) {
+      projectPath(mappings, path).ifPresent(projected::add);
+    }
+    return immutableSetCopyCancellable(projected);
+  }
+
+  private static Optional<NamespacePath> projectPath(
+      List<NamespaceMapping> mappings, NamespacePath path) {
+    for (NamespaceMapping mapping : mappings) {
+      List<String> source = mapping.getSource().getSegmentsList();
+      if (!startsWith(path.segments(), source)) continue;
+      List<String> destination = new ArrayList<>(mapping.getDestination().getSegmentsList());
+      destination.addAll(path.segments().subList(source.size(), path.segments().size()));
+      return Optional.of(new NamespacePath(destination));
+    }
+    return Optional.empty();
+  }
+
   private Map<NamespacePath, Namespace> reconcileNamespaces(
       CatalogOverlay overlay,
       CatalogIntegration integration,
@@ -614,8 +690,17 @@ public class CatalogOverlayReconciler {
       throwIfCancelled();
       current.put(path(namespace), namespace);
     }
+    NamespacePath sysPath = new NamespacePath(List.of("sys"));
+    if (current.containsKey(sysPath)) {
+      throw new IllegalStateException(
+          "A stored namespace conflicts with the built-in sys namespace");
+    }
+    current.put(sysPath, accountLogSysNamespace(catalogId));
     for (NamespacePath path : sortedCancellable(targetPaths, Comparator.naturalOrder())) {
       throwIfCancelled();
+      if (isAccountLogSys(path)) {
+        continue;
+      }
       if (current.containsKey(path)) continue;
       List<String> segments = path.segments();
       Namespace created =
@@ -802,9 +887,7 @@ public class CatalogOverlayReconciler {
           definitionMeta =
               tables
                   .createWhilePointersMatch(
-                      desired,
-                      fence.and(
-                          orRetry(() -> markerStore.relationCreateFence(desired.getNamespaceId()))))
+                      desired, relationCreateFence(fence, desired.getNamespaceId()))
                   .orElseThrow(CatalogOverlayReconciler::lostFence);
           result.tablesCreated++;
         } else if (!current.equals(desired)) {
@@ -815,18 +898,7 @@ public class CatalogOverlayReconciler {
           definitionMeta =
               tables
                   .updateWhilePointersMatch(
-                      desired,
-                      meta.getPointerVersion(),
-                      fence.and(
-                          orRetry(
-                              () ->
-                                  markerStore.relationMoveFence(
-                                      current.getNamespaceId(),
-                                      desired.getNamespaceId(),
-                                      !current
-                                          .getCatalogId()
-                                          .getId()
-                                          .equals(desired.getCatalogId().getId())))))
+                      desired, meta.getPointerVersion(), relationMoveFence(fence, current, desired))
                   .orElseThrow(CatalogOverlayReconciler::lostFence);
           result.tablesUpdated++;
         } else {
@@ -913,6 +985,10 @@ public class CatalogOverlayReconciler {
       CatalogObjectName name = entry.getKey();
       CatalogView source = entry.getValue();
       Namespace namespace = requireNamespace(localNamespaces, name.namespace());
+      if (isAccountLogSys(name.namespace())) {
+        throw new IllegalArgumentException(
+            "The built-in sys namespace accepts account log tables only");
+      }
       View current =
           source.identity().stable()
               ? inventory.viewsByIdentity().get(source.identity().value())
@@ -990,9 +1066,19 @@ public class CatalogOverlayReconciler {
       Table current,
       CatalogClient client,
       boolean skipColumnIdentityReconciliation) {
+    boolean sys = isAccountLogSys(path(namespace));
+    if (current != null) {
+      boolean fixedId = AccountLogSysTables.isTableId(current.getResourceId());
+      if (sys != fixedId) {
+        throw new IllegalStateException("Account log tables cannot move into or out of sys");
+      }
+    }
     ResourceId id =
         current == null
-            ? randomId(overlay.getResourceId().getAccountId(), ResourceKind.RK_TABLE)
+            ? sys
+                ? AccountLogSysTables.tableId(
+                    overlay.getResourceId().getAccountId(), normalizeName(source.name().name()))
+                : randomId(overlay.getResourceId().getAccountId(), ResourceKind.RK_TABLE)
             : current.getResourceId();
     var properties = objectProperties(overlay, integration, source.identity());
     source.metadataLocation().ifPresent(value -> properties.put(METADATA_LOCATION_PROPERTY, value));
@@ -1164,6 +1250,12 @@ public class CatalogOverlayReconciler {
     var schema =
         IcebergSchemaMapper.map(
             ColumnIdAlgorithm.CID_FIELD_ID, source.outputSchemaJson(), Set.of());
+    NamespacePath defaultNamespace = normalizePath(source.defaultNamespace());
+    if (overlay.getNamespaceMappingsCount() > 0) {
+      defaultNamespace =
+          projectPath(overlay.getNamespaceMappingsList(), defaultNamespace)
+              .orElse(defaultNamespace);
+    }
     var builder =
         View.newBuilder()
             .setResourceId(id)
@@ -1171,7 +1263,7 @@ public class CatalogOverlayReconciler {
             .setNamespaceId(namespace.getResourceId())
             .setDisplayName(normalizeName(source.name().name()))
             .setCreatedAt(current == null ? now() : current.getCreatedAt())
-            .addAllCreationSearchPath(normalizePath(source.defaultNamespace()).segments())
+            .addAllCreationSearchPath(defaultNamespace.segments())
             .addAllOutputColumns(schema.getColumnsList())
             .putAllProperties(objectProperties(overlay, integration, source.identity()));
     for (var definition : source.definitions()) {
@@ -1243,12 +1335,39 @@ public class CatalogOverlayReconciler {
     return listAll(
         (token, next) ->
             tables.listConsistent(
-                namespace.getResourceId().getAccountId(),
+                namespace.getCatalogId().getAccountId(),
                 namespace.getCatalogId().getId(),
                 namespace.getResourceId().getId(),
                 200,
                 token,
                 next));
+  }
+
+  private static boolean isAccountLogSys(NamespacePath path) {
+    return path.segments().equals(List.of("sys"));
+  }
+
+  private static Namespace accountLogSysNamespace(ResourceId catalogId) {
+    return Namespace.newBuilder()
+        .setResourceId(AccountLogSysTables.namespaceId())
+        .setCatalogId(catalogId)
+        .setDisplayName("sys")
+        .build();
+  }
+
+  private PointerConditions relationCreateFence(PointerConditions fence, ResourceId namespaceId) {
+    return namespaceId.equals(AccountLogSysTables.namespaceId())
+        ? fence
+        : fence.and(orRetry(() -> markerStore.relationCreateFence(namespaceId)));
+  }
+
+  private PointerConditions relationMoveFence(
+      PointerConditions fence, Table current, Table desired) {
+    if (current.getNamespaceId().equals(desired.getNamespaceId())
+        && current.getCatalogId().equals(desired.getCatalogId())) {
+      return fence;
+    }
+    return relationCreateFence(fence, desired.getNamespaceId());
   }
 
   private List<Namespace> listNamespaces(ResourceId catalogId) {
@@ -1262,7 +1381,7 @@ public class CatalogOverlayReconciler {
     return listAll(
         (token, next) ->
             views.listConsistent(
-                namespace.getResourceId().getAccountId(),
+                namespace.getCatalogId().getAccountId(),
                 namespace.getCatalogId().getId(),
                 namespace.getResourceId().getId(),
                 200,
