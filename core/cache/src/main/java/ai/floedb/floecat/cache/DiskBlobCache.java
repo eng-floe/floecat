@@ -899,7 +899,14 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
 
   private void requireOpen() {
     if (closed.get()) {
-      throw new IllegalStateException("blob cache is closed");
+      throw new ClosedException();
+    }
+  }
+
+  /** A call on a cache that has been closed. */
+  public static final class ClosedException extends IllegalStateException {
+    ClosedException() {
+      super("blob cache is closed");
     }
   }
 

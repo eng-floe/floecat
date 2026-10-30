@@ -17,6 +17,7 @@ package ai.floedb.floecat.storage.kv.dynamodb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.storage.errors.StorageUnavailableException;
 import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
@@ -513,24 +514,26 @@ public class KvStoreContractTest {
 
   @Test
   void updateMetadataAttrsIfExists_increment_of_string_attr_fails() {
-    // ADD on an S-typed attribute is a server-side ValidationException the SDK does not model, so
-    // it arrives as a plain DynamoDbException; the in-memory store throws IllegalStateException
-    // instead, so the two contract tests assert different types by design.
+    // ADD on an S-typed attribute is a server-side ValidationException the SDK does not model: a
+    // store failure no retry clears, carrying the plain DynamoDbException. The in-memory store
+    // throws IllegalStateException instead, so the two contract tests assert different types by
+    // design.
     KvStore.Key k = key("pk1", "meta");
     assertTrue(
         kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of("abc"))), 0L)
             .await()
             .indefinitely());
 
-    DynamoDbException thrown =
+    StorageUnavailableException thrown =
         assertThrows(
-            DynamoDbException.class,
+            StorageUnavailableException.class,
             () ->
                 kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", 1L))
                     .await()
                     .indefinitely());
     // A type error is not "the record was absent" — it must not recover into an empty result.
-    assertFalse(thrown instanceof ConditionalCheckFailedException);
+    DynamoDbException cause = assertInstanceOf(DynamoDbException.class, thrown.getCause());
+    assertFalse(cause instanceof ConditionalCheckFailedException);
 
     // Never silently overwritten, and the version bump in the same request did not land either.
     KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
@@ -548,7 +551,7 @@ public class KvStoreContractTest {
             .indefinitely());
 
     assertThrows(
-        DynamoDbException.class,
+        StorageUnavailableException.class,
         () ->
             kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", 1L)).await().indefinitely());
 
