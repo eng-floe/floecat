@@ -688,7 +688,7 @@ class TransactionsServiceImplTest {
 
     String accountId = "acct";
     String txId = "tx-1";
-    String tableId = "table-1";
+    String tableId = "123e4567-e89b-12d3-a456-426614174000";
     String pointerKey = Keys.tablePointerById(accountId, tableId);
     Transaction txn =
         Transaction.newBuilder()
@@ -792,6 +792,51 @@ class TransactionsServiceImplTest {
   }
 
   @Test
+  void prepareRejectsNonUuidTableTargetBeforeCreatingIntent() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    injectPointerStore(service, pointerStore);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    Transaction txn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_OPEN)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
+
+    var request =
+        PrepareTransactionRequest.newBuilder()
+            .setTxId(txId)
+            .addChanges(
+                TxChange.newBuilder()
+                    .setTableId(
+                        ResourceId.newBuilder()
+                            .setAccountId(accountId)
+                            .setId("by-id")
+                            .setKind(ResourceKind.RK_TABLE))
+                    .setIntendedBlobUri(Keys.accountRootPrefix(accountId) + "/tables/intended-1"))
+            .build();
+
+    InvocationTargetException reflected =
+        assertThrows(
+            InvocationTargetException.class,
+            () -> invokePreparePrivate(service, accountId, request, Timestamps.fromMillis(10)));
+
+    assertInstanceOf(IllegalArgumentException.class, reflected.getCause());
+    verify(intentRepo, never()).create(any());
+    Mockito.verifyNoInteractions(pointerStore);
+  }
+
+  @Test
   void prepareAlreadyPreparedMatchesWithoutRecheckingLivePointerVersion() throws Exception {
     var service = new TransactionsServiceImpl();
     var txRepo = Mockito.mock(TransactionRepository.class);
@@ -865,7 +910,7 @@ class TransactionsServiceImplTest {
 
     String accountId = "acct";
     String txId = "tx-1";
-    String tableId = "table-1";
+    String tableId = "123e4567-e89b-12d3-a456-426614174000";
     String targetKey = Keys.tablePointerById(accountId, tableId);
     String tableBlobUri = Keys.tableBlobUri(accountId, tableId, "sha");
     Transaction txn =
@@ -1534,7 +1579,7 @@ class TransactionsServiceImplTest {
 
     var request = PrepareTransactionRequest.newBuilder().setTxId(txId);
     for (int i = 0; i < count; i++) {
-      String tableId = "table-" + i;
+      String tableId = String.format("00000000-0000-0000-0000-%012d", i);
       String pointerKey = Keys.tablePointerById(accountId, tableId);
       request.addChanges(
           TxChange.newBuilder()

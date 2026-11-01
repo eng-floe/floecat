@@ -52,6 +52,7 @@ import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.FenceRetry;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
+import ai.floedb.floecat.service.common.ResourceIds;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -1773,18 +1774,23 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   }
 
   private ResourceId tableIdForWriteTarget(String accountId, ResolvedTxTarget target) {
-    if (target.tableId() != null) {
-      return target.tableId();
+    ResourceId tableId = target.tableId();
+    if (tableId == null) {
+      String parsedId = tableIdFromByIdPointer(target.pointerKey());
+      if (parsedId == null || parsedId.isBlank()) {
+        throw new IllegalArgumentException("missing table reference");
+      }
+      tableId =
+          ResourceId.newBuilder()
+              .setAccountId(accountId)
+              .setKind(ResourceKind.RK_TABLE)
+              .setId(parsedId)
+              .build();
     }
-    String tableId = tableIdFromByIdPointer(target.pointerKey());
-    if (tableId == null || tableId.isBlank()) {
-      throw new IllegalArgumentException("missing table reference");
+    if (!ResourceIds.isCanonicalUuid(tableId.getId())) {
+      throw new IllegalArgumentException("table id must be a canonical UUID");
     }
-    return ResourceId.newBuilder()
-        .setAccountId(accountId)
-        .setKind(ResourceKind.RK_TABLE)
-        .setId(tableId)
-        .build();
+    return tableId;
   }
 
   private void requireWritableTablePayload(
@@ -2357,6 +2363,9 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       }
       if (!accountId.equals(tableId.getAccountId())) {
         throw new IllegalArgumentException("account mismatch for table_id");
+      }
+      if (!ResourceIds.isCanonicalUuid(tableId.getId())) {
+        throw new IllegalArgumentException("table id must be a canonical UUID");
       }
       return tableId;
     }

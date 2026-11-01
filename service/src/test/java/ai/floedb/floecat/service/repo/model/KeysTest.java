@@ -52,6 +52,11 @@ class KeysTest {
   }
 
   @Test
+  void tablePrefixUsesPathSafeEncoding() {
+    assertEquals("/accounts/acct%20id/tables/table%2Fid/", Keys.tablePrefix("acct id", "table/id"));
+  }
+
+  @Test
   void snapshotConstraintsKeysUsePathSafeEncoding() {
     assertEquals(
         "/accounts/acct%20id/tables/table%20id/constraints/by-snapshot/0000000000000000007",

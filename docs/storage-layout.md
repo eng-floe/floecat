@@ -212,6 +212,11 @@ Snapshot, stats-generation, constraint, compatibility, and index pointers:
 /accounts/{account_id}/tables/{table_id}/constraints/by-snapshot/{snapshot_id:019d}
 ```
 
+Deleting a table removes the complete `/accounts/{account_id}/tables/{table_id}/` pointer
+subtree. The table's by-id and by-name resource pointers live outside that subtree and are removed
+by the resource repository. Content-addressed blobs under the corresponding object-store prefix
+remain until blob GC can prove that they are no longer referenced.
+
 Stats are generation-scoped. There is no standalone `file-stats` blob or pointer family: logical
 table, column, expression, and file target identities all enter through `{target_id}` in the active
 generation, while their blobs use `{target_id_sha256}`.

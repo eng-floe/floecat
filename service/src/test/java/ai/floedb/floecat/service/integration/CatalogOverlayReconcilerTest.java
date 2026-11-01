@@ -22,7 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
@@ -58,6 +57,7 @@ import ai.floedb.floecat.delta.identity.KernelAdapter;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.RelationPurge;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.concurrent.MetadataResourceReader;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -67,7 +67,6 @@ import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -157,8 +156,7 @@ class CatalogOverlayReconcilerTest {
     reconciler.namespaces = namespaces;
     reconciler.tables = tables;
     reconciler.views = views;
-    reconciler.pointerStore = pointers;
-    reconciler.tableRoots = mock(TableRootRepository.class);
+    reconciler.relationPurge = mock(RelationPurge.class);
     reconciler.rootWriter = mock(TableRootWriter.class);
     // A real MarkerStore over the same in-memory pointer store. A mock returning empty conditions
     // passes whether the reconciler folds a fence into its batch or drops it on the floor, which is
@@ -2209,7 +2207,7 @@ class CatalogOverlayReconcilerTest {
 
     assertThrows(BaseResourceRepository.AbortRetryableException.class, this::reconcile);
     verify(reconciler.rootWriter).replaceDefinitionIfMatches(any(), any(), any());
-    verify(reconciler.tableRoots, never()).deleteWithPrecondition(any(), anyLong());
+    verify(reconciler.relationPurge, never()).purgeTableState(any());
   }
 
   @Test

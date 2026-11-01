@@ -2474,7 +2474,7 @@ class IcebergRestFixtureIT {
   private ResourceId randomTableId(String accountId) {
     return ResourceId.newBuilder()
         .setAccountId(accountId)
-        .setId("tbl-" + UUID.randomUUID())
+        .setId(UUID.randomUUID().toString())
         .setKind(ResourceKind.RK_TABLE)
         .build();
   }

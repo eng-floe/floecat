@@ -568,9 +568,14 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/tables/";
   }
 
+  /** Pointer-store prefix containing every table-scoped pointer family for one table. */
+  public static String tablePrefix(String accountId, String tableId) {
+    return tableRootPrefix(accountId) + encode(req("table_id", tableId)) + "/";
+  }
+
   /** Immediate object-store prefix containing every blob family owned by one table. */
   public static String tableBlobPrefix(String accountId, String tableId) {
-    return tableRootPrefix(accountId) + encode(req("table_id", tableId)) + "/";
+    return tablePrefix(accountId, tableId);
   }
 
   public static String tablePointerByName(

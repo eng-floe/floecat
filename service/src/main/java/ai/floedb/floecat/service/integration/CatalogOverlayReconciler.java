@@ -49,6 +49,7 @@ import ai.floedb.floecat.delta.identity.PersistedIdentityLookup;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.service.catalog.impl.RelationPurge;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
@@ -57,14 +58,12 @@ import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver;
-import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.ViewOutputColumns;
 import ai.floedb.floecat.util.LogSafeText;
 import com.google.protobuf.util.Timestamps;
@@ -137,8 +136,7 @@ public class CatalogOverlayReconciler {
   @Inject NamespaceRepository namespaces;
   @Inject TableRepository tables;
   @Inject ViewRepository views;
-  @Inject PointerStore pointerStore;
-  @Inject TableRootRepository tableRoots;
+  @Inject RelationPurge relationPurge;
   @Inject TableRootWriter rootWriter;
   @Inject MarkerStore markerStore;
   @Inject ServerSideFileIoPropertiesResolver fileIoProperties;
@@ -287,7 +285,7 @@ public class CatalogOverlayReconciler {
           throw new BaseResourceRepository.AbortRetryableException(
               "Table changed during Catalog Overlay retirement");
         }
-        purgeTableState(table.getResourceId());
+        relationPurge.purgeTableState(table.getResourceId());
       }
       for (View view : listViews(namespace)) {
         throwIfCancelled();
@@ -728,7 +726,7 @@ public class CatalogOverlayReconciler {
           stale.getResourceId(), meta.getPointerVersion(), fence)) {
         throw lostFence();
       }
-      purgeTableState(stale.getResourceId());
+      relationPurge.purgeTableState(stale.getResourceId());
       result.tablesDeleted++;
     }
     for (var staleEntry : inventory.viewsByName().entrySet()) {
@@ -1355,11 +1353,6 @@ public class CatalogOverlayReconciler {
   private int relationCount(Namespace namespace) {
     return NamespaceRepository.relationCount(
         tables, views, namespace.getCatalogId(), namespace.getResourceId());
-  }
-
-  private void purgeTableState(ResourceId tableId) {
-    pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
-    tableRoots.purgeRoot(tableId);
   }
 
   private static Namespace requireNamespace(

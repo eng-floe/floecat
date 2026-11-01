@@ -91,6 +91,7 @@ class TableServiceImplSystemTableTest {
     svc.authz = authz;
     svc.graphView = graphView;
     svc.hintCleaner = hintCleaner;
+    svc.relationPurge = mock(RelationPurge.class);
     // Every relation write resolves a fence, so the update paths reach markerStore.
     svc.markerStore = mock(MarkerStore.class);
     when(svc.markerStore.relationMoveFence(any(), any(), anyBoolean()))
@@ -111,7 +112,7 @@ class TableServiceImplSystemTableTest {
         ResourceId.newBuilder()
             .setAccountId("acct")
             .setKind(ResourceKind.RK_TABLE)
-            .setId("sys_tbl_2")
+            .setId("00000000-0000-0000-0000-000000000002")
             .build();
 
     ResourceId nsId =
@@ -141,12 +142,54 @@ class TableServiceImplSystemTableTest {
   }
 
   @Test
+  void deleteTable_rejectsAnAccountOutsideThePrincipalScope() {
+    ResourceId foreignTableId =
+        ResourceId.newBuilder()
+            .setAccountId("other-account")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("123e4567-e89b-12d3-a456-426614174000")
+            .build();
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.deleteTable(DeleteTableRequest.newBuilder().setTableId(foreignTableId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verifyNoInteractions(tableRepo, svc.relationPurge);
+  }
+
+  @Test
+  void deleteTable_rejectsNonUuidIdBeforeReadingOrDeleting() {
+    ResourceId craftedTableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("by-id")
+            .build();
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.deleteTable(DeleteTableRequest.newBuilder().setTableId(craftedTableId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verifyNoInteractions(tableRepo, svc.relationPurge);
+  }
+
+  @Test
   void deleteTable_systemTable_withPrecondition_isPermissionDenied() {
     ResourceId sysTableId =
         ResourceId.newBuilder()
             .setAccountId("acct")
             .setKind(ResourceKind.RK_TABLE)
-            .setId("sys_tbl_pc_1")
+            .setId("00000000-0000-0000-0000-000000000003")
             .build();
 
     ResourceId nsId =
