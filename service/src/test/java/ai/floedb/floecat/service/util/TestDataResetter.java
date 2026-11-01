@@ -89,6 +89,7 @@ public class TestDataResetter {
       ptr.deleteByPrefix("/accounts/");
       ptr.deleteByPrefix("accounts/");
       ptr.deleteByPrefix(Keys.accountPurgePrefix());
+      ptr.deleteByPrefix(Keys.relationPurgePrefix());
       ptr.deleteByPrefix(Keys.catalogIntegrationCredentialCleanupPrefix());
       if (!"dynamodb".equalsIgnoreCase(kvMode)) {
         ptr.deleteByPrefix(PointerStoreKeys.ACCOUNT_DELETION_FENCE_PREFIX);

@@ -16,6 +16,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.catalog.impl.RelationPurge;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -108,15 +109,26 @@ public class RelationPurgeQueue {
       for (Pointer pointer : pointers) {
         if (System.currentTimeMillis() >= deadlineMs) break;
         var relation = PointerReferences.relationRef(work.accountId(), kind, pointer);
-        if (relation.isPresent()
-            && relations.deleteStranded(relation.get().id(), work.namespaceId())) {
-          deleted++;
+        if (relation.isPresent()) {
+          if (relations.deleteStranded(relation.get().id(), work.namespaceId())) {
+            deleted++;
+          } else if (pointerStore.getConsistent(relationRow(relation.get().id())).isEmpty()) {
+            // The row is already gone, so this is only an orphaned secondary. The namespace is
+            // gone too, which makes deleting the exact observed name pointer safe.
+            pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion());
+          }
         }
       }
       token = next.toString();
       if (token.isEmpty()) break;
     }
     return deleted;
+  }
+
+  private static String relationRow(ResourceId relationId) {
+    return relationId.getKind() == ResourceKind.RK_VIEW
+        ? Keys.viewPointerById(relationId.getAccountId(), relationId.getId())
+        : Keys.tablePointerById(relationId.getAccountId(), relationId.getId());
   }
 
   private boolean empty(Work work) {

@@ -129,6 +129,17 @@ public class TestDataResetterTest {
   }
 
   @Test
+  void wipeAll_removes_relation_purge_queue_entries() {
+    FakePointerStore ptr = new FakePointerStore();
+    String queued = Keys.relationPurgePointer("deleted-account", "catalog", "namespace");
+    ptr.putPointer(queued, 1L);
+
+    resetter(ptr, new FakeBlobStore()).wipeAll();
+
+    assertFalse(ptr.containsKey(queued));
+  }
+
+  @Test
   void wipeAll_does_not_throw_on_empty_store() {
     TestDataResetter resetter = resetter(new FakePointerStore(), new FakeBlobStore());
     resetter.wipeAll();

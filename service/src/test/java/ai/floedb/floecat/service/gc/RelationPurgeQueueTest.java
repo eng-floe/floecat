@@ -89,6 +89,26 @@ class RelationPurgeQueueTest {
     assertEquals("ns+three", work.namespaceId());
   }
 
+  @Test
+  void removesOrphanedNamePointerWithoutWaitingForPointerGc() {
+    String account = "account";
+    String catalog = "catalog";
+    String namespace = "namespace";
+    String queueKey = Keys.relationPurgePointer(account, catalog, namespace);
+    String tableKey = Keys.tablePointerByName(account, catalog, namespace, "orphan");
+    ResourceId table = id(account, "table-id", ResourceKind.RK_TABLE);
+    put(queueKey, PointerReferences.opaqueMarkerPointer(queueKey, queueKey, 1L));
+    put(tableKey, PointerReferences.blobPointer(tableKey, "/table.pb", 1L, table, "table"));
+    when(queue.accounts.owns(account)).thenReturn(true);
+    when(queue.relations.deleteStranded(table, namespace)).thenReturn(false);
+
+    assertEquals(
+        new RelationPurgeQueue.Result(1, 1, 0),
+        queue.drain(System.currentTimeMillis() + 30_000L, 10));
+    assertFalse(pointers.get(queueKey).isPresent());
+    assertFalse(pointers.get(tableKey).isPresent());
+  }
+
   private void put(String key, ai.floedb.floecat.common.rpc.Pointer pointer) {
     org.junit.jupiter.api.Assertions.assertTrue(pointers.compareAndSet(key, 0L, pointer));
   }
