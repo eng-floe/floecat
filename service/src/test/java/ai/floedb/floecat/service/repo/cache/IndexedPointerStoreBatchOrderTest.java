@@ -21,6 +21,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -77,5 +79,28 @@ class IndexedPointerStoreBatchOrderTest {
     assertThat(order)
         .as("the removal must not land before the insertion it renames to")
         .containsExactly("publish " + newName, "remove " + oldName);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void aSingleUnfencedWriteUsesTheDurableSingleKeyCas() {
+    String key = Keys.relationPointerByName(ACCT, "cat", "ns", "table");
+    PlanningPointerIndex index = mock(PlanningPointerIndex.class);
+    when(index.mutateKeys(any(), any(), any()))
+        .thenAnswer(
+            call -> {
+              Object result = ((Supplier<Object>) call.getArgument(1)).get();
+              ((Consumer<Object>) call.getArgument(2)).accept(result);
+              return result;
+            });
+    var durable = mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+    Pointer next = Pointer.newBuilder().setKey(key).build();
+    when(durable.compareAndSet(key, 0L, next)).thenReturn(true);
+    var subject = new IndexedPointerStore(durable, index);
+
+    assertThat(subject.compareAndSet(key, 0L, next)).isTrue();
+
+    verify(durable).compareAndSet(key, 0L, next);
+    verify(durable, never()).compareAndSetBatch(any());
   }
 }

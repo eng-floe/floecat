@@ -52,6 +52,7 @@ public final class TableWriteFence {
   public static Set<String> tableRowsRequiringChecks(
       List<? extends PointerStore.CasOp> operations) {
     Set<String> writtenRows = new LinkedHashSet<>();
+    Set<String> deletedRows = new LinkedHashSet<>();
     Set<String> existingChecks = new LinkedHashSet<>();
     Set<String> touchedRows = new LinkedHashSet<>();
     if (operations == null) {
@@ -63,6 +64,8 @@ public final class TableWriteFence {
         if (operation instanceof PointerStore.CasUpsert
             || operation instanceof PointerStore.UnconditionalUpsert) {
           writtenRows.add(operationRow);
+        } else if (operation instanceof PointerStore.CasDelete) {
+          deletedRows.add(operationRow);
         } else if (operation instanceof PointerStore.CasCheck) {
           existingChecks.add(operationRow);
         }
@@ -78,6 +81,13 @@ public final class TableWriteFence {
           collectTouchedRow(upsert.next().getBlobUri(), touchedRows);
         }
       }
+    }
+    Set<String> deletedAndTouched = new LinkedHashSet<>(touchedRows);
+    deletedAndTouched.retainAll(deletedRows);
+    if (!deletedAndTouched.isEmpty()) {
+      throw new IllegalArgumentException(
+          "a batch cannot delete a table row and write table-scoped state: "
+              + deletedAndTouched.iterator().next());
     }
     touchedRows.removeAll(writtenRows);
     touchedRows.removeAll(existingChecks);

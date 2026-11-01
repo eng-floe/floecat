@@ -8,6 +8,7 @@ package ai.floedb.floecat.service.repo.util;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -63,6 +64,20 @@ class TableWriteFenceTest {
 
     assertTrue(fenced.writable());
     assertEquals(operations, fenced.operations());
+  }
+
+  @Test
+  void deletingTableRowCannotAlsoWriteTableScopedState() {
+    String row = Keys.tablePointerById("account", "table");
+    String artifact = Keys.snapshotPointerById("account", "table", 7L);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            TableWriteFence.tableRowsRequiringChecks(
+                List.of(
+                    new PointerStore.CasDelete(row, 1L),
+                    new PointerStore.CasUpsert(artifact, 0L, pointer(artifact)))));
   }
 
   @Test

@@ -102,7 +102,17 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-    var fenced = TableWriteFence.fence(durable, List.of(new CasUpsert(key, expectedVersion, next)));
+    List<CasOp> operation = List.of(new CasUpsert(key, expectedVersion, next));
+    if (TableWriteFence.tableRowsRequiringChecks(operation).isEmpty()) {
+      return index.mutateKeys(
+          List.of(key),
+          () -> durable.compareAndSet(key, expectedVersion, next),
+          won -> {
+            if (won) publish(key, next, expectedVersion + 1L);
+            else index.refresh(key, durable.getConsistent(key));
+          });
+    }
+    var fenced = TableWriteFence.fence(durable, operation);
     if (!fenced.writable()) return false;
     return index.mutateKeys(
         List.of(key),
