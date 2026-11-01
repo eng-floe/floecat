@@ -2473,7 +2473,7 @@ standing between it and a concurrent delete.</p>
 <h3 id="cascading-deletion">Cascading Deletion<a class="headerlink" href="#cascading-deletion" title="Permanent link">&para;</a></h3>
 <p><code>DeleteCatalog</code> and <code>DeleteNamespace</code> take <code>cascade</code>. Without it a non-empty target is a conflict, as
 above. With it the RPC deletes only the rows that give relations their place in the tree, and leaves
-the relations to GC, so its cost grows with the number of namespaces rather than tables
+the relations to a durable GC queue, so its cost grows with the number of namespaces rather than tables
 (<code>CascadeDeletion</code>):</p>
 <ol>
 <li>The caller's precondition is checked against the target before anything is deleted.</li>
@@ -2485,7 +2485,9 @@ the relations to GC, so its cost grows with the number of namespaces rather than
 <li>Every namespace in the captured subtree is fenced before any of those rows are removed, then
    deleted deepest first under its shape markers and the same no-child check as a plain delete, but
    without the relation check. Each namespace fence is removed atomically with its row.</li>
-<li>The target row, its shape markers, and its deletion fence are removed atomically.</li>
+<li>Each namespace deletion atomically publishes a durable relation-purge work item with removing
+   the namespace row. The target row, its shape markers, and its deletion fence are removed
+   atomically.</li>
 </ol>
 <p><code>CascadeDeletion</code> is the transactional driver for both catalog and namespace cascades;
 <code>CatalogIntegrationCascadeDeletion</code> applies the same fence/work/final-transaction workflow to
@@ -2497,9 +2499,10 @@ purge queue because its account row is removed before cleanup begins.</p>
 the durable fences. If the RPC crashes or exhausts its retry budget, the fences remain and a later
 call resumes the same deletion. A child that committed before its parent was fenced is discovered by
 the next pass; it cannot extend further after that parent fence is installed.</p>
-<p>A relation whose namespace is gone no longer resolves (<code>MetaGraph.resolve</code>), and <code>PointerGc</code>
-deletes it — row, snapshot, stats, root and hint pointers — on its next pass over the account's
-relation name keys. <code>CasBlobGc</code> then reclaims its blobs. A cascade requires <code>table.write</code> and
+<p>A relation whose namespace is gone no longer resolves (<code>MetaGraph.resolve</code>). The relation-purge
+queue scans only that namespace's table and view name indexes and deletes each relation — row,
+snapshot, stats, root and hint pointers — before acknowledging the work item. <code>CasBlobGc</code> then
+reclaims its blobs. A cascade requires <code>table.write</code> and
 <code>view.write</code> in addition to the target's own write permission.</p>
 <h3 id="security-and-context">Security and Context<a class="headerlink" href="#security-and-context" title="Permanent link">&para;</a></h3>
 <p><code>InboundContextInterceptor</code> reads <code>x-query-id</code>, <code>x-engine-kind</code>, <code>x-engine-version</code>,
@@ -2585,10 +2588,12 @@ abandoned after <code>floecat.gc.cas.max-consecutive-continuation-ticks</code> s
 account; raise that bound if the oldest-sweep-age metric shows a large account repeatedly restarting.
 Snapshot compatibility artifacts under <code>snapshots/&lt;id&gt;/compat/</code> are gateway-managed mutable
 artifacts, not CAS objects, and remain owned by explicit snapshot/table lifecycle cleanup rather
-than this CAS sweep. <code>PointerGcScheduler</code> also drains <code>AccountPurge</code>: only the replica that owns a
-fenced account first revokes its credentials, then removes its reconcile jobs, account-scoped
-pointers and blobs, evicts its caches, and acknowledges the durable purge entry. <code>PointerGc</code> removes
-orphan/stale pointers, and relations stranded by a cascading delete (see Cascading Deletion). <code>TransactionGc</code> reaps expired/aborted transaction artifacts and dangling
+than this CAS sweep. <code>PointerGcScheduler</code> runs the durable deletion queues every minute with their
+own 30-second budget, separate from the pointer-hygiene budget. Only the replica that owns a fenced
+account first revokes its credentials, then removes its reconcile jobs, account-scoped pointers and
+blobs, evicts its caches, and acknowledges the durable purge entry. Namespace relation purges use
+their exact catalog and namespace name-index prefixes. <code>PointerGc</code> removes other orphan/stale
+pointers. <code>TransactionGc</code> reaps expired/aborted transaction artifacts and dangling
 intent indices. <code>ReconcileJobGc</code> enforces durable reconcile retention and queue/dedupe cleanup for
 terminal jobs. The default finished reconcile-job retention window is 24 h
 (<code>floecat.gc.reconcile-jobs.retention-ms=86400000</code>); older terminal jobs are removed from job-list
@@ -2694,6 +2699,10 @@ rows upserted after all batches have been consumed.</p>
 <tr>
 <td><code>floecat.gc.pointer.*</code></td>
 <td>Cadence, page size, min-age, tick slice settings for pointer GC.</td>
+</tr>
+<tr>
+<td><code>floecat.gc.deletion.*</code></td>
+<td>Cadence and independent tick budget for account, credential, and relation deletion queues.</td>
 </tr>
 <tr>
 <td><code>floecat.gc.reconcile-jobs.*</code></td>
