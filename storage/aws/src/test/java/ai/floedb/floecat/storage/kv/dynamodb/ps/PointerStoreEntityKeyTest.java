@@ -13,6 +13,22 @@ import org.junit.jupiter.api.Test;
 class PointerStoreEntityKeyTest {
 
   @Test
+  void accountPurgePointerUsesDedicatedPartition() {
+    var key = PointerStoreEntity._testKey("/account-purge/account");
+
+    assertEquals(PointerStoreEntity.ACCOUNT_PURGE_PK, key.partitionKey());
+    assertEquals("account-purge/account", key.sortKey());
+  }
+
+  @Test
+  void accountPurgePrefixUsesDedicatedPartition() {
+    var key = PointerStoreEntity.prefixKey("/account-purge/");
+
+    assertEquals(PointerStoreEntity.ACCOUNT_PURGE_PK, key.partitionKey());
+    assertEquals("account-purge/", key.sortKey());
+  }
+
+  @Test
   void credentialCleanupPointerUsesDedicatedPartition() {
     var key =
         PointerStoreEntity._testKey(

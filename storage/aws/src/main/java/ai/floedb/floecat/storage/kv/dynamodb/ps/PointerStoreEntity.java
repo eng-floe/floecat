@@ -62,6 +62,8 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
 
   static final String KIND_POINTER = "Pointer";
   static final String GLOBAL_PK = "_ACCOUNT_DIR";
+  static final String ACCOUNT_PURGE_PK = "_ACCOUNT_PURGE";
+  static final String ACCOUNT_PURGE_PREFIX = "account-purge/";
   static final String CREDENTIAL_CLEANUP_PK = "_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP";
   static final String CREDENTIAL_CLEANUP_PREFIX = "catalog-integration-credential-cleanup/";
   static final String ATTR_BLOB_URI = "blob_uri";
@@ -91,6 +93,9 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     String fencePrefix = stripLeadingSlash(PointerStoreKeys.ACCOUNT_DELETION_FENCE_PREFIX);
     if (k.startsWith(fencePrefix)) {
       return accountDeletionFenceKey(k, fencePrefix);
+    }
+    if (k.startsWith(ACCOUNT_PURGE_PREFIX)) {
+      return new KvStore.Key(ACCOUNT_PURGE_PK, k);
     }
     if (k.startsWith(CREDENTIAL_CLEANUP_PREFIX)) {
       return new KvStore.Key(CREDENTIAL_CLEANUP_PK, k);
@@ -128,6 +133,9 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     String fencePrefix = stripLeadingSlash(PointerStoreKeys.ACCOUNT_DELETION_FENCE_PREFIX);
     if (p.startsWith(fencePrefix)) {
       return accountDeletionFenceKey(p, fencePrefix);
+    }
+    if (p.equals("account-purge") || p.startsWith(ACCOUNT_PURGE_PREFIX)) {
+      return new KvStore.Key(ACCOUNT_PURGE_PK, p);
     }
     if (p.equals("catalog-integration-credential-cleanup")
         || p.startsWith(CREDENTIAL_CLEANUP_PREFIX)) {
