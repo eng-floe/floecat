@@ -14,7 +14,6 @@ import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
-import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -38,7 +37,6 @@ public class AccountPurge {
   @Inject HintCache hints;
   @Inject BlobCacheAccess blobs;
   @Inject OwnedAccounts accounts;
-  @Inject AccountRepository accountRepository;
   @Inject AccountCredentialCleanup credentialCleanup;
 
   public record Result(int scanned, int purged) {}
@@ -71,7 +69,7 @@ public class AccountPurge {
                 .setId(accountId)
                 .setKind(ResourceKind.RK_ACCOUNT)
                 .build();
-        if (accountRepository.getById(id).isPresent()) continue;
+        if (accounts.getById(id).isPresent()) continue;
         try {
           purge(accountId);
           if (pointerStore.compareAndDelete(entry.getKey(), entry.getVersion())) purged++;

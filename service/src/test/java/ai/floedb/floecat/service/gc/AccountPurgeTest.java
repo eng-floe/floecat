@@ -23,7 +23,6 @@ import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
-import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -55,7 +54,6 @@ class AccountPurgeTest {
     purge.hints = mock(HintCache.class);
     purge.blobs = mock(BlobCacheAccess.class);
     purge.accounts = mock(OwnedAccounts.class);
-    purge.accountRepository = mock(AccountRepository.class);
     purge.credentialCleanup = mock(AccountCredentialCleanup.class);
   }
 
@@ -112,7 +110,7 @@ class AccountPurgeTest {
             .setId("acct")
             .setKind(ResourceKind.RK_ACCOUNT)
             .build();
-    when(purge.accountRepository.getById(id))
+    when(purge.accounts.getById(id))
         .thenReturn(java.util.Optional.of(Account.newBuilder().setResourceId(id).build()));
 
     assertEquals(
