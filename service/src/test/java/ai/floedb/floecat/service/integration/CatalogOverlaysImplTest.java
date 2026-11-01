@@ -758,7 +758,7 @@ class CatalogOverlaysImplTest {
   }
 
   @Test
-  void ownedDeleteRequiresCatalogWritePermission() {
+  void ownedDeleteRequiresEveryCatalogCascadePermissionBeforeFencing() {
     service.authz = new Authorizer();
     when(service.principal.get())
         .thenReturn(
@@ -766,6 +766,9 @@ class CatalogOverlaysImplTest {
                 .setAccountId("acct")
                 .setCorrelationId("corr")
                 .addPermissions("catalog-overlay.delete")
+                .addPermissions("catalog.write")
+                .addPermissions("table.write")
+                .addPermissions("view.write")
                 .build());
     var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
     var current =

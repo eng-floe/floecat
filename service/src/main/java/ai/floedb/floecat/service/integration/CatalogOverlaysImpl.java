@@ -38,6 +38,7 @@ import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayResponse;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.catalog.impl.CatalogCascadeAuthorization;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -441,8 +442,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
       boolean deletesOwnedCatalog =
           current.value().getOwnsCatalog() && !oldCatalogId.equals(catalogId);
       if (deletesOwnedCatalog) {
-        authz.require(principal.get(), "table.write");
-        authz.require(principal.get(), "view.write");
+        CatalogCascadeAuthorization.require(authz, principal.get());
         lifecycle.preflightOwnedCatalogRemoval(current.value(), corr);
       }
       var replacementFence =
@@ -711,9 +711,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                   MutationOps.BaseServiceChecks.enforcePreconditions(
                       corr, meta, request.getPrecondition());
                   if (current.get().value().getOwnsCatalog()) {
-                    authz.require(pc, RolePermissions.CATALOG_WRITE);
-                    authz.require(pc, "table.write");
-                    authz.require(pc, "view.write");
+                    CatalogCascadeAuthorization.require(authz, pc);
                     lifecycle.preflightOwnedCatalogRemoval(current.get().value(), corr);
                   }
                   var deletionFence =
