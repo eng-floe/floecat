@@ -18,7 +18,9 @@ package ai.floedb.floecat.service.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -502,6 +504,95 @@ class TransactionIntentApplierSupportTest {
                     .orElseThrow()
                     .getBlobUri())
             .getState());
+  }
+
+  @Test
+  void applyTransactionAtomicallyReportsCommittedWhenPostCommitPurgeFails() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var txRepo = new TransactionRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    var relationPurge = mock(RelationPurge.class);
+    inject(support, "relationPurge", relationPurge);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String tableId = "123e4567-e89b-12d3-a456-426614174000";
+    ResourceId tableResourceId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId(tableId)
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    String tableBlob = "/accounts/acct/tables/" + tableId + "/table/blob.pb";
+    String byIdKey = Keys.tablePointerById(accountId, tableId);
+    String byNameKey = Keys.tablePointerByName(accountId, "cat-1", "ns-1", "orders");
+    seedNamespace(pointers, accountId, "ns-1");
+
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableResourceId)
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId("cat-1")
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId("ns-1")
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName("orders")
+            .build();
+    blobs.put(tableBlob, table.toByteArray(), "application/x-protobuf");
+    pointers.compareAndSet(byIdKey, 0L, PointerReferences.blobPointer(byIdKey, tableBlob, 1L));
+    pointers.compareAndSet(byNameKey, 0L, PointerReferences.blobPointer(byNameKey, tableBlob, 1L));
+
+    Transaction currentTxn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_APPLYING)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    txRepo.create(currentTxn);
+    long txPointerVersion = txRepo.metaFor(accountId, txId).getPointerVersion();
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(Keys.transactionDeleteSentinelUri(accountId, txId, byIdKey))
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    intentRepo.create(intent);
+    doThrow(new IllegalStateException("storage unavailable"))
+        .when(relationPurge)
+        .purgeTableState(tableResourceId);
+
+    Transaction appliedTxn =
+        currentTxn.toBuilder()
+            .setState(TransactionState.TS_APPLIED)
+            .setUpdatedAt(Timestamps.fromMillis(10))
+            .build();
+    var outcome =
+        support.applyTransactionAtomically(
+            appliedTxn, txPointerVersion, List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertTrue(pointers.get(byIdKey).isEmpty(), "table delete should remain committed");
+    assertEquals(
+        TransactionState.TS_APPLIED,
+        readTransaction(
+                blobs,
+                pointers
+                    .get(Keys.transactionPointerById(accountId, txId))
+                    .orElseThrow()
+                    .getBlobUri())
+            .getState());
+    verify(relationPurge).purgeTableState(tableResourceId);
   }
 
   @Test

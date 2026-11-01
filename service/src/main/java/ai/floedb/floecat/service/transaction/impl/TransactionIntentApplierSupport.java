@@ -432,12 +432,24 @@ public class TransactionIntentApplierSupport {
               .equals(intent.getTargetPointerKey())) {
         continue;
       }
-      relationPurge.purgeTableState(
-          ResourceId.newBuilder()
-              .setAccountId(intent.getAccountId())
-              .setKind(ResourceKind.RK_TABLE)
-              .setId(tableId)
-              .build());
+      try {
+        relationPurge.purgeTableState(
+            ResourceId.newBuilder()
+                .setAccountId(intent.getAccountId())
+                .setKind(ResourceKind.RK_TABLE)
+                .setId(tableId)
+                .build());
+      } catch (RuntimeException purgeFailure) {
+        // The pointer batch has already committed, and the atomic path has also made the
+        // transaction terminal. Report the committed outcome rather than inviting a retry that
+        // cannot re-run this post-commit cleanup.
+        LOG.errorf(
+            purgeFailure,
+            "transaction_table_purge_failed account_id=%s table_id=%s tx_id=%s",
+            intent.getAccountId(),
+            tableId,
+            intent.getTxId());
+      }
     }
   }
 
