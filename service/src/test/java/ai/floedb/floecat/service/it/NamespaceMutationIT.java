@@ -223,7 +223,6 @@ class NamespaceMutationIT {
                 namespace.deleteNamespace(
                     DeleteNamespaceRequest.newBuilder()
                         .setNamespaceId(nsId)
-                        .setRequireEmpty(true)
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(before.getPointerVersion()) // stale
@@ -245,7 +244,6 @@ class NamespaceMutationIT {
                 namespace.deleteNamespace(
                     DeleteNamespaceRequest.newBuilder()
                         .setNamespaceId(nsId)
-                        .setRequireEmpty(true)
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(m3.getPointerVersion())
@@ -264,7 +262,6 @@ class NamespaceMutationIT {
         namespace.deleteNamespace(
             DeleteNamespaceRequest.newBuilder()
                 .setNamespaceId(nsId)
-                .setRequireEmpty(true)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(m3.getPointerVersion())

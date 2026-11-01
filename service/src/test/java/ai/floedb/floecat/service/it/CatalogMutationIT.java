@@ -306,7 +306,6 @@ class CatalogMutationIT {
         catalog.deleteCatalog(
             DeleteCatalogRequest.newBuilder()
                 .setCatalogId(id)
-                .setRequireEmpty(true)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(m2.getPointerVersion())

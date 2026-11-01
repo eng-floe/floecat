@@ -48,6 +48,7 @@ public class PointerGcScheduler {
   @Inject Provider<TablePurgeQueue> tablePurges;
 
   @Inject Provider<CatalogIntegrationCredentialCleanup> credentialCleanup;
+  @Inject Provider<AccountPurge> accountPurge;
 
   @Inject Observability observability;
 
@@ -92,13 +93,15 @@ public class PointerGcScheduler {
 
     final OwnedAccounts accountRepo;
     final PointerGc gc;
-    final TablePurgeQueue purges;
+    final TablePurgeQueue tablePurgeQueue;
     final CatalogIntegrationCredentialCleanup credentials;
+    final AccountPurge accountPurgeQueue;
     try {
       accountRepo = accounts.get();
       gc = pointerGc.get();
-      purges = tablePurges.get();
+      tablePurgeQueue = tablePurges.get();
       credentials = credentialCleanup.get();
+      accountPurgeQueue = accountPurge.get();
     } catch (Throwable ignored) {
       return;
     }
@@ -150,7 +153,7 @@ public class PointerGcScheduler {
         // Ahead of the pointer sweep, so purges do not starve behind its blob probes; bounded by
         // purgeDeadline, so a large table's purge does not starve the sweep either.
         TablePurgeQueue.Result purged =
-            purges.drainAccount(accountId, purgeDeadline, pointerPageSize);
+            tablePurgeQueue.drainAccount(accountId, purgeDeadline, pointerPageSize);
         gcMetrics.recordCollection(
             purged.purged(), Tag.of(TagKey.RESULT, "table-purges-completed"));
         PointerGc.Result result = gc.runForAccount(accountId, deadline);
@@ -169,6 +172,12 @@ public class PointerGcScheduler {
           credentialResult.scanned(), Tag.of(TagKey.RESULT, "credential-scanned"));
       gcMetrics.recordCollection(
           credentialResult.deleted(), Tag.of(TagKey.RESULT, "credential-deleted"));
+
+      var purgeResult = accountPurgeQueue.drain(deadline, pointerPageSize);
+      gcMetrics.recordCollection(
+          purgeResult.scanned(), Tag.of(TagKey.RESULT, "account-purge-scanned"));
+      gcMetrics.recordCollection(
+          purgeResult.purged(), Tag.of(TagKey.RESULT, "account-purge-purged"));
 
       var globalResult = gc.runGlobalAccountPointers(deadline);
       gcMetrics.recordCollection(globalResult.scanned(), Tag.of(TagKey.RESULT, "global-scanned"));

@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
+import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -72,6 +73,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject MarkerStore markerStore;
+  @Inject CascadeDeletion cascadeDeletion;
   @Inject CatalogGraphView graphView;
 
   private static final Set<String> CATALOG_MUTABLE_PATHS =
@@ -278,6 +280,12 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var meta = catalogRepo.metaFor(catalogId);
                   MutationOps.BaseServiceChecks.enforcePreconditions(
                       corr, meta, request.getPrecondition());
+                  if (catalogRepo.cascadeDeletionInProgress(catalogId)) {
+                    throw GrpcErrors.conflict(
+                        corr,
+                        CATALOG_DELETION_IN_PROGRESS,
+                        Map.of("reason", "cascade deletion in progress; retry with cascade"));
+                  }
 
                   var current =
                       catalogRepo
@@ -358,11 +366,14 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var principalContext = principal.get();
                   var correlationId = principalContext.getCorrelationId();
                   authz.require(principalContext, "catalog.write");
+                  boolean cascade = request.getCascade();
+                  if (cascade) {
+                    authz.require(principalContext, "namespace.write");
+                    authz.require(principalContext, "table.write");
+                    authz.require(principalContext, "view.write");
+                  }
                   var id = request.getCatalogId();
                   catalogSurfaceWritePolicy().requireDeletableCatalog(id, correlationId);
-
-                  // Sampled before the emptiness checks below -- see catalogChildSetMarkers.
-                  var childSetMarkers = markerStore.catalogChildSetMarkers(id);
 
                   MutationMeta meta;
                   try {
@@ -377,6 +388,28 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                         correlationId, safe, request.getPrecondition());
                     return DeleteCatalogResponse.newBuilder().setMeta(safe).build();
                   }
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      correlationId, meta, request.getPrecondition());
+
+                  if (cascade) {
+                    MutationMeta deleted =
+                        cascadeDeletion.deleteCatalog(
+                            id,
+                            meta,
+                            () ->
+                                authz.require(
+                                    principalContext, RolePermissions.CATALOG_OVERLAY_DELETE));
+                    return DeleteCatalogResponse.newBuilder().setMeta(deleted).build();
+                  }
+                  if (catalogRepo.cascadeDeletionInProgress(id)) {
+                    throw GrpcErrors.conflict(
+                        correlationId,
+                        CATALOG_DELETION_IN_PROGRESS,
+                        Map.of("reason", "cascade deletion in progress; retry with cascade"));
+                  }
+
+                  // Sampled before the emptiness checks below -- see catalogChildSetMarkers.
+                  var childSetMarkers = markerStore.catalogChildSetMarkers(id);
 
                   int dependentOverlays =
                       catalogOverlayRepo.countByCatalog(id.getAccountId(), id.getId());

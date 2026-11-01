@@ -78,9 +78,13 @@ message UpdateCatalogResponse {
 }
 
 message DeleteCatalogRequest {
+  reserved 2;
+  reserved "require_empty";
   ai.floedb.floecat.common.ResourceId catalog_id = 1;
-  bool require_empty = 2;
   ai.floedb.floecat.common.Precondition precondition = 3;
+  // Deletes the catalog's overlays and namespace tree with it. Without it a non-empty catalog is a
+  // conflict. Tables and views under the deleted namespaces are reclaimed by GC.
+  bool cascade = 4;
 }
 message DeleteCatalogResponse {
   ai.floedb.floecat.common.MutationMeta meta = 1;

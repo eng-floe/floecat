@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.account.rpc.Account;
@@ -45,6 +46,7 @@ class PointerGcSchedulerTest {
     RecordingTablePurges purges = new RecordingTablePurges();
     TestObservability observability = new TestObservability();
     PointerGcScheduler scheduler = new PointerGcScheduler();
+    AccountPurge purge = accountPurge();
     scheduler.accounts =
         () ->
             new OwnedAccounts(
@@ -62,6 +64,7 @@ class PointerGcSchedulerTest {
                 ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
     scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.tablePurges = () -> purges;
+    scheduler.accountPurge = () -> purge;
     scheduler.observability = observability;
     scheduler.initMeters();
 
@@ -73,6 +76,7 @@ class PointerGcSchedulerTest {
     }
 
     assertThat(gc.accountIds).containsExactlyInAnyOrder("acct-a", "acct-b", "acct-c");
+    verify(purge).drain(anyLong(), anyInt());
   }
 
   @Test
@@ -101,6 +105,7 @@ class PointerGcSchedulerTest {
                 ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
     scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.tablePurges = () -> purges;
+    scheduler.accountPurge = () -> accountPurge();
     scheduler.observability = observability;
     scheduler.initMeters();
 
@@ -144,6 +149,7 @@ class PointerGcSchedulerTest {
                 ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
     scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.tablePurges = () -> purges;
+    scheduler.accountPurge = () -> accountPurge();
     scheduler.observability = new TestObservability();
     scheduler.initMeters();
 
@@ -233,6 +239,12 @@ class PointerGcSchedulerTest {
     when(cleanup.drain(anyLong(), anyInt()))
         .thenReturn(new CatalogIntegrationCredentialCleanup.Result(0, 0));
     return cleanup;
+  }
+
+  private static AccountPurge accountPurge() {
+    AccountPurge purge = mock(AccountPurge.class);
+    when(purge.drain(anyLong(), anyInt())).thenReturn(new AccountPurge.Result(0, 0));
+    return purge;
   }
 
   private static final class RecordingPointerGc extends PointerGc {

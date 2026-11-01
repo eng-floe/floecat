@@ -84,6 +84,7 @@ class MetaGraphTest {
     system = mock(SystemGraph.class);
     hints = mock(HintCache.class);
     when(hints.attach(any(), any())).thenAnswer(call -> call.getArgument(0));
+    when(user.exists(any())).thenReturn(true);
 
     EngineContext engineContext = EngineContext.of("engine", "1");
     context = CatalogContext.of(EnvironmentContext.empty(), engineContext);

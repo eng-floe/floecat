@@ -295,6 +295,7 @@ public class CatalogOverlayReconciler {
           throw new BaseResourceRepository.AbortRetryableException(
               "View changed during Catalog Overlay retirement");
         }
+        relationPurge.purgeViewState(view.getResourceId());
       }
       if (!ownedBy(namespace.getPropertiesMap(), overlay)) continue;
       deleteNamespaceIfEmpty(namespace, PointerConditions.none());
@@ -756,6 +757,7 @@ public class CatalogOverlayReconciler {
       if (!views.deleteWhilePointersMatch(stale.getResourceId(), meta.getPointerVersion(), fence)) {
         throw lostFence();
       }
+      relationPurge.purgeViewState(stale.getResourceId());
       result.viewsDeleted++;
     }
   }
@@ -1224,8 +1226,8 @@ public class CatalogOverlayReconciler {
             != overlayMeta.getPointerVersion()
         || integrations.pointerMetaForSafe(integration.getResourceId()).getPointerVersion()
             != integrationMeta.getPointerVersion()
-        || overlays.deletionFenceVersion(overlay.getResourceId()) != 0L
-        || integrations.cascadeDeletionFenceVersion(integration.getResourceId()) != 0L) {
+        || overlays.deletionInProgress(overlay.getResourceId())
+        || integrations.cascadeDeletionInProgress(integration.getResourceId())) {
       throw lostFence();
     }
   }

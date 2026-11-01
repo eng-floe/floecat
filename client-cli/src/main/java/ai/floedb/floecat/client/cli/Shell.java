@@ -526,7 +526,7 @@ public class Shell implements Runnable {
          catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...]
          catalog get <display_name|id>
          catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...] [--etag <etag>]
-         catalog delete <display_name|id> [--require-empty] [--etag <etag>]
+         catalog delete <display_name|id> [--cascade] [--etag <etag>]
          namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--id <UUID>] [--prefix P] [--recursive]
          namespace create <catalog|catalog.ns[.ns...]> [--display <leaf>] [--path a.b[.c]] [--desc <text>] [--props k=v ...] [--policy <id>]
              # Examples:
@@ -540,7 +540,7 @@ public class Shell implements Runnable {
              [--policy <ref>] [--props k=v ...]
              [--path a.b[.c]] [--catalog <id|name>]
              [--etag <etag>]
-         namespace delete <id|fq> [--require-empty] [--etag <etag>]
+         namespace delete <id|fq> [--cascade] [--etag <etag>]
          tables <catalog.ns[.ns...][.prefix]>
          table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...]
              [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]

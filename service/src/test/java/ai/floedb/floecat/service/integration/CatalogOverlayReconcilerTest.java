@@ -280,6 +280,40 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void retiringOverlayPurgesTableAndViewStateThroughSharedCleanup() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    CatalogObjectName summary = new CatalogObjectName(sales, "summary");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "table-uuid"));
+    client.views.put(summary, catalogView(summary, "view-uuid"));
+
+    reconcile();
+
+    Namespace namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    ResourceId tableId =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow()
+            .getResourceId();
+    ResourceId viewId =
+        views
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "summary")
+            .orElseThrow()
+            .getResourceId();
+    clearInvocations(reconciler.relationPurge);
+
+    reconciler.retireMaterializedResources(overlay);
+
+    verify(reconciler.relationPurge).purgeTableState(tableId);
+    verify(reconciler.relationPurge).purgeViewState(viewId);
+    assertTrue(tables.getById(tableId).isEmpty());
+    assertTrue(views.getById(viewId).isEmpty());
+    assertTrue(listLocalNamespaces().isEmpty());
+  }
+
+  @Test
   void rejectsNonPositiveParallelLoadConfigurationAtStartup() {
     reconciler.maxParallelLoads = 0;
 

@@ -106,6 +106,7 @@ public class MarkerStore {
     }
     return childNamespacesFence(parent)
         .and(namespaceStillExistsFence(parent))
+        .and(namespaceNotDeletingFence(parent))
         .and(
             new PointerConditions(
                 Map.of(parentByPathKey, parentByPath.getVersion()), Set.of(), Map.of()));
@@ -141,6 +142,14 @@ public class MarkerStore {
         Keys.namespacePointerById(namespaceId.getAccountId(), namespaceId.getId()),
         ResourceKind.RK_NAMESPACE,
         namespaceId);
+  }
+
+  /** Refuses a descendant write after a durable namespace cascade has begun. */
+  public PointerConditions namespaceNotDeletingFence(ResourceId namespaceId) {
+    return new PointerConditions(
+        Map.of(),
+        Set.of(Keys.namespaceDeletionMarker(namespaceId.getAccountId(), namespaceId.getId())),
+        Map.of());
   }
 
   /**
@@ -194,7 +203,17 @@ public class MarkerStore {
    * post-delete version and matches it.
    */
   public PointerConditions catalogChildNamespacesFence(ResourceId catalogId) {
-    return fence(Keys::catalogChildrenMarker, catalogId).and(catalogStillExistsFence(catalogId));
+    return fence(Keys::catalogChildrenMarker, catalogId)
+        .and(catalogStillExistsFence(catalogId))
+        .and(catalogNotDeletingFence(catalogId));
+  }
+
+  /** Refuses a descendant write after a durable catalog cascade has begun. */
+  public PointerConditions catalogNotDeletingFence(ResourceId catalogId) {
+    return new PointerConditions(
+        Map.of(),
+        Set.of(Keys.catalogDeletionMarker(catalogId.getAccountId(), catalogId.getId())),
+        Map.of());
   }
 
   /**
@@ -308,7 +327,9 @@ public class MarkerStore {
    * version and matches it.
    */
   public PointerConditions relationCreateFence(ResourceId namespaceId) {
-    return relationsFence(namespaceId).and(namespaceStillExistsFence(namespaceId));
+    return relationsFence(namespaceId)
+        .and(namespaceStillExistsFence(namespaceId))
+        .and(namespaceNotDeletingFence(namespaceId));
   }
 
   private PointerConditions fence(

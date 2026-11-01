@@ -62,7 +62,8 @@ remains directly writable and retains its independent name and lifecycle. Overla
 conditioned on the current Integration and Catalog pointer versions and atomically publishes both
 dependency indexes while advancing fixed dependency markers. Integration and Catalog deletion
 check the strongly consistent indexes and matching markers, closing concurrent create/delete races.
-Account deletion removes overlays before integrations and catalogs.
+Account deletion fences every account-scoped writer, then an owner-local GC worker removes all
+account-scoped pointers in one prefix sweep; overlay dependency ordering is therefore unnecessary.
 
 ## Components
 

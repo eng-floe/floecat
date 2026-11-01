@@ -240,6 +240,16 @@ public final class UserGraph {
   }
 
   /**
+   * Whether the resource exists in the pointer view, without loading its node.
+   *
+   * <p>For an owned, warm account this is still an in-memory pointer-index lookup. The indexed
+   * store falls back to durable KV only when it cannot authoritatively answer for the account.
+   */
+  public boolean exists(ResourceId id) {
+    return nodes.mutationMeta(id).filter(meta -> meta.getPointerVersion() > 0L).isPresent();
+  }
+
+  /**
    * Resolves a catalog node by ID.
    *
    * @param id the catalog resource ID

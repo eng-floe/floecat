@@ -298,13 +298,13 @@ final class NamespaceCliSupport {
       }
       case "delete" -> {
         if (args.size() < 2) {
-          out.println("usage: namespace delete <id|fq> [--require-empty] [--etag <etag>]");
+          out.println("usage: namespace delete <id|fq> [--cascade] [--etag <etag>]");
           return;
         }
-        boolean requireEmpty = args.contains("--require-empty");
+        boolean cascade = args.contains("--cascade");
         ResourceId nsId = resolveNamespaceIdFlexible(args.get(1), directory, getCurrentAccountId);
         var deleteBuilder =
-            DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).setRequireEmpty(requireEmpty);
+            DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).setCascade(cascade);
         Precondition precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) {
           deleteBuilder.setPrecondition(precondition);

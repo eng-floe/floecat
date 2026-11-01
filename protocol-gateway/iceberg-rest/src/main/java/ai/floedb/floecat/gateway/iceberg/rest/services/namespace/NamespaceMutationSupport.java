@@ -73,10 +73,7 @@ public class NamespaceMutationSupport {
 
   public Response delete(NamespaceRef namespaceContext) {
     namespaceClient.deleteNamespace(
-        DeleteNamespaceRequest.newBuilder()
-            .setNamespaceId(namespaceContext.namespaceId())
-            .setRequireEmpty(true)
-            .build());
+        DeleteNamespaceRequest.newBuilder().setNamespaceId(namespaceContext.namespaceId()).build());
     return Response.noContent().build();
   }
 }

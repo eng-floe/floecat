@@ -24,12 +24,16 @@ import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -150,6 +154,39 @@ class NamespaceRepositoryTest {
     assertFalse(
         namespaceRepo.hasDescendants(account, catRid.getId(), List.of("iceberg")),
         "iceberg2 is a sibling, not a child -- the prefix must stop at a separator");
+  }
+
+  @Test
+  void cascadeFenceBlocksUpdatesAndIsRemovedWithTheNamespace() {
+    String account = "acct-cascade";
+    var catRid = rid(account, ResourceKind.RK_CATALOG);
+    catalogRepo.create(
+        Catalog.newBuilder().setResourceId(catRid).setDisplayName("examples").build());
+    Namespace namespace = namespaceAt(account, catRid, "root", List.of());
+    namespaceRepo.create(namespace);
+    ResourceId namespaceId = namespace.getResourceId();
+
+    var installed = namespaceRepo.acquireCascadeDeletionFence(namespaceId, 1L).orElseThrow();
+    assertTrue(installed.newlyInstalled());
+    var resumed = namespaceRepo.acquireCascadeDeletionFence(namespaceId, 1L).orElseThrow();
+    assertFalse(resumed.newlyInstalled(), "acquire is resumable");
+    assertEquals(installed.version(), resumed.version());
+    assertTrue(
+        namespaceRepo
+            .updateWhilePointersMatch(
+                namespace.toBuilder().setDescription("late").build(),
+                1L,
+                GenericResourceRepository.PointerConditions.none())
+            .isEmpty());
+
+    var markers =
+        new MarkerStore.MarkerRemoval(GenericResourceRepository.PointerConditions.none(), Map.of());
+    assertFalse(
+        namespaceRepo.deleteWhileShapeUnchanged(namespaceId, 1L, markers),
+        "the non-cascade path cannot strand the durable fence");
+    assertTrue(namespaceRepo.deleteForCascade(namespaceId, 1L, resumed.version(), markers));
+    assertTrue(namespaceRepo.getById(namespaceId).isEmpty());
+    assertTrue(ptr.get(Keys.namespaceDeletionMarker(account, namespaceId.getId())).isEmpty());
   }
 
   private static ResourceId rid(String account, ResourceKind kind) {

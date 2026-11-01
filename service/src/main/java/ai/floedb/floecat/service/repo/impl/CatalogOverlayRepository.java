@@ -13,9 +13,8 @@ import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.CatalogOverlayKey;
 import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
-import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
+import ai.floedb.floecat.service.repo.util.DurableDeletionFence;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta;
@@ -105,29 +104,18 @@ public class CatalogOverlayRepository {
         companions);
   }
 
-  public boolean beginDeletion(ResourceId overlayId, long expectedPointerVersion) {
-    if (expectedPointerVersion <= 0L) return false;
-    String canonical = Keys.catalogOverlayPointerById(overlayId.getAccountId(), overlayId.getId());
-    String fence = Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId());
-    if (pointerStore.get(fence).isPresent()) {
-      return pointerStore
-          .get(canonical)
-          .map(pointer -> pointer.getVersion() == expectedPointerVersion)
-          .orElse(false);
-    }
-    return pointerStore.compareAndSetBatch(
-        List.of(
-            new PointerStore.CasCheck(canonical, expectedPointerVersion),
-            AccountDeletionFence.checkForAccountWrite(overlayId.getAccountId(), fence),
-            new PointerStore.CasUpsert(
-                fence, 0L, PointerReferences.opaqueMarkerPointer(fence, fence, 1L))));
+  public Optional<DurableDeletionFence.Fence> acquireDeletionFence(
+      ResourceId overlayId, long expectedPointerVersion) {
+    return DurableDeletionFence.acquire(
+        pointerStore,
+        overlayId.getAccountId(),
+        Keys.catalogOverlayPointerById(overlayId.getAccountId(), overlayId.getId()),
+        Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId()),
+        expectedPointerVersion);
   }
 
-  public long deletionFenceVersion(ResourceId overlayId) {
-    return pointerStore
-        .get(Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId()))
-        .map(ai.floedb.floecat.common.rpc.Pointer::getVersion)
-        .orElse(0L);
+  public boolean deletionInProgress(ResourceId overlayId) {
+    return deletionFenceVersion(overlayId) != 0L;
   }
 
   /** Removes the Overlay, both dependency pointers, and its deletion fence atomically. */
@@ -284,5 +272,12 @@ public class CatalogOverlayRepository {
 
   private static CatalogOverlayKey key(ResourceId id) {
     return new CatalogOverlayKey(id.getAccountId(), id.getId());
+  }
+
+  private long deletionFenceVersion(ResourceId overlayId) {
+    return pointerStore
+        .get(Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId()))
+        .map(ai.floedb.floecat.common.rpc.Pointer::getVersion)
+        .orElse(0L);
   }
 }

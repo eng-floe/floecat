@@ -18,9 +18,13 @@ package ai.floedb.floecat.service.catalog.impl;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.common.ResourceIds;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -28,7 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
-/** Removes a relation's state outside its resource row. */
+/** Removes a relation's state outside its row, and relations a cascading delete stranded. */
 @ApplicationScoped
 public class RelationPurge {
   // One slot of the atomic batch goes to the fence check.
@@ -37,6 +41,8 @@ public class RelationPurge {
   static final int INLINE_BATCH_BUDGET = 8;
   private static final int MAX_STALLED_BATCHES = 3;
 
+  @Inject TableRepository tables;
+  @Inject ViewRepository views;
   @Inject PointerStore pointerStore;
   @Inject HintCache hints;
 
@@ -181,5 +187,51 @@ public class RelationPurge {
     if (tableId == null || !ResourceIds.isCanonicalUuid(tableId.getId())) {
       throw new IllegalArgumentException("table id must be a canonical UUID");
     }
+  }
+
+  /** Deletes a view's persisted and resident hints after its row has been removed. */
+  public void purgeViewState(ResourceId viewId) {
+    hints.deleteRelation(viewId);
+  }
+
+  /**
+   * Deletes a relation whose namespace a cascading delete removed.
+   *
+   * <p>The version is read before the row, and the delete is conditioned on it, so a relation moved
+   * out of the namespace after this looked is left alone: either the row read already shows it
+   * elsewhere, or the move costs the delete its CAS. The row goes before its state, matching a
+   * direct table delete.
+   *
+   * @return whether this call deleted the row
+   */
+  public boolean deleteStranded(ResourceId relationId, String namespaceId) {
+    if (relationId.getKind() == ResourceKind.RK_VIEW) {
+      long version = views.pointerMetaForSafeConsistent(relationId).getPointerVersion();
+      boolean stranded =
+          version != 0L
+              && views
+                  .getById(relationId)
+                  .filter(view -> view.getNamespaceId().getId().equals(namespaceId))
+                  .isPresent();
+      if (!stranded
+          || !views.deleteWhilePointersMatch(relationId, version, PointerConditions.none())) {
+        return false;
+      }
+      purgeViewState(relationId);
+      return true;
+    }
+    long version = tables.pointerMetaForSafeConsistent(relationId).getPointerVersion();
+    boolean stranded =
+        version != 0L
+            && tables
+                .getByIdConsistent(relationId)
+                .filter(table -> table.getNamespaceId().getId().equals(namespaceId))
+                .isPresent();
+    if (!stranded
+        || !tables.deleteWhilePointersMatch(relationId, version, PointerConditions.none())) {
+      return false;
+    }
+    purgeTableState(relationId);
+    return true;
   }
 }

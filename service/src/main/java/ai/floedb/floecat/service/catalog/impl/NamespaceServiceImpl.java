@@ -30,6 +30,7 @@ import ai.floedb.floecat.catalog.rpc.NamespaceService;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceResponse;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
@@ -77,6 +78,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject MarkerStore markerStore;
+  @Inject CascadeDeletion cascadeDeletion;
 
   // The graph view gives access to system namespaces (and other system objects).
   @Inject CatalogGraphView graphView;
@@ -397,6 +399,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var meta = namespaceRepo.metaFor(nsId);
                   MutationOps.BaseServiceChecks.enforcePreconditions(
                       corr, meta, request.getPrecondition());
+                  if (namespaceRepo.cascadeDeletionInProgress(nsId)) {
+                    throw GrpcErrors.conflict(
+                        corr,
+                        GeneratedErrorMessages.MessageKey.NAMESPACE_DELETION_IN_PROGRESS,
+                        Map.of("reason", "cascade deletion in progress; retry with cascade"));
+                  }
 
                   var current =
                       namespaceRepo
@@ -504,6 +512,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var princ = principal.get();
                   var correlationId = princ.getCorrelationId();
                   authz.require(princ, "namespace.write");
+                  boolean cascade = request.getCascade();
+                  if (cascade) {
+                    authz.require(princ, "table.write");
+                    authz.require(princ, "view.write");
+                  }
 
                   var namespaceId = request.getNamespaceId();
                   catalogSurfaceWritePolicy().requireDeletableNamespace(namespaceId, correlationId);
@@ -528,6 +541,21 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
                   }
 
+                  var parentPath = append(namespace.getParentsList(), namespace.getDisplayName());
+                  var meta = namespaceRepo.metaFor(namespaceId);
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      correlationId, meta, request.getPrecondition());
+                  if (cascade) {
+                    MutationMeta deleted = cascadeDeletion.deleteNamespace(namespace, meta);
+                    return DeleteNamespaceResponse.newBuilder().setMeta(deleted).build();
+                  }
+                  if (namespaceRepo.cascadeDeletionInProgress(namespaceId)) {
+                    throw GrpcErrors.conflict(
+                        correlationId,
+                        GeneratedErrorMessages.MessageKey.NAMESPACE_DELETION_IN_PROGRESS,
+                        Map.of("reason", "cascade deletion in progress; retry with cascade"));
+                  }
+
                   // Sampled BEFORE the checks below. A version read after them is the version a
                   // concurrent write already moved, so the CAS would confirm that write instead of
                   // losing to it -- the window this is here to close.
@@ -542,13 +570,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   // in its own batch -- the services, the reconciler, and the transaction applier.
                   // So anything appearing after these checks loses that CAS, or costs this delete
                   // its own; a second check before the commit would narrow nothing.
-                  var parentPath = append(namespace.getParentsList(), namespace.getDisplayName());
                   if (namespaceRepo.hasDescendants(
                       catalogId.getAccountId(), catalogId.getId(), parentPath)) {
                     throw namespaceNotEmpty(correlationId, namespace);
                   }
 
-                  var meta =
+                  var deleted =
                       MutationOps.deleteWithPreconditions(
                           () -> namespaceRepo.metaFor(namespaceId),
                           request.getPrecondition(),
@@ -560,7 +587,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           "namespace",
                           Map.of("id", namespaceId.getId()));
 
-                  return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
+                  return DeleteNamespaceResponse.newBuilder().setMeta(deleted).build();
                 }),
             correlationId())
         .onFailure()

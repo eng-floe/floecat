@@ -83,11 +83,15 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/by-name/{account_name}
 /accounts/{account_id}
 /accounts/{account_id}/deleting
+/account-purge/{account_id}
+/catalog-integration-credential-cleanup/{account_id}/{integration_id}/{credential_generation}
 /accounts/{account_id}/catalogs/by-id/{catalog_id}
 /accounts/{account_id}/catalogs/by-name/{catalog_name}
+/accounts/{account_id}/catalogs/deleting/{catalog_id}
 /accounts/{account_id}/storage-authorities/by-id/{authority_id}
 /accounts/{account_id}/storage-authorities/by-name/{authority_name}
 /accounts/{account_id}/namespaces/by-id/{namespace_id}
+/accounts/{account_id}/namespaces/deleting/{namespace_id}
 /accounts/{account_id}/catalogs/{catalog_id}/namespaces/by-path/{path...}
 /accounts/{account_id}/tables/by-id/{table_id}
 /accounts/{account_id}/catalogs/{catalog_id}/namespaces/{namespace_id}/tables/by-name/{table_name}
@@ -117,6 +121,11 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/{account_id}/tables/{table_id}/owner-reuse-leases/{publication_id}
 /accounts/{account_id}/tables/{table_id}/owner-publication-progress/{publication_id}
 ```
+
+The two global maintenance queues sit outside `/accounts/{account_id}/`: account purge entries
+survive the account-prefix sweep, and credential-cleanup entries survive deletion of their source
+integration. An account purge entry is created atomically with the durable account deletion fence
+and is removed only after the owning replica completes the account-wide purge.
 
 A catalog carries a `markers/children` marker versioning its set of namespaces. Every writer that
 adds one asserts and advances it in its own batch — the namespace services, the overlay reconciler,

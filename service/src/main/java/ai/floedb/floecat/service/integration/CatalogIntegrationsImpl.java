@@ -97,7 +97,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   @Inject CatalogIntegrationCredentialStore credentialStore;
   @Inject CatalogIntegrationCredentialCleanup credentialCleanup;
   @Inject CatalogIntegrationDiscovery discovery;
-  @Inject CatalogOverlayReconciler overlayReconciler;
+  @Inject CatalogIntegrationCascadeDeletion cascadeDeletion;
   @Inject CatalogIntegrationAwsCredentialPolicy awsCredentialPolicy;
 
   @Override
@@ -786,11 +786,11 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                       corr, meta, request.getPrecondition());
                   if (request.getCascade()) {
                     credentialCleanup.schedule(current.get().value());
-                    cascadeDeleteIntegration(id, meta);
+                    cascadeDeletion.delete(id, meta);
                     credentialCleanup.cleanIfSuperseded(current.get().value());
                     return DeleteCatalogIntegrationResponse.newBuilder().setMeta(meta).build();
                   }
-                  if (integrations.cascadeDeletionFenceVersion(id) > 0L)
+                  if (integrations.cascadeDeletionInProgress(id))
                     throw GrpcErrors.conflict(
                         corr,
                         CATALOG_INTEGRATION_DELETION_IN_PROGRESS,
@@ -825,52 +825,6 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
-  }
-
-  private void cascadeDeleteIntegration(
-      ResourceId integrationId, ai.floedb.floecat.common.rpc.MutationMeta integrationMeta) {
-    if (!integrations.beginCascadeDeletion(integrationId, integrationMeta.getPointerVersion())) {
-      throw new BaseResourceRepository.AbortRetryableException(
-          "integration changed while cascade deletion was fenced");
-    }
-
-    while (true) {
-      var next = new StringBuilder();
-      var dependents =
-          overlays.listByIntegrationWithMetaConsistent(
-              integrationId.getAccountId(), integrationId.getId(), 100, "", next);
-      if (dependents.isEmpty()) break;
-      for (var dependent : dependents) {
-        ResourceId overlayId = dependent.value().getResourceId();
-        if (!overlays.beginDeletion(overlayId, dependent.meta().getPointerVersion())) {
-          throw new BaseResourceRepository.AbortRetryableException(
-              "overlay changed while integration cascade deletion was fenced");
-        }
-        overlayReconciler.retireMaterializedResources(dependent.value());
-        long overlayFenceVersion = overlays.deletionFenceVersion(overlayId);
-        if (overlayFenceVersion == 0L
-            || !overlays.deleteWithFence(
-                overlayId, dependent.meta().getPointerVersion(), overlayFenceVersion)) {
-          throw new BaseResourceRepository.AbortRetryableException(
-              "overlay changed during integration cascade deletion");
-        }
-      }
-    }
-
-    int remaining =
-        overlays.countByIntegration(integrationId.getAccountId(), integrationId.getId());
-    if (remaining != 0) {
-      throw new BaseResourceRepository.AbortRetryableException(
-          "overlays appeared during integration cascade deletion");
-    }
-    long markerVersion = markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId);
-    long fenceVersion = integrations.cascadeDeletionFenceVersion(integrationId);
-    if (fenceVersion == 0L
-        || !integrations.deleteWithPreconditionForCascadeDeletion(
-            integrationId, integrationMeta.getPointerVersion(), markerVersion, fenceVersion)) {
-      throw new BaseResourceRepository.AbortRetryableException(
-          "integration changed while cascade deletion completed");
-    }
   }
 
   private static Set<String> requiredMask(FieldMask mask, String corr) {

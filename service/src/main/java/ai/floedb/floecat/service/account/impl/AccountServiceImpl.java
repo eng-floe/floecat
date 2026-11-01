@@ -38,41 +38,29 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.service.cache.HintCache;
-import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
-import ai.floedb.floecat.service.credentials.DefaultCredentialResolver;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
-import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
-import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
-import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.service.storage.impl.StorageAuthorityResolver;
-import ai.floedb.floecat.storage.secrets.SecretsManager;
-import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
-import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -84,19 +72,11 @@ import software.amazon.awssdk.arns.Arn;
 @GrpcService
 public class AccountServiceImpl extends BaseServiceImpl implements AccountService {
   @Inject AccountRepository accountRepo;
-  @Inject CatalogIntegrationRepository catalogIntegrationRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject PointerStore pointerStore;
-  @Inject BlobStore blobStore;
-  @Inject DefaultCredentialResolver credentialResolver;
-  @Inject SecretsManager secretsManager;
-  @Inject Instance<DurableReconcileJobStore> durableReconcileJobStore;
-  @Inject CatalogIntegrationCredentialCleanup catalogIntegrationCredentialCleanup;
-  @Inject ObjectCache objects;
-  @Inject HintCache hints;
-  @Inject BlobCacheAccess blobs;
+  @Inject AccountCredentialCleanup credentialCleanup;
   @Inject AccountAwsExternalIdProvider awsExternalIds;
 
   @ConfigProperty(name = "floecat.catalog-integrations.aws.service-principal-arn")
@@ -104,10 +84,8 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
   private static final Set<String> ACCOUNT_MUTABLE_PATHS =
       Set.of("display_name", "description", "tags");
-  private static final int POINTER_SWEEP_DIAGNOSTIC_KEY_LIMIT = 10;
 
   private static final Logger LOG = Logger.getLogger(AccountService.class);
-  private static final Logger CLEANUP_LOG = Logger.getLogger(AccountServiceImpl.class);
 
   @Override
   public Uni<ListAccountsResponse> listAccounts(ListAccountsRequest request) {
@@ -507,7 +485,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   var accountId = request.getAccountId();
                   ensureKind(accountId, ResourceKind.RK_ACCOUNT, "account_id", corr);
 
-                  var deletionMeta = loadAndRepairAccountDeletionFence(accountId.getId());
+                  var deletionMeta = loadAccountDeletionFence(accountId.getId());
                   MutationMeta meta;
                   try {
                     meta = accountRepo.metaFor(accountId);
@@ -525,8 +503,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                       // so an absent account without one has no cleanup to resume.
                       return DeleteAccountResponse.newBuilder().setMeta(safe).build();
                     }
-                    // A prior delete may have committed before descendant cleanup failed.
-                    cleanupAccountResources(accountId);
+                    credentialCleanup.revoke(accountId);
                     return DeleteAccountResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -562,7 +539,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                     throw new BaseResourceRepository.AbortRetryableException(
                         "account changed while deletion fence was installed");
                   }
-                  cleanupAccountResources(accountId);
+                  credentialCleanup.revoke(accountId);
                   return DeleteAccountResponse.newBuilder().setMeta(fencedMeta).build();
                 }),
             correlationId())
@@ -572,10 +549,8 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         .invoke(L::ok);
   }
 
-  private java.util.Optional<MutationMeta> loadAndRepairAccountDeletionFence(String accountId) {
-    var marker = pointerStore.get(Keys.accountDeletionMarker(accountId));
-    return marker.map(
-        existing -> decodeDeletionMeta(repairAccountDeletionFence(accountId, existing).marker()));
+  private java.util.Optional<MutationMeta> loadAccountDeletionFence(String accountId) {
+    return pointerStore.get(Keys.accountDeletionMarker(accountId)).map(this::decodeDeletionMeta);
   }
 
   private MutationMeta ensureAccountDeletionFence(String accountId, MutationMeta meta) {
@@ -586,22 +561,15 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     for (int attempt = 0; attempt < 8; attempt++) {
       var existing = pointerStore.get(key);
       if (existing.isPresent()) {
-        return decodeDeletionMeta(repairAccountDeletionFence(accountId, existing.get()).marker());
+        return decodeDeletionMeta(existing.get());
       }
 
-      Map<String, Pointer> orphanedShards = pointerStore.getBatch(shardKeys);
-      if (!orphanedShards.isEmpty()) {
-        List<PointerStore.CasOp> cleanup = new ArrayList<>(orphanedShards.size() + 1);
-        cleanup.add(new PointerStore.CasCheckAbsent(key));
-        orphanedShards.forEach(
-            (shardKey, shard) ->
-                cleanup.add(new PointerStore.CasDelete(shardKey, shard.getVersion())));
-        pointerStore.compareAndSetBatch(cleanup);
-        continue;
-      }
-
-      List<PointerStore.CasOp> fenceCreates = new ArrayList<>(shardKeys.size() + 1);
+      List<PointerStore.CasOp> fenceCreates = new ArrayList<>(shardKeys.size() + 2);
       fenceCreates.add(new PointerStore.CasUpsert(key, 0L, marker));
+      String purgeKey = Keys.accountPurgePointer(accountId);
+      fenceCreates.add(
+          new PointerStore.CasUpsert(
+              purgeKey, 0L, PointerReferences.opaqueMarkerPointer(purgeKey, accountId, 1L)));
       for (String shardKey : shardKeys) {
         fenceCreates.add(
             new PointerStore.CasUpsert(
@@ -620,47 +588,6 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       throw new BaseResourceRepository.CorruptionException(
           "invalid account deletion fence: " + marker.getKey(), e);
     }
-  }
-
-  private CompleteAccountDeletionFence repairAccountDeletionFence(
-      String accountId, Pointer initialMarker) {
-    String markerKey = Keys.accountDeletionMarker(accountId);
-    List<String> shardKeys = Keys.accountDeletionFenceShards(accountId);
-    Pointer marker = initialMarker;
-    for (int attempt = 0; attempt < 8; attempt++) {
-      Map<String, Pointer> shards = pointerStore.getBatch(shardKeys);
-      if (shards.size() == shardKeys.size()) {
-        return new CompleteAccountDeletionFence(marker, shards);
-      }
-
-      List<PointerStore.CasOp> repair = new ArrayList<>(shardKeys.size() - shards.size() + 1);
-      repair.add(new PointerStore.CasCheck(markerKey, marker.getVersion()));
-      for (String shardKey : shardKeys) {
-        if (!shards.containsKey(shardKey)) {
-          repair.add(
-              new PointerStore.CasUpsert(
-                  shardKey, 0L, PointerReferences.opaqueMarkerPointer(shardKey, "deleting", 1L)));
-        }
-      }
-      if (pointerStore.compareAndSetBatch(repair)) {
-        Map<String, Pointer> completed = new java.util.LinkedHashMap<>(shards);
-        for (PointerStore.CasOp operation : repair) {
-          if (operation instanceof PointerStore.CasUpsert upsert) {
-            completed.put(upsert.key(), upsert.next());
-          }
-        }
-        return new CompleteAccountDeletionFence(marker, Map.copyOf(completed));
-      }
-      marker =
-          pointerStore
-              .get(markerKey)
-              .orElseThrow(
-                  () ->
-                      new BaseResourceRepository.AbortRetryableException(
-                          "account deletion fence disappeared while repairing"));
-    }
-    throw new BaseResourceRepository.AbortRetryableException(
-        "account deletion fence could not be repaired");
   }
 
   private void advanceAccountDeletionFence(
@@ -688,245 +615,23 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     Pointer marker = pointerStore.get(key).orElse(null);
     if (marker == null) return;
     if (!decodeDeletionMeta(marker).equals(expectedMeta)) return;
-    CompleteAccountDeletionFence fence = repairAccountDeletionFence(accountId, marker);
-    marker = fence.marker();
     List<String> shardKeys = Keys.accountDeletionFenceShards(accountId);
-    List<PointerStore.CasOp> fenceDeletes = new ArrayList<>(shardKeys.size() + 1);
+    Map<String, Pointer> shards = pointerStore.getBatch(shardKeys);
+    if (shards.size() != shardKeys.size()) {
+      throw new BaseResourceRepository.CorruptionException(
+          "incomplete account deletion fence: " + key);
+    }
+    List<PointerStore.CasOp> fenceDeletes = new ArrayList<>(shardKeys.size() + 2);
     fenceDeletes.add(new PointerStore.CasDelete(key, marker.getVersion()));
+    String purgeKey = Keys.accountPurgePointer(accountId);
+    Pointer purge = pointerStore.get(purgeKey).orElse(null);
+    if (purge != null) fenceDeletes.add(new PointerStore.CasDelete(purgeKey, purge.getVersion()));
     for (String shardKey : shardKeys) {
-      fenceDeletes.add(
-          new PointerStore.CasDelete(shardKey, fence.shards().get(shardKey).getVersion()));
+      fenceDeletes.add(new PointerStore.CasDelete(shardKey, shards.get(shardKey).getVersion()));
     }
     if (!pointerStore.compareAndSetBatch(fenceDeletes)) {
       throw new BaseResourceRepository.AbortRetryableException(
           "account deletion fence changed while clearing");
-    }
-  }
-
-  private record CompleteAccountDeletionFence(Pointer marker, Map<String, Pointer> shards) {}
-
-  private void cleanupAccountResources(ResourceId accountId) {
-    var accountKey = accountId.getId();
-    var summary = new AccountCleanupSummary(accountKey);
-    CLEANUP_LOG.infof("account_delete_cleanup_start account_id=%s", accountKey);
-    try {
-      List<ResourceId> storageAuthorities =
-          listCanonicalResourceIds(
-              Keys.storageAuthorityPointerByIdPrefix(accountKey),
-              accountKey,
-              ResourceKind.RK_STORAGE_AUTHORITY);
-      List<ResourceId> catalogIntegrations =
-          listCanonicalResourceIds(
-              Keys.catalogIntegrationPointerByIdPrefix(accountKey),
-              accountKey,
-              ResourceKind.RK_CATALOG_INTEGRATION);
-      List<ResourceId> catalogOverlays =
-          listCanonicalResourceIds(
-              Keys.catalogOverlayPointerByIdPrefix(accountKey),
-              accountKey,
-              ResourceKind.RK_CATALOG_OVERLAY);
-      List<ResourceId> connectors =
-          listCanonicalResourceIds(
-              Keys.connectorPointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_CONNECTOR);
-      List<ResourceId> catalogs =
-          listCanonicalResourceIds(
-              Keys.catalogPointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_CATALOG);
-      List<ResourceId> namespaces =
-          listCanonicalResourceIds(
-              Keys.namespacePointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_NAMESPACE);
-      List<ResourceId> tables =
-          listCanonicalResourceIds(
-              Keys.tablePointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_TABLE);
-      List<ResourceId> views =
-          listCanonicalResourceIds(
-              Keys.viewPointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_VIEW);
-
-      List<ai.floedb.floecat.integration.rpc.CatalogIntegration>
-          integrationsWithScheduledCredentialCleanup =
-              scheduleCatalogIntegrationCredentialCleanup(catalogIntegrations, summary);
-      cleanupStorageAuthorityCredentials(accountKey, storageAuthorities, summary);
-      cleanupConnectorCredentials(accountKey, connectors, summary);
-      summary.catalogIntegrationsDeleted = catalogIntegrations.size();
-      summary.catalogOverlaysDeleted = catalogOverlays.size();
-      summary.catalogsDeleted = catalogs.size();
-      summary.namespacesDeleted = namespaces.size();
-      summary.tablesDeleted = tables.size();
-      summary.viewsDeleted = views.size();
-
-      if (durableReconcileJobStore.isResolvable()) {
-        summary.reconcileJobsDeleted = durableReconcileJobStore.get().cleanupAccount(accountKey);
-      } else {
-        CLEANUP_LOG.warnf("account_delete_reconcile_cleanup_unavailable account_id=%s", accountKey);
-      }
-
-      String accountPrefix = Keys.accountRootPrefix(accountKey);
-      String deletionFence = Keys.accountDeletionMarker(accountKey);
-      summary.accountPointersDeleted +=
-          pointerStore.deleteByPrefixExcluding(accountPrefix, deletionFence);
-      assertAccountPointerSweepComplete(accountPrefix, deletionFence);
-      integrationsWithScheduledCredentialCleanup.forEach(
-          catalogIntegrationCredentialCleanup::cleanIfSuperseded);
-      summary.residualAccountBlobsDeleted += blobStore.deletePrefix(accountPrefix);
-      // The deletion fence is still installed. Evict only after durable pointers and blobs are
-      // gone, so a later local read cannot repopulate deleted content from a live durable pointer.
-      objects.evictAccount(accountKey);
-      hints.evictAccount(accountKey);
-      blobs.evictAccount(accountKey);
-      CLEANUP_LOG.infof(
-          "account_delete_cleanup_complete account_id=%s account_pointer_deletes=%d catalog_overlays=%d catalog_integrations=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d reconcile_jobs=%d residual_account_blob_deletes=%d",
-          summary.accountId,
-          summary.accountPointersDeleted,
-          summary.catalogOverlaysDeleted,
-          summary.catalogIntegrationsDeleted,
-          summary.storageAuthoritiesDeleted,
-          summary.connectorsDeleted,
-          summary.credentialsDeleted,
-          summary.catalogsDeleted,
-          summary.namespacesDeleted,
-          summary.tablesDeleted,
-          summary.viewsDeleted,
-          summary.reconcileJobsDeleted,
-          summary.residualAccountBlobsDeleted);
-    } catch (RuntimeException e) {
-      CLEANUP_LOG.errorf(e, "account_delete_cleanup_failed account_id=%s", accountKey);
-      throw e;
-    }
-  }
-
-  private List<ai.floedb.floecat.integration.rpc.CatalogIntegration>
-      scheduleCatalogIntegrationCredentialCleanup(
-          List<ResourceId> integrationIds, AccountCleanupSummary summary) {
-    var scheduled = new ArrayList<ai.floedb.floecat.integration.rpc.CatalogIntegration>();
-    for (ResourceId integrationId : integrationIds) {
-      try {
-        catalogIntegrationRepo
-            .getById(integrationId)
-            .filter(catalogIntegrationCredentialCleanup::schedule)
-            .ifPresent(
-                integration -> {
-                  scheduled.add(integration);
-                  summary.credentialsDeleted++;
-                });
-      } catch (BaseResourceRepository.CorruptionException corruption) {
-        CLEANUP_LOG.warnf(
-            corruption,
-            "account_delete_cleanup_skipping_corrupt_catalog_integration account_id=%s integration_id=%s",
-            integrationId.getAccountId(),
-            integrationId.getId());
-      }
-    }
-    return List.copyOf(scheduled);
-  }
-
-  private void cleanupStorageAuthorityCredentials(
-      String accountId, List<ResourceId> authorities, AccountCleanupSummary summary) {
-    for (ResourceId authorityId : authorities) {
-      CLEANUP_LOG.infof(
-          "account_delete_cleanup_storage_authority account_id=%s authority_id=%s",
-          accountId, authorityId.getId());
-      secretsManager.delete(
-          accountId, StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE, authorityId.getId());
-      summary.storageAuthoritiesDeleted++;
-      summary.credentialsDeleted++;
-    }
-  }
-
-  private void cleanupConnectorCredentials(
-      String accountId, List<ResourceId> connectors, AccountCleanupSummary summary) {
-    for (ResourceId connectorId : connectors) {
-      CLEANUP_LOG.infof(
-          "account_delete_cleanup_connector account_id=%s connector_id=%s",
-          accountId, connectorId.getId());
-      credentialResolver.delete(accountId, connectorId.getId());
-      summary.connectorsDeleted++;
-      summary.credentialsDeleted++;
-    }
-  }
-
-  private List<ResourceId> listCanonicalResourceIds(
-      String prefix, String accountId, ResourceKind kind) {
-    var ids = new ArrayList<ResourceId>();
-    var seenTokens = new HashSet<String>();
-    String token = "";
-    while (true) {
-      var next = new StringBuilder();
-      for (Pointer pointer : pointerStore.listPointersByPrefix(prefix, 200, token, next)) {
-        String id;
-        try {
-          id = Keys.extractLastSegment(pointer.getKey());
-        } catch (RuntimeException malformedKey) {
-          CLEANUP_LOG.warnf(
-              malformedKey,
-              "account_delete_cleanup_skipping_malformed_canonical_pointer account_id=%s pointer_key=%s",
-              accountId,
-              pointer.getKey());
-          continue;
-        }
-        if (id == null || id.isBlank()) {
-          CLEANUP_LOG.warnf(
-              "account_delete_cleanup_skipping_malformed_canonical_pointer account_id=%s pointer_key=%s",
-              accountId, pointer.getKey());
-          continue;
-        }
-        ids.add(ResourceId.newBuilder().setAccountId(accountId).setId(id).setKind(kind).build());
-      }
-      token = next.toString();
-      if (token.isBlank()) {
-        return List.copyOf(ids);
-      }
-      if (!seenTokens.add(token)) {
-        throw new IllegalStateException("stagnant page token during account cleanup: " + token);
-      }
-    }
-  }
-
-  void assertAccountPointerSweepComplete(String accountPrefix, String deletionFence) {
-    Pointer remainingFence = pointerStore.get(deletionFence).orElse(null);
-    int remaining = pointerStore.countByPrefix(accountPrefix);
-    if (remainingFence == null || remaining != 1) {
-      int unexpectedCount = remaining - (remainingFence == null ? 0 : 1);
-      var next = new StringBuilder();
-      List<String> unexpectedKeys =
-          pointerStore
-              .listPointersByPrefix(accountPrefix, POINTER_SWEEP_DIAGNOSTIC_KEY_LIMIT + 1, "", next)
-              .stream()
-              .map(Pointer::getKey)
-              .filter(key -> !key.equals(deletionFence))
-              .limit(POINTER_SWEEP_DIAGNOSTIC_KEY_LIMIT)
-              .toList();
-      throw new BaseResourceRepository.AbortRetryableException(
-          "account pointer sweep left "
-              + remaining
-              + " rows under "
-              + accountPrefix
-              + "; deletion_fence_present="
-              + (remainingFence != null)
-              + " unexpected_pointer_count="
-              + unexpectedCount
-              + " unexpected_pointer_keys="
-              + unexpectedKeys
-              + " unexpected_pointer_keys_truncated="
-              + (unexpectedCount > unexpectedKeys.size()));
-    }
-  }
-
-  private static final class AccountCleanupSummary {
-    private final String accountId;
-    private int accountPointersDeleted;
-    private int catalogOverlaysDeleted;
-    private int catalogIntegrationsDeleted;
-    private int storageAuthoritiesDeleted;
-    private int connectorsDeleted;
-    private int credentialsDeleted;
-    private int catalogsDeleted;
-    private int namespacesDeleted;
-    private int tablesDeleted;
-    private int viewsDeleted;
-    private int reconcileJobsDeleted;
-    private int residualAccountBlobsDeleted;
-
-    private AccountCleanupSummary(String accountId) {
-      this.accountId = accountId;
     }
   }
 

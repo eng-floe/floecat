@@ -178,19 +178,19 @@ class BackendStorageIT {
     assertTrue(ptr.get(keyTblCanon).isEmpty());
     assertTrue(ptr.get(keyTblByName).isEmpty());
 
-    TestSupport.deleteNamespace(namespace, nsId, true);
+    TestSupport.deleteNamespace(namespace, nsId, false);
     assertTrue(ptr.get(keyNsByPath).isEmpty(), "ns by-path pointer should be deleted");
     assertTrue(ptr.get(keyNsPtr).isEmpty(), "ns canonical pointer should be deleted");
 
     var schemaNsId =
         TestSupport.resolveNamespaceId(
             directory, cat.getDisplayName(), List.of("db_it", "schema_it"));
-    TestSupport.deleteNamespace(namespace, schemaNsId, true);
+    TestSupport.deleteNamespace(namespace, schemaNsId, false);
 
     var dbNsId = TestSupport.resolveNamespaceId(directory, cat.getDisplayName(), List.of("db_it"));
-    TestSupport.deleteNamespace(namespace, dbNsId, true);
+    TestSupport.deleteNamespace(namespace, dbNsId, false);
 
-    TestSupport.deleteCatalog(catalog, catId, true);
+    TestSupport.deleteCatalog(catalog, catId, false);
     String catByIdKey = Keys.catalogPointerById(catId.getAccountId(), catId.getId());
     String catByNameKey = Keys.catalogPointerByName(catId.getAccountId(), catName);
     assertTrue(ptr.get(catByIdKey).isEmpty());

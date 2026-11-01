@@ -91,6 +91,20 @@ class CatalogIntegrationCredentialCleanupTest {
   }
 
   @Test
+  void deletedAccountRevocationDoesNotWaitForIntegrationSweep() {
+    ResourceId id = id("integration");
+    CatalogIntegration integration = storedIntegration(id, 7L);
+
+    cleanup.revokeForDeletedAccount(integration);
+
+    verify(credentials).deleteImmediately(id, 7L);
+    assertTrue(
+        pointers
+            .get(Keys.catalogIntegrationCredentialCleanupPointer("acct", "integration", 7L))
+            .isEmpty());
+  }
+
+  @Test
   void failedReplacementCancelsMarkerOnlyWhileResourceIsUnchanged() {
     ResourceId id = id("integration");
     CatalogIntegration integration = storedIntegration(id, 7L);

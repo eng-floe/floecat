@@ -82,10 +82,10 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
 - **DirectoryServiceImpl** – Provides fast name↔ID lookup via `MetadataGraph` (Resolve*/Lookup*) and
   reuses the graph’s ResolveFQ helpers for list/prefix pagination.
 - **AccountServiceImpl** – Administers accounts and enforces conventional permissions. Account
-  deletion installs a durable write fence, then uses strongly consistent enumeration to remove
-  catalog overlays before their integrations, followed by legacy connectors and local catalog
-  descendants. Retrying a committed account delete resumes cleanup using the deletion record's
-  original mutation metadata.
+  deletion atomically installs its durable sharded write fence and queues an account purge, deletes
+  the account row, and revokes storage-authority, connector, and catalog-integration credentials.
+  A retry repeats the idempotent credential revocation. The RPC does not walk the account's
+  catalogs, namespaces, or relations.
 - **CatalogIntegrationsImpl** – Provides CRUD for external catalog identity records. The contract is
   intentionally independent of legacy Connectors. It persists typed non-secret authentication
   configuration for OAuth client credentials, bearer tokens, AWS assume-role/access-key, and AWS
@@ -301,6 +301,40 @@ standing between it and a concurrent delete.
 
 Namespace deletes assert nothing about their catalog. Removal is the direction that orphans nothing.
 
+### Cascading Deletion
+`DeleteCatalog` and `DeleteNamespace` take `cascade`. Without it a non-empty target is a conflict, as
+above. With it the RPC deletes only the rows that give relations their place in the tree, and leaves
+the relations to GC, so its cost grows with the number of namespaces rather than tables
+(`CascadeDeletion`):
+
+1. The caller's precondition is checked against the target before anything is deleted.
+2. A durable deletion fence is installed on the target. A catalog fence blocks new namespaces and
+   overlays; a namespace fence blocks new child namespaces and relations. Updates and ordinary
+   deletes also require the fence to be absent.
+3. A catalog's overlays are deleted behind their deletion fence, without retiring what they
+   materialized — step 4 removes all of it anyway. This needs `catalog-overlay.delete`.
+4. Every namespace in the captured subtree is fenced before any of those rows are removed, then
+   deleted deepest first under its shape markers and the same no-child check as a plain delete, but
+   without the relation check. Each namespace fence is removed atomically with its row.
+5. The target row, its shape markers, and its deletion fence are removed atomically.
+
+`CascadeDeletion` is the transactional driver for both catalog and namespace cascades;
+`CatalogIntegrationCascadeDeletion` applies the same fence/work/final-transaction workflow to
+integration-owned overlays. Catalogs, namespaces, integrations and overlays all acquire the same
+`DurableDeletionFence.Fence` token, which carries the exact fence version into the final CAS without
+a second pointer read. Account deletion deliberately uses its separate sharded fence and durable
+purge queue because its account row is removed before cleanup begins.
+
+The target remains addressable while cleanup is in progress, but descendant writers are excluded by
+the durable fences. If the RPC crashes or exhausts its retry budget, the fences remain and a later
+call resumes the same deletion. A child that committed before its parent was fenced is discovered by
+the next pass; it cannot extend further after that parent fence is installed.
+
+A relation whose namespace is gone no longer resolves (`MetaGraph.resolve`), and `PointerGc`
+deletes it — row, snapshot, stats, root and hint pointers — on its next pass over the account's
+relation name keys. `CasBlobGc` then reclaims its blobs. A cascade requires `table.write` and
+`view.write` in addition to the target's own write permission.
+
 ### Security and Context
 `InboundContextInterceptor` reads `x-query-id`, `x-engine-kind`, `x-engine-version`,
 `x-environment-kind`, `x-environment-version`, and `x-correlation-id` headers,
@@ -398,8 +432,10 @@ abandoned after `floecat.gc.cas.max-consecutive-continuation-ticks` so one large
 account; raise that bound if the oldest-sweep-age metric shows a large account repeatedly restarting.
 Snapshot compatibility artifacts under `snapshots/<id>/compat/` are gateway-managed mutable
 artifacts, not CAS objects, and remain owned by explicit snapshot/table lifecycle cleanup rather
-than this CAS sweep. `PointerGc` removes
-orphan/stale pointers. `TransactionGc` reaps expired/aborted transaction artifacts and dangling
+than this CAS sweep. `PointerGcScheduler` also drains `AccountPurge`: only the replica that owns a
+fenced account first revokes its credentials, then removes its reconcile jobs, account-scoped
+pointers and blobs, evicts its caches, and acknowledges the durable purge entry. `PointerGc` removes
+orphan/stale pointers, and relations stranded by a cascading delete (see Cascading Deletion). `TransactionGc` reaps expired/aborted transaction artifacts and dangling
 intent indices. `ReconcileJobGc` enforces durable reconcile retention and queue/dedupe cleanup for
 terminal jobs. The default finished reconcile-job retention window is 24 h
 (`floecat.gc.reconcile-jobs.retention-ms=86400000`); older terminal jobs are removed from job-list

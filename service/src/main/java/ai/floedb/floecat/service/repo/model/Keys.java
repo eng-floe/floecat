@@ -70,6 +70,7 @@ public final class Keys {
 
   public static final String SEG_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP =
       "/catalog-integration-credential-cleanup/";
+  public static final String SEG_ACCOUNT_PURGE = "/account-purge/";
 
   private static String req(String name, String v) {
     if (v == null || v.isBlank()) {
@@ -132,6 +133,14 @@ public final class Keys {
         + encode(req("integration_id", integrationId))
         + "/"
         + reqPositive("generation", generation);
+  }
+
+  public static String accountPurgePrefix() {
+    return SEG_ACCOUNT_PURGE;
+  }
+
+  public static String accountPurgePointer(String accountId) {
+    return SEG_ACCOUNT_PURGE + encode(req("account_id", accountId));
   }
 
   private static String joinPathSegments(List<String> segments) {
@@ -445,6 +454,13 @@ public final class Keys {
         "/accounts/%s/catalogs/%s/catalog/%s.pb", encode(tid), encode(cid), encode(sha));
   }
 
+  /** Durable fence held while a catalog cascade removes overlays and namespaces. */
+  public static String catalogDeletionMarker(String accountId, String catalogId) {
+    String tid = req("account_id", accountId);
+    String cid = req("catalog_id", catalogId);
+    return "/accounts/" + encode(tid) + "/catalogs/deleting/" + encode(cid);
+  }
+
   // ===== Storage Authority =====
 
   public static String storageAuthorityPointerById(String accountId, String authorityId) {
@@ -540,6 +556,13 @@ public final class Keys {
     String sha = req("sha256", sha256);
     return String.format(
         "/accounts/%s/namespaces/%s/namespace/%s.pb", encode(tid), encode(nid), encode(sha));
+  }
+
+  /** Durable fence held while a namespace and its subtree are being cascade-deleted. */
+  public static String namespaceDeletionMarker(String accountId, String namespaceId) {
+    String tid = req("account_id", accountId);
+    String nid = req("namespace_id", namespaceId);
+    return "/accounts/" + encode(tid) + "/namespaces/deleting/" + encode(nid);
   }
 
   // ===== Table =====
