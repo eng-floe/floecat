@@ -20,6 +20,15 @@ import static java.util.Objects.requireNonNullElse;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
+import ai.floedb.floecat.service.common.IdempotencyInProgressException;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageConflictException;
+import ai.floedb.floecat.storage.errors.StorageCorruptionException;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import ai.floedb.floecat.storage.errors.StoragePreconditionFailedException;
+import ai.floedb.floecat.types.RelationFailures;
 import com.google.protobuf.Any;
 import com.google.rpc.BadRequest;
 import com.google.rpc.DebugInfo;
@@ -31,27 +40,135 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.MissingResourceException;
+import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 import org.eclipse.microprofile.config.ConfigProvider;
 
 public final class GrpcErrors {
 
   /**
-   * Whether a gRPC failure can be isolated to one relation in a batch operation.
-   *
-   * <p>INTERNAL counts: it is what reading one relation raises when that relation is the problem,
-   * and a batch reports it in that relation's error envelope rather than failing every other
-   * relation with it. A failure that is not a gRPC status, such as the CorruptionException a lost
-   * blob raises, is not scoped and fails the whole call.
+   * The service's entry point for a failure while building one relation of many: rethrows {@code
+   * failure} when it is infrastructure, which fails the call, and otherwise logs it for the
+   * relation {@code label} names (see {@link RelationFailures#label}) and returns the error that
+   * reports it as that relation's.
    */
-  public static boolean isRelationScoped(Throwable failure) {
-    if (!(failure instanceof StatusRuntimeException status)) {
+  public static Error relationFailure(String label, RuntimeException failure, String corrId) {
+    RelationFailures.isolate(label, failure);
+    FloecatStatus status = FloecatStatus.fromThrowable(fromThrowable(failure, corrId));
+    return Error.newBuilder()
+        .setCode(status.errorCode())
+        .setMessage(status.message())
+        .setMessageKey(status.messageKey())
+        .putAllParams(status.params())
+        .setCorrelationId(status.correlationId().isBlank() ? corrId : status.correlationId())
+        .build();
+  }
+
+  /**
+   * The status a failure is reported as. One that already carries a Floecat error is returned as it
+   * is; any other is mapped by its type, and an unknown one is INTERNAL.
+   */
+  public static StatusRuntimeException fromThrowable(Throwable t, String corrId) {
+    if (t instanceof StatusRuntimeException sre) {
+      if (containsFloecatError(sre)) {
+        return sre;
+      }
+      return build(sre.getStatus(), errorCodeForStatus(sre.getStatus()), corrId, null, null, t);
+    }
+
+    if (t instanceof BaseResourceRepository.SystemObjectImmutableException) {
+      // Repository-layer backstop for system-object immutability (GenericResourceRepository
+      // #guardSystemObject). Reaching here means a write path bypassed the surface write policy;
+      // surface it as the same PERMISSION_DENIED the policy would have produced.
+      return permissionDenied(
+          corrId, GeneratedErrorMessages.MessageKey.SYSTEM_OBJECT_IMMUTABLE, null, t);
+    }
+    if (t instanceof BaseResourceRepository.AccountDeletionInProgressException deleting) {
+      return preconditionFailed(
+          corrId,
+          GeneratedErrorMessages.MessageKey.ACCOUNT_DELETION_IN_PROGRESS,
+          Map.of("account_id", deleting.accountId()),
+          deleting);
+    }
+    if (t instanceof ReconcileJobQueue.DisabledException) {
+      return preconditionFailed(corrId, null, null, t);
+    }
+    if (t instanceof BaseResourceRepository.NameConflictException
+        || t instanceof StorageConflictException) {
+      return conflict(corrId, null, null, t);
+    }
+    if (t instanceof BaseResourceRepository.PreconditionFailedException
+        || t instanceof StoragePreconditionFailedException) {
+      return preconditionFailed(corrId, null, null, t);
+    }
+    if (t instanceof BaseResourceRepository.NotFoundException
+        || t instanceof StorageNotFoundException) {
+      return notFound(corrId, null, null, t);
+    }
+    if (t instanceof BaseResourceRepository.AbortRetryableException
+        || t instanceof StorageAbortRetryableException
+        || t instanceof IdempotencyInProgressException) {
+      return aborted(corrId, null, t);
+    }
+    if (t instanceof BaseResourceRepository.CorruptionException
+        || t instanceof StorageCorruptionException) {
+      return internal(corrId, null, null, t);
+    }
+    if (t instanceof IllegalArgumentException) {
+      return invalidArgument(corrId, null, null, t);
+    }
+    if (t instanceof TimeoutException) {
+      return timeout(corrId, null, null, t);
+    }
+    if (t instanceof CancellationException) {
+      return cancelled(corrId, null, null, t);
+    }
+
+    return internal(corrId, null, null, t);
+  }
+
+  private static boolean containsFloecatError(StatusRuntimeException ex) {
+    var statusProto = StatusProto.fromThrowable(ex);
+    if (statusProto == null) {
       return false;
     }
-    return switch (status.getStatus().getCode()) {
-      case NOT_FOUND, PERMISSION_DENIED, INVALID_ARGUMENT, FAILED_PRECONDITION, INTERNAL -> true;
-      default -> false;
-    };
+    for (Any detail : statusProto.getDetailsList()) {
+      if (detail.is(Error.class)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static ErrorCode errorCodeForStatus(io.grpc.Status status) {
+    switch (status.getCode()) {
+      case INVALID_ARGUMENT:
+        return ErrorCode.MC_INVALID_ARGUMENT;
+      case NOT_FOUND:
+        return ErrorCode.MC_NOT_FOUND;
+      case FAILED_PRECONDITION:
+        return ErrorCode.MC_PRECONDITION_FAILED;
+      case ALREADY_EXISTS:
+        return ErrorCode.MC_CONFLICT;
+      case PERMISSION_DENIED:
+        return ErrorCode.MC_PERMISSION_DENIED;
+      case UNAUTHENTICATED:
+        return ErrorCode.MC_UNAUTHENTICATED;
+      case RESOURCE_EXHAUSTED:
+        return ErrorCode.MC_RATE_LIMITED;
+      case UNAVAILABLE:
+        return ErrorCode.MC_UNAVAILABLE;
+      case DEADLINE_EXCEEDED:
+        return ErrorCode.MC_TIMEOUT;
+      case CANCELLED:
+        return ErrorCode.MC_CANCELLED;
+      case ABORTED:
+        return ErrorCode.MC_ABORT_RETRYABLE;
+      default:
+        return ErrorCode.MC_INTERNAL;
+    }
   }
 
   public static StatusRuntimeException aborted(
@@ -354,7 +471,7 @@ public final class GrpcErrors {
       eb.setMessageKey(messageKey);
     }
 
-    String resolvedMessage = clampDetail(resolveStatusMessage(eb, canonical, t, correlationId));
+    String resolvedMessage = clampDetail(resolveStatusMessage(eb, canonical, correlationId));
     eb.setMessage(resolvedMessage);
 
     Status.Builder statusBuilder =
@@ -372,8 +489,28 @@ public final class GrpcErrors {
 
     Status st = statusBuilder.build();
     StatusRuntimeException ex = StatusProto.toStatusRuntimeException(st);
-    return ex;
+    return raisedAsInfrastructure(appCode, messageKey)
+        ? new InfrastructureStatusException(ex.getStatus(), ex.getTrailers())
+        : ex;
   }
+
+  /** Whether a status is infrastructure: it ends a call over many relations, not one relation. */
+  private static boolean raisedAsInfrastructure(ErrorCode appCode, String messageKey) {
+    return appCode == ErrorCode.MC_SNAPSHOT_EXPIRED
+        || appCode == ErrorCode.MC_SNAPSHOT_TOO_OLD
+        || (messageKey != null && INFRASTRUCTURE_KEYS.contains(messageKey));
+  }
+
+  private static final Set<String> INFRASTRUCTURE_KEYS =
+      Set.of(
+          GeneratedErrorMessages.MessageKey.QUERY_NOT_FOUND.suffix(),
+          GeneratedErrorMessages.MessageKey.QUERY_NOT_ACTIVE.suffix(),
+          GeneratedErrorMessages.MessageKey.ACCOUNT_DELETION_IN_PROGRESS.suffix(),
+          GeneratedErrorMessages.MessageKey.QUERY_SNAPSHOT_PARSE_FAILED.suffix(),
+          GeneratedErrorMessages.MessageKey.QUERY_AS_OF_DEFAULT_PARSE_FAILED.suffix(),
+          GeneratedErrorMessages.MessageKey.QUERY_TABLE_DEFINITION_REF_MISSING.suffix(),
+          GeneratedErrorMessages.MessageKey.QUERY_PINNED_TABLE_BLOB_MISSING.suffix(),
+          GeneratedErrorMessages.MessageKey.QUERY_PINNED_SNAPSHOT_BLOB_MISSING.suffix());
 
   private static final Locale DEFAULT_LOCALE = Locale.ENGLISH;
   private static final MessageCatalog DEFAULT_MESSAGE_CATALOG = new MessageCatalog(DEFAULT_LOCALE);
@@ -481,31 +618,12 @@ public final class GrpcErrors {
   }
 
   private static String resolveStatusMessage(
-      Error.Builder errorBuilder, io.grpc.Status canonical, Throwable t, String correlationId) {
+      Error.Builder errorBuilder, io.grpc.Status canonical, String correlationId) {
     if (shouldHideMessage(canonical) && !debugDetailsEnabled()) {
       return safeInternalMessage(correlationId);
     }
-    String renderedMessage =
-        renderCatalogMessage(
-            errorBuilder.getCode(), errorBuilder.getMessageKey(), errorBuilder.getParamsMap());
-    if (!renderedMessage.isBlank()) {
-      return renderedMessage;
-    }
-    String messageKey = errorBuilder.getMessageKey();
-    if (messageKey != null && !messageKey.isBlank()) {
-      return messageKey;
-    }
-    if (rootCauseAllowed(canonical)) {
-      String causeMessage = rootCauseMessage(t);
-      if (!causeMessage.isBlank()) {
-        return causeMessage;
-      }
-    }
-    String codeName = errorBuilder.getCode().name();
-    if (codeName != null && !codeName.isBlank()) {
-      return codeName;
-    }
-    return canonical.getCode().name();
+    return renderCatalogMessage(
+        errorBuilder.getCode(), errorBuilder.getMessageKey(), errorBuilder.getParamsMap());
   }
 
   private static String renderCatalogMessage(
@@ -540,22 +658,6 @@ public final class GrpcErrors {
           false;
       default -> true;
     };
-  }
-
-  private static boolean rootCauseAllowed(io.grpc.Status canonical) {
-    return switch (canonical.getCode()) {
-      case INVALID_ARGUMENT, FAILED_PRECONDITION, NOT_FOUND -> true;
-      default -> false;
-    };
-  }
-
-  private static String rootCauseMessage(Throwable t) {
-    if (t == null) {
-      return "";
-    }
-    Throwable root = rootCause(t);
-    String msg = root.getMessage();
-    return msg == null ? "" : msg;
   }
 
   private static String safeInternalMessage(String corrId) {

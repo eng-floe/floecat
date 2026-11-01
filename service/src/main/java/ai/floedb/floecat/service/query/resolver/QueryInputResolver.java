@@ -42,6 +42,7 @@ import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.repo.util.RepositoryReads;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
+import ai.floedb.floecat.types.RelationFailures;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -63,6 +64,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.stream.IntStream;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
@@ -176,9 +178,17 @@ public class QueryInputResolver {
   // Result container
   // =============================================================================
 
-  /** Immutable container returned to callers. */
+  /**
+   * Immutable container returned to callers. {@code inputFailures} maps an input's index to the
+   * error of its own failure; it is empty unless the attempt was {@link
+   * ResolutionAttempt#isolating}.
+   */
   public record ResolutionResult(
-      List<ResourceId> resolved, RelationPinSet relationPinSet, byte[] asOfDefaultBytes) {
+      List<ResourceId> resolved,
+      RelationPinSet relationPinSet,
+      byte[] asOfDefaultBytes,
+      Map<Integer, ai.floedb.floecat.common.rpc.Error> inputFailures) {
+
     /** Projection for read-only consumers that still speak SnapshotPin. */
     public SnapshotSet snapshotSet() {
       return SnapshotSelections.toSnapshotSet(relationPinSet);
@@ -218,11 +228,35 @@ public class QueryInputResolver {
       SnapshotSelectionMemo snapshotSelectionMemo,
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled,
-      CatalogContext catalogContext) {
+      CatalogContext catalogContext,
+      boolean isolatesRelationFailures) {
     public ResolutionAttempt {
       snapshotSelectionMemo = java.util.Objects.requireNonNull(snapshotSelectionMemo);
       cancelled = java.util.Objects.requireNonNull(cancelled);
       catalogContext = java.util.Objects.requireNonNull(catalogContext);
+    }
+
+    /** An attempt that any input's failure fails. */
+    public static ResolutionAttempt of(
+        SnapshotSelectionMemo snapshotSelectionMemo,
+        PhaseDiagnostics diagnostics,
+        BooleanSupplier cancelled,
+        CatalogContext catalogContext) {
+      return new ResolutionAttempt(
+          snapshotSelectionMemo, diagnostics, cancelled, catalogContext, false);
+    }
+
+    /**
+     * An attempt in which an input's own failure is reported in {@link
+     * ResolutionResult#inputFailures} and drops that input's pins; infrastructure still fails it.
+     */
+    public static ResolutionAttempt isolating(
+        SnapshotSelectionMemo snapshotSelectionMemo,
+        PhaseDiagnostics diagnostics,
+        BooleanSupplier cancelled,
+        CatalogContext catalogContext) {
+      return new ResolutionAttempt(
+          snapshotSelectionMemo, diagnostics, cancelled, catalogContext, true);
     }
   }
 
@@ -264,12 +298,15 @@ public class QueryInputResolver {
   /** Request-thread-only ordered accumulation for one resolution call. */
   private static final class ResolutionState {
     final ResolutionWork work;
+    final ResolutionAttempt attempt;
     final List<ResourceId> resolved = new ArrayList<>();
     // Keep insertion order (matching input order) while deduplicating by table ID.
     final Map<ResourceId, TablePin> snapshotByTableId = new LinkedHashMap<>();
+    final Map<Integer, ai.floedb.floecat.common.rpc.Error> inputFailures = new LinkedHashMap<>();
 
-    ResolutionState(ResolutionWork work) {
+    ResolutionState(ResolutionWork work, ResolutionAttempt attempt) {
       this.work = work;
+      this.attempt = attempt;
     }
   }
 
@@ -348,7 +385,7 @@ public class QueryInputResolver {
         inputs,
         asOfDefault,
         defaultCatalogId,
-        new ResolutionAttempt(
+        ResolutionAttempt.of(
             snapshotSelectionMemo, diagnostics, Context.current()::isCancelled, catalogContext));
   }
 
@@ -374,34 +411,25 @@ public class QueryInputResolver {
         inputs,
         asOfDefault,
         defaultCatalogId,
-        snapshotSelectionMemo,
-        diagnostics,
-        cancelled,
-        CatalogContext.empty());
+        ResolutionAttempt.of(
+            snapshotSelectionMemo, diagnostics, cancelled, CatalogContext.empty()));
   }
 
+  /** Resolve the inputs under an attempt the caller built. */
   public ResolutionResult resolveInputs(
       String queryId,
       String correlationId,
       List<QueryInput> inputs,
       Optional<Timestamp> asOfDefault,
       Optional<ResourceId> defaultCatalogId,
-      SnapshotSelectionMemo snapshotSelectionMemo,
-      PhaseDiagnostics diagnostics,
-      BooleanSupplier cancelled,
-      CatalogContext catalogContext) {
+      ResolutionAttempt attempt) {
     return resolveInputsAttempt(
-        queryId,
-        correlationId,
-        inputs,
-        asOfDefault,
-        defaultCatalogId,
-        new ResolutionAttempt(snapshotSelectionMemo, diagnostics, cancelled, catalogContext));
+        queryId, correlationId, inputs, asOfDefault, defaultCatalogId, attempt);
   }
 
   /**
    * Stable test extension seam. Public entry points construct one explicit attempt before reaching
-   * this method; the resolution implementation itself is non-virtual.
+   * this method.
    */
   protected ResolutionResult resolveInputsAttempt(
       String queryId,
@@ -410,29 +438,10 @@ public class QueryInputResolver {
       Optional<Timestamp> asOfDefault,
       Optional<ResourceId> defaultCatalogId,
       ResolutionAttempt attempt) {
-    return resolveInputsCore(
-        queryId,
-        correlationId,
-        inputs,
-        asOfDefault,
-        defaultCatalogId,
-        attempt.snapshotSelectionMemo(),
-        attempt.diagnostics(),
-        attempt.cancelled(),
-        attempt.catalogContext());
-  }
-
-  /** Run the base resolution implementation after attempt construction has completed. */
-  private ResolutionResult resolveInputsCore(
-      String queryId,
-      String correlationId,
-      List<QueryInput> inputs,
-      Optional<Timestamp> asOfDefault,
-      Optional<ResourceId> defaultCatalogId,
-      SnapshotSelectionMemo snapshotSelectionMemo,
-      PhaseDiagnostics diagnostics,
-      BooleanSupplier cancelled,
-      CatalogContext catalogContext) {
+    SnapshotSelectionMemo snapshotSelectionMemo = attempt.snapshotSelectionMemo();
+    PhaseDiagnostics diagnostics = attempt.diagnostics();
+    BooleanSupplier cancelled = attempt.cancelled();
+    CatalogContext catalogContext = attempt.catalogContext();
     throwIfCancelled(cancelled);
     PhaseDiagnostics diag = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
 
@@ -468,7 +477,8 @@ public class QueryInputResolver {
                   new SnapshotSelectionMemoOwnership(snapshotSelectionMemo.pins),
                   diag,
                   cancelled,
-                  catalogContext));
+                  catalogContext),
+              attempt);
 
       try {
         // Batch-resolve all NAME inputs up front so duplicate names are resolved once.
@@ -499,7 +509,10 @@ public class QueryInputResolver {
                 .build();
         diag.add("snapshot.resolver_output_snapshots", relationPinSet.getPinsCount());
         return new ResolutionResult(
-            state.resolved, relationPinSet, asOfDefault.map(Timestamp::toByteArray).orElse(null));
+            state.resolved,
+            relationPinSet,
+            asOfDefault.map(Timestamp::toByteArray).orElse(null),
+            Map.copyOf(state.inputFailures));
       } catch (RuntimeException | Error e) {
         try {
           state.work.snapshotSelectionMemoOwnership().closeAndEvict();
@@ -519,18 +532,32 @@ public class QueryInputResolver {
    * One input's resolution: the id recorded in {@code resolved}, and the table pins it contributes,
    * ordered. A view's id is recorded but the pins are its base tables'; a table records its id and
    * its own single pin. A view may retain a successfully resolved dependency prefix plus a terminal
-   * failure; ordered merge consumes that prefix before rethrowing the deferred failure.
+   * failure; ordered merge consumes that prefix before rethrowing the deferred failure, or, in an
+   * isolating attempt, drops it and reports the failure as the input's.
    */
-  private record InputPlan(ResourceId resolvedId, List<TablePin> pins, Throwable terminalFailure) {}
+  private record InputPlan(
+      int inputIndex, ResourceId resolvedId, List<TablePin> pins, Throwable terminalFailure) {}
 
   /** A compatible losing pin and the first-touch pin retained by ordered merge. */
   private record CompatibleDiscard(TablePin losingPin, TablePin retainedPin) {}
 
-  /** Merge one completed plan on the request thread, preserving request-order semantics. */
+  /**
+   * Merge one completed plan on the request thread, preserving request-order semantics. A failed
+   * plan fails the resolution; in an isolating attempt, a failure that is not infrastructure is
+   * recorded against its input instead and its pins are dropped.
+   */
   private void mergePlan(
       ResolutionState state,
       InputPlan plan,
       Consumer<CompatibleDiscard> discardCompatibleSelection) {
+    if (state.attempt.isolatesRelationFailures()
+        && plan.terminalFailure() instanceof RuntimeException runtime) {
+      state.inputFailures.put(
+          plan.inputIndex(),
+          GrpcErrors.relationFailure(
+              RelationFailures.label(plan.resolvedId()), runtime, state.work.correlationId()));
+      return;
+    }
     state.resolved.add(plan.resolvedId());
     for (TablePin pin : plan.pins()) {
       mergePin(state, pin, discardCompatibleSelection);
@@ -550,15 +577,14 @@ public class QueryInputResolver {
    * (which is not guaranteed thread-safe); its per-key totals — snapshot-lookup calls and time,
    * memo hits/misses — are flushed to the real diagnostics once resolution has joined. The result
    * is the per-RPC aggregate of those counters, not a per-relation breakdown; the coarse phase
-   * timings are measured by the caller around this call regardless. Each input receives its own
-   * state view so mutable per-plan fields can never become shared task state; only immutable
-   * resolution context and the explicitly thread-safe single-flight memo, root tracker, and
-   * diagnostics accumulator are shared. Keep off-thread diagnostics to counters and durations only;
-   * the accumulator safely omits one-shot put/emit values that cannot be combined across inputs.
-   * The task timing keys are aggregate work time in the concurrent path, so they may exceed the
-   * enclosing wall-clock resolver phase; dashboards must not treat them as elapsed time. Gathering
-   * plans in input order keeps the caller's merge deterministic (first-touch-wins, conflict
-   * detection).
+   * timings are measured by the caller around this call regardless. All tasks share one immutable
+   * state view, whose only mutable collaborators are the explicitly thread-safe single-flight memo,
+   * root tracker, and diagnostics accumulator; per-plan state lives in each task's own {@code
+   * InputPlan}. Keep off-thread diagnostics to counters and durations only; the accumulator safely
+   * omits one-shot put/emit values that cannot be combined across inputs. The task timing keys are
+   * aggregate work time in the concurrent path, so they may exceed the enclosing wall-clock
+   * resolver phase; dashboards must not treat them as elapsed time. Gathering plans in input order
+   * keeps the caller's merge deterministic (first-touch-wins, conflict detection).
    */
   private void planInputs(
       ResolutionState state,
@@ -571,10 +597,11 @@ public class QueryInputResolver {
             : MetadataFanout.serial();
     AggregatingPhaseDiagnostics taskDiagnostics = new AggregatingPhaseDiagnostics();
     List<CompatibleDiscard> deferredDiscards = new ArrayList<>();
+    ResolutionWork work = state.work.withDiagnostics(taskDiagnostics);
     try {
       fanout.forEachOrdered(
-          inputs,
-          in -> planInput(state.work.withDiagnostics(taskDiagnostics), in, resolvedNames),
+          IntStream.range(0, inputs.size()).boxed().toList(),
+          index -> planInput(work, index, inputs.get(index), resolvedNames),
           plan -> mergePlan(state, plan, deferredDiscards::add),
           cancelled);
       // Ordered merging can finish a compatible CURRENT holder while a later parallel planner is
@@ -601,7 +628,10 @@ public class QueryInputResolver {
    * method serially unless those memo and diagnostics collaborators are thread-safe.
    */
   private InputPlan planInput(
-      ResolutionWork state, QueryInput in, Map<NameRef, Optional<ResourceId>> resolvedNames) {
+      ResolutionWork state,
+      int inputIndex,
+      QueryInput in,
+      Map<NameRef, Optional<ResourceId>> resolvedNames) {
     state.diagnostics.count("snapshot.resolver_inputs");
     SnapshotRef override = in.getSnapshot();
     ResourceId rid =
@@ -651,9 +681,9 @@ public class QueryInputResolver {
     } catch (RuntimeException | Error failure) {
       // Preserve a view's successful dependency prefix so its conflicts are reconciled in request
       // order before a later dependency's planning failure is reported.
-      return new InputPlan(rid, pins, failure);
+      return new InputPlan(inputIndex, rid, pins, failure);
     }
-    return new InputPlan(rid, pins, null);
+    return new InputPlan(inputIndex, rid, pins, null);
   }
 
   private TablePin snapshotForResource(

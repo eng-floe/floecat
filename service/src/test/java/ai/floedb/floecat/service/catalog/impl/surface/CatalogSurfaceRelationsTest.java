@@ -239,21 +239,23 @@ class CatalogSurfaceRelationsTest {
   }
 
   @Test
-  void doesNotTurnUnexpectedHydrationFailuresIntoRowErrors() {
+  void anUnexpectedHydrationFailureIsARowErrorCarryingItsCause() {
     var broken = userTable("broken");
     tableRepo.add(broken);
     graphView.failTableSchemaWith(
         broken.getResourceId(), new IllegalStateException("mapper invariant broken"));
 
-    assertThrows(
-        IllegalStateException.class,
-        () ->
-            list(
-                ListRelationsRequest.newBuilder()
-                    .setNamespaceId(namespaceId)
-                    .addKinds(ResourceKind.RK_TABLE)
-                    .setIncludeSchema(true),
-                1));
+    var response =
+        list(
+            ListRelationsRequest.newBuilder()
+                .setNamespaceId(namespaceId)
+                .addKinds(ResourceKind.RK_TABLE)
+                .setIncludeSchema(true),
+            1);
+
+    var error = response.getResults(0).getError();
+    assertEquals("broken", error.getName().getName());
+    assertEquals("mapper invariant broken", error.getError().getParamsMap().get("root_message"));
   }
 
   @Test

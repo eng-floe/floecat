@@ -15,6 +15,8 @@
  */
 package ai.floedb.floecat.storage.kv.dynamodb;
 
+import ai.floedb.floecat.aws.ClosedAwsClientDetector;
+import ai.floedb.floecat.storage.aws.AwsFailures;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.kv.AttrValue;
@@ -28,9 +30,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -213,7 +213,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
               stage.whenComplete(
                   (item, failure) -> {
                     if (failure != null) {
-                      emitter.fail(unwrapStageFailure(failure));
+                      emitter.fail(storageFailure(failure));
                     } else {
                       emitter.complete(item);
                     }
@@ -227,17 +227,26 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
             });
   }
 
-  private static Throwable unwrapStageFailure(Throwable failure) {
-    Throwable current = failure;
-    while ((current instanceof CompletionException || current instanceof ExecutionException)
-        && current.getCause() != null) {
-      current = current.getCause();
-    }
-    return current;
+  /**
+   * A call's failure as a storage failure. A {@link ConditionalCheckFailedException} or {@link
+   * TransactionCanceledException} stays as it is: the CAS and transaction paths recover on it.
+   */
+  private static Throwable storageFailure(Throwable failure) {
+    Throwable unwrapped = ClosedAwsClientDetector.unwrapStageFailure(failure);
+    return unwrapped instanceof ConditionalCheckFailedException
+            || unwrapped instanceof TransactionCanceledException
+        ? unwrapped
+        : AwsFailures.toStorageFailure("DynamoDB call", unwrapped);
   }
 
   private <T> Uni<T> dynamo(Function<DynamoDbAsyncClient, CompletionStage<T>> operation) {
-    return fromStage(ddb.call(operation));
+    CompletionStage<T> stage;
+    try {
+      stage = ddb.call(operation);
+    } catch (RuntimeException e) {
+      return Uni.createFrom().failure(storageFailure(e));
+    }
+    return fromStage(stage);
   }
 
   private <T> T dynamoBlocking(Function<DynamoDbAsyncClient, T> operation) {
@@ -746,7 +755,8 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
                     sawTransactionConflict = true;
                     continue;
                   }
-                  return Uni.createFrom().failure(ex);
+                  return Uni.createFrom()
+                      .failure(AwsFailures.toStorageFailure("DynamoDB transaction", ex));
                 }
               }
               if (sawConditionalFailure) {
@@ -756,7 +766,8 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
                 return Uni.createFrom().item(false);
               }
               if (!sawTransactionConflict) {
-                return Uni.createFrom().failure(ex);
+                return Uni.createFrom()
+                    .failure(AwsFailures.toStorageFailure("DynamoDB transaction", ex));
               }
               if (conflictAttempt >= TRANSACTION_CONFLICT_MAX_RETRIES) {
                 LOG.warnf(

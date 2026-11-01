@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.query.catalog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -261,7 +262,9 @@ class UserObjectBundleServiceTest {
     assertThat(first.getInputIndex()).isZero();
     assertThat(first.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_ERROR);
     assertThat(first.getFailure().getCode()).isEqualTo("catalog_bundle.build_failed");
-    assertThat(first.getFailure().getDetailsMap()).containsEntry("resource_id", TABLE_A.getId());
+    assertThat(first.getFailure().getDetailsMap())
+        .containsEntry("resource_id", TABLE_A.getId())
+        .containsEntry("correlation_id", "cid");
 
     assertThat(second.getInputIndex()).isEqualTo(1);
     assertThat(second.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
@@ -271,6 +274,142 @@ class UserObjectBundleServiceTest {
     assertThat(end.getEnd().getResolutionCount()).isEqualTo(2);
     assertThat(end.getEnd().getFoundCount()).isEqualTo(1);
     assertThat(end.getEnd().getNotFoundCount()).isZero();
+  }
+
+  @Test
+  void aRelationThatFailsSelectionErrorsOnlyThatRelation() {
+    graphView.failResolveFor(TABLE_A, new IllegalStateException("node unreadable"));
+
+    List<RelationResolution> items =
+        service.stream("cid", ctx, List.of(byId(TABLE_A), byId(TABLE_B)))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely()
+            .get(1)
+            .getResolutions()
+            .getItemsList();
+
+    assertThat(items)
+        .extracting(RelationResolution::getStatus)
+        .containsExactly(
+            ResolutionStatus.RESOLUTION_STATUS_ERROR, ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(items.get(0).getFailure().getDetailsMap())
+        .containsEntry("root_message", "node unreadable");
+  }
+
+  @Test
+  void aRelationWhoseSnapshotPinFailsErrorsOnlyThatRelation() {
+    resolver.failPin(TABLE_B, new IllegalStateException("no queryable snapshot"));
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(byId(TABLE_A), byId(TABLE_B)))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely();
+    List<RelationResolution> items = chunks.get(1).getResolutions().getItemsList();
+
+    assertThat(items)
+        .extracting(RelationResolution::getStatus)
+        .containsExactly(
+            ResolutionStatus.RESOLUTION_STATUS_FOUND, ResolutionStatus.RESOLUTION_STATUS_ERROR);
+    assertThat(items.get(1).getFailure().getDetailsMap())
+        .containsEntry("root_message", "no queryable snapshot");
+    assertThat(chunks.get(2).getEnd().getFoundCount()).isEqualTo(1);
+  }
+
+  @Test
+  void aViewWhosePinFailsDropsTheEagerBaseTablesOnlyItListed() {
+    NameRef b = NameRef.newBuilder().setCatalog("cat").setName("b").build();
+    ResourceId failing = registerViewOver(b, "failing_view");
+    ResourceId listing = registerViewOver(b, "listing_view");
+    resolver.failPin(failing, new IllegalStateException("base snapshot missing"));
+
+    assertThat(resolutions(viewCandidate(failing)))
+        .extracting(RelationResolution::getInputIndex, RelationResolution::getStatus)
+        .containsExactly(tuple(0, ResolutionStatus.RESOLUTION_STATUS_ERROR));
+    assertThat(resolutions(viewCandidate(failing), viewCandidate(listing)))
+        .extracting(RelationResolution::getInputIndex, RelationResolution::getStatus)
+        .containsExactlyInAnyOrder(
+            tuple(0, ResolutionStatus.RESOLUTION_STATUS_ERROR),
+            tuple(-1, ResolutionStatus.RESOLUTION_STATUS_FOUND),
+            tuple(1, ResolutionStatus.RESOLUTION_STATUS_FOUND));
+
+    // Two failing views over the same base, a chunk apart: the base is dropped both times.
+    ResourceId alsoFailing = registerViewOver(b, "also_failing_view");
+    resolver.failPin(alsoFailing, new IllegalStateException("base snapshot missing"));
+    List<TableReferenceCandidate> inputs = new ArrayList<>();
+    inputs.add(viewCandidate(failing));
+    for (int i = 0; i < 24; i++) {
+      inputs.add(byId(TABLE_A));
+    }
+    inputs.add(viewCandidate(alsoFailing));
+    assertThat(resolutions(inputs.toArray(TableReferenceCandidate[]::new)))
+        .extracting(RelationResolution::getInputIndex)
+        .doesNotContain(-1);
+
+    // A base dropped in one chunk is added by a view that lists it in the next.
+    inputs.set(inputs.size() - 1, viewCandidate(listing));
+    assertThat(resolutions(inputs.toArray(TableReferenceCandidate[]::new)))
+        .extracting(RelationResolution::getInputIndex, RelationResolution::getStatus)
+        .contains(tuple(-1, ResolutionStatus.RESOLUTION_STATUS_FOUND));
+  }
+
+  private ResourceId registerViewOver(NameRef base, String name) {
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId(name.toUpperCase(java.util.Locale.ROOT))
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    ViewNode viewNode =
+        new ViewNode(
+            viewId,
+            "blob://test/" + name,
+            DEFAULT_CATALOG,
+            ResourceId.getDefaultInstance(),
+            name,
+            "SELECT 1",
+            "spark",
+            List.of(SchemaColumn.newBuilder().setName("c0").setNullable(true).build()),
+            List.of(base),
+            List.of(),
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Optional.empty(),
+            Map.of(),
+            Map.of());
+    graphView.registerRelation(
+        viewId,
+        viewNode,
+        UserObjectBundleTestSupport.schemaFor("c0"),
+        NameRef.newBuilder().setCatalog("cat").setName(name).build());
+    return viewId;
+  }
+
+  private static TableReferenceCandidate viewCandidate(ResourceId viewId) {
+    return TableReferenceCandidate.newBuilder()
+        .addCandidates(QueryInput.newBuilder().setViewId(viewId))
+        .build();
+  }
+
+  private List<RelationResolution> resolutions(TableReferenceCandidate... candidates) {
+    return service.stream("cid", ctx, List.of(candidates))
+        .collect()
+        .asList()
+        .await()
+        .indefinitely()
+        .stream()
+        .filter(UserObjectsBundleChunk::hasResolutions)
+        .flatMap(chunk -> chunk.getResolutions().getItemsList().stream())
+        .toList();
+  }
+
+  private static TableReferenceCandidate byId(ResourceId tableId) {
+    return TableReferenceCandidate.newBuilder()
+        .addCandidates(QueryInput.newBuilder().setTableId(tableId))
+        .build();
   }
 
   @Test
@@ -921,7 +1060,10 @@ class UserObjectBundleServiceTest {
 
           private ResolutionResult emptyPinResolution(List<QueryInput> inputs) {
             return new ResolutionResult(
-                List.of(inputs.get(0).getTableId()), RelationPinSet.getDefaultInstance(), null);
+                List.of(inputs.get(0).getTableId()),
+                RelationPinSet.getDefaultInstance(),
+                null,
+                Map.of());
           }
         };
     service =
@@ -1595,7 +1737,7 @@ class UserObjectBundleServiceTest {
                 SnapshotTestSupport.relationPins(
                     SnapshotTestSupport.blobBackedPin(TABLE_A, TABLE_A_SNAPSHOT_ID));
             subscriberRef.get().cancelNow();
-            return new ResolutionResult(List.of(TABLE_A), pins, null);
+            return new ResolutionResult(List.of(TABLE_A), pins, null, Map.of());
           }
         };
     service =

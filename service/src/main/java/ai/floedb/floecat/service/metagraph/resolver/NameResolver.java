@@ -30,6 +30,7 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository.CatalogRef;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -433,7 +434,8 @@ public final class NameResolver {
         || tableId.getId().isBlank()
         || tableId.getAccountId().isBlank()
         || tableId.getKind() != ResourceKind.RK_TABLE) {
-      throw new IllegalStateException("non-canonical table resource id in resolver");
+      throw new BaseResourceRepository.CorruptionException(
+          "non-canonical table resource id in resolver");
     }
     return tableId;
   }

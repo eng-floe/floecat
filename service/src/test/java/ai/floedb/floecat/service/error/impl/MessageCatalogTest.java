@@ -29,6 +29,19 @@ import org.junit.jupiter.api.Test;
 
 class MessageCatalogTest {
   @Test
+  void anUnkeyedErrorSaysItsCauseWhereItsCodeShowsCauses() {
+    String cause = "Unsupported Delta column ID algorithm: CID_UNSPECIFIED";
+
+    var shown = GrpcErrors.fromThrowable(new IllegalArgumentException(cause), "corr");
+    var hidden = GrpcErrors.fromThrowable(new IllegalStateException("invariant broken"), "corr");
+
+    assertEquals(cause, shown.getStatus().getDescription());
+    assertEquals(cause, errorDetailOf(shown).getMessage());
+    assertEquals(cause, new MessageCatalog(Locale.ENGLISH).render(errorDetailOf(shown)));
+    assertEquals("Internal error. correlation_id=corr", hidden.getStatus().getDescription());
+  }
+
+  @Test
   void aVendingDiagnosticSurvivesRendering() {
     // The gap that let two interceptor surprises through: every assertion on these statuses was
     // made on the pre-interceptor exception, and LocalizeErrorsInterceptor rewrites the message

@@ -38,6 +38,7 @@ import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.repo.impl.SnapshotManifests;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
@@ -160,16 +161,16 @@ public class SnapshotHelper {
       // The root was superseded and its blob swept between the pointer read and the blob read —
       // the pointer has necessarily moved on, so follow it once instead of failing a live table.
       // The retry reads past the cache, which would otherwise hand back the same dead URI.
-      // Still null after the retry means the re-read pointer is also unreadable (corruption, or a
-      // pathological second race): fall through to the per-pin-kind not-found handling below.
       rootMeta = roots.pointerMetaForSafeConsistent(tableId);
       root = loadRoot(rootMeta);
       if (root == null && rootMeta != null && !rootMeta.getBlobUri().isEmpty()) {
         // The re-read pointer still names an unreadable blob (a vanished pointer would be a
-        // legitimate drop): every future query fails here the same way until the root is
-        // re-derived, so enqueue the table for the resync re-drive (fire-and-forget) before the
-        // per-pin-kind not-found handling below rejects this query.
+        // legitimate drop): a dangling pointer, or a pathological second race. Every future query
+        // fails here the same way until the root is re-derived, so enqueue the table for the
+        // resync re-drive (fire-and-forget) and fail the call as lost data.
         repairs.request(tableId);
+        throw new BaseResourceRepository.CorruptionException(
+            "table root pointer names a blob that cannot be read: " + rootMeta.getBlobUri());
       }
     }
 
@@ -292,7 +293,7 @@ public class SnapshotHelper {
       // table for the resync re-drive (which re-derives the definition ref from committed state).
       repairs.request(tableId);
       throw GrpcErrors.internal(
-          cid, QUERY_PINNED_TABLE_BLOB_MISSING, Map.of("table_id", tableId.getId()));
+          cid, QUERY_TABLE_DEFINITION_REF_MISSING, Map.of("table_id", tableId.getId()));
     }
     if (!entry.hasSnapshotRef() || entry.getSnapshotRef().getUri().isEmpty()) {
       // Every writer records a snapshot ref with the entry; its absence is a broken root
@@ -397,7 +398,8 @@ public class SnapshotHelper {
         && !snapshot.hasColumnIdentityMap()
         && tbl.columnIdAlgorithm() == ColumnIdAlgorithm.CID_CANONICAL_MAP) {
       // Snapshot writes reject a canonical snapshot without its map, so this is corrupt state that
-      // an empty schema would hide.
+      // an empty schema would hide. It fails only this relation: one table's snapshot lacks what a
+      // newer write path requires.
       throw GrpcErrors.internal(
           cid,
           SNAPSHOT_COLUMN_IDENTITY_MISSING,

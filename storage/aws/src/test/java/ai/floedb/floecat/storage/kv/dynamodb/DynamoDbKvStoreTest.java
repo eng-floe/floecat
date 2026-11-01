@@ -17,6 +17,8 @@ package ai.floedb.floecat.storage.kv.dynamodb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageThrottledException;
 import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.KvAttributes;
@@ -271,7 +273,7 @@ public class DynamoDbKvStoreTest {
   }
 
   @Test
-  void get_fixed_client_rethrows_closed_pool_without_retry() {
+  void get_fixed_client_raises_closed_pool_as_retryable_without_retry() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     RuntimeException closedPool = new RuntimeException("Connection pool shut down");
     CompletableFuture<GetItemResponse> failed = new CompletableFuture<>();
@@ -279,11 +281,12 @@ public class DynamoDbKvStoreTest {
     handler.setPendingGetFuture(failed);
     DynamoDbKvStore store = newStore(handler);
 
-    RuntimeException thrown =
+    StorageAbortRetryableException thrown =
         assertThrows(
-            RuntimeException.class, () -> store.get(key("pk", "sk")).await().indefinitely());
+            StorageAbortRetryableException.class,
+            () -> store.get(key("pk", "sk")).await().indefinitely());
 
-    assertSame(closedPool, thrown);
+    assertSame(closedPool, thrown.getCause());
     assertEquals(1, handler.getItemCalls);
   }
 
@@ -717,6 +720,19 @@ public class DynamoDbKvStoreTest {
         StorageTransactionConflictException.class,
         () -> store.txnWriteCas(ops).await().indefinitely());
     assertEquals(DynamoDbKvStore.TRANSACTION_CONFLICT_MAX_RETRIES + 1, handler.transactWriteCalls);
+  }
+
+  @Test
+  void txnWriteCas_reports_a_throttled_cancellation_as_throttled() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    handler.setCancellationReasonCodes(List.of("ThrottlingError"));
+    DynamoDbKvStore store = newStore(handler);
+
+    var ops =
+        List.<KvStore.TxnOp>of(
+            new KvStore.TxnPut(record("pk1", "sk1", "K", "v", 1L, Map.of()), 0L));
+    assertThrows(
+        StorageThrottledException.class, () -> store.txnWriteCas(ops).await().indefinitely());
   }
 
   @Test

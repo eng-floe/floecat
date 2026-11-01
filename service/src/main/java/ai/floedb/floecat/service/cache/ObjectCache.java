@@ -36,6 +36,7 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.query.SnapshotSelections;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.MessageLite;
 import java.util.ArrayList;
@@ -190,7 +191,7 @@ public final class ObjectCache {
                       pin.getSnapshotBlobUri()),
                   "resolved snapshot schema resolution returned null");
           if (!resolved.table().id().equals(pin.getTableId())) {
-            throw new IllegalArgumentException(
+            throw new BaseResourceRepository.CorruptionException(
                 "resolved schema does not match the resolved table snapshot");
           }
           return mapSchema(resolved.table(), resolved.schemaJson(), resolved.columnIdentityMap());

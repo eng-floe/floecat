@@ -41,6 +41,7 @@ import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.FakeTableRepository;
@@ -404,7 +405,7 @@ class NameResolverTest {
 
     NameRef ref = NameRef.newBuilder().setCatalog("cat2").addPath("ns2").setName("orders2").build();
     assertThatThrownBy(() -> resolver.resolveTableId("corr", "account", ref))
-        .isInstanceOf(IllegalStateException.class);
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class);
   }
 
   private static ResourceId rid(String account, String id, ResourceKind kind) {

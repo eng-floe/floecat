@@ -16,8 +16,11 @@
 
 package ai.floedb.floecat.service.common;
 
+import ai.floedb.floecat.types.InfrastructureFailure;
+
 /** Indicates that another attempt currently owns an idempotency claim. */
-public final class IdempotencyInProgressException extends RuntimeException {
+public final class IdempotencyInProgressException extends RuntimeException
+    implements InfrastructureFailure {
   public IdempotencyInProgressException(String message) {
     super(message);
   }

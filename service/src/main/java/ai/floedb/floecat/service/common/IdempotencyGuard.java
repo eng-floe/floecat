@@ -25,6 +25,7 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageThrottledException;
 import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Duration;
@@ -283,10 +284,11 @@ public final class IdempotencyGuard {
       }
       // Repository aborts are safe to release only because this helper's callback contract permits
       // one pointer transaction containing all business mutations and the receipt. They therefore
-      // cannot represent a pre-receipt partial commit.
+      // cannot represent a pre-receipt partial commit. A throttle applied nothing either.
       boolean knownAbort =
           failure instanceof BaseResourceRepository.AbortRetryableException
-              || failure instanceof StorageTransactionConflictException;
+              || failure instanceof StorageTransactionConflictException
+              || failure instanceof StorageThrottledException;
       boolean retryable = failure instanceof StorageAbortRetryableException || knownAbort;
       if (!retryable || knownAbort) {
         deletePendingIfOwned(store, key, opName, requestHash, now, expiresAt, corrId);

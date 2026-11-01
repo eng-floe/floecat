@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageException;
+import ai.floedb.floecat.storage.errors.StorageUnavailableException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -61,7 +62,7 @@ class S3BlobStoreTest {
     StorageException failure =
         assertThrows(StorageException.class, () -> failingStore(403).get("key"));
 
-    assertEquals(StorageException.class, failure.getClass());
+    assertEquals(StorageUnavailableException.class, failure.getClass());
   }
 
   @Test

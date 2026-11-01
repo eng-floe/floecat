@@ -57,6 +57,7 @@ import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
+import ai.floedb.floecat.types.RelationFailures;
 import io.opentelemetry.api.trace.Span;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -79,6 +80,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -395,6 +397,9 @@ public class UserObjectBundleService {
       String engineVersion,
       SnapshotRef snapshotOverride) {}
 
+  private static final String SELECT_FAILED_CODE = "catalog_bundle.select_failed";
+  private static final String PIN_FAILED_CODE = "catalog_bundle.pin_failed";
+
   private static final class GraphNodeMissingException extends RuntimeException {
     private final ResourceId relationId;
 
@@ -432,6 +437,8 @@ public class UserObjectBundleService {
     private final RelationResolutionMemo resolutionMemo;
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
+    // Every view that listed each eager base table, so a base stays while one of them succeeds.
+    private final Map<ResourceId, Set<ResourceId>> eagerBaseViews = new HashMap<>();
     // Requested inputs selected for a chunk that filled before they could be emitted (a view ahead
     // of them expanded into enough base tables to reach the cap). Emitted, in order, ahead of newly
     // selected inputs in the next chunk — so a resolution's position never depends on chunk size.
@@ -606,8 +613,83 @@ public class UserObjectBundleService {
         }
       }
       if (!toPin.isEmpty()) {
-        selectionCommitter.accumulate(toPin, diagnostics, this::isCancelled);
+        reportPinFailures(selectionCommitter.accumulate(toPin, diagnostics, this::isCancelled));
       }
+    }
+
+    /**
+     * Turns each pending relation whose snapshot could not be pinned into its ERROR resolution, and
+     * drops the eager base tables that only failed views listed: they are hints, and they have no
+     * pins. A dropped base is unseen, so a view that lists it later can still add it.
+     */
+    private void reportPinFailures(
+        Map<ResolvedRelation, ai.floedb.floecat.common.rpc.Error> failures) {
+      if (failures.isEmpty()) {
+        return;
+      }
+      Set<ResourceId> failedViews = new HashSet<>();
+      for (int i = 0; i < pending.size(); i++) {
+        if (pending.get(i) instanceof PendingFound found
+            && failures.get(found.relation())
+                instanceof ai.floedb.floecat.common.rpc.Error failure) {
+          timings.unrecordFound();
+          if (found.relation().node() instanceof ViewNode) {
+            failedViews.add(found.relation().relationId());
+          }
+          pending.set(
+              i,
+              new PendingResolved(
+                  errorResolution(
+                      found.inputIndex(),
+                      PIN_FAILED_CODE,
+                      found.relation().relationId().getId(),
+                      failure,
+                      List.of())));
+        }
+      }
+      if (failedViews.isEmpty()) {
+        return;
+      }
+      eagerBaseQueue.removeIf(cursor -> failedViews.contains(cursor.view.id()));
+      for (var items = pending.iterator(); items.hasNext(); ) {
+        if (items.next() instanceof PendingFound base
+            && !base.isRequestedInput()
+            && failedViews.containsAll(eagerBaseViews.get(base.relation().relationId()))) {
+          eagerBaseSeen.remove(SnapshotSelections.selectionKey(base.relation().relationId()));
+          eagerBaseViews.remove(base.relation().relationId());
+          items.remove();
+        }
+      }
+    }
+
+    /**
+     * One input's ERROR resolution: the error's message key, or {@code fallbackCode} when it has
+     * none, with its message and params.
+     */
+    private RelationResolution errorResolution(
+        int inputIndex,
+        String fallbackCode,
+        String resourceId,
+        ai.floedb.floecat.common.rpc.Error error,
+        List<QueryInput> attempted) {
+      ResolutionFailure.Builder failure =
+          ResolutionFailure.newBuilder()
+              .setCode(error.getMessageKey().isBlank() ? fallbackCode : error.getMessageKey())
+              .setMessage(error.getMessage())
+              .putAllDetails(error.getParamsMap())
+              .putDetails("default_catalog", defaultCatalogForDiagnostics())
+              .addAllAttempted(attempted);
+      if (!resourceId.isBlank()) {
+        failure.putDetails("resource_id", resourceId);
+      }
+      if (!error.getCorrelationId().isEmpty()) {
+        failure.putDetails("correlation_id", error.getCorrelationId());
+      }
+      return RelationResolution.newBuilder()
+          .setInputIndex(inputIndex)
+          .setStatus(ResolutionStatus.RESOLUTION_STATUS_ERROR)
+          .setFailure(failure)
+          .build();
     }
 
     private boolean isCancelled() {
@@ -703,11 +785,12 @@ public class UserObjectBundleService {
     /**
      * For a view with a populated {@code base_relations} list, eagerly resolves each base-table
      * {@link NameRef}, builds a synthetic {@link ResolvedRelation}, pins its snapshot, and adds it
-     * to {@code pending} with {@code inputIndex = -1} to signal it was not explicitly requested.
-     * Failures to resolve a NameRef are silently skipped (base_relations is a performance hint).
-     * Duplicate base-table IDs are deduplicated across the entire request stream. When a view has
-     * more base relations than fit in the current chunk, remaining base relations are carried over
-     * and emitted in subsequent chunks.
+     * to {@code pending} with {@code inputIndex = -1} to signal it was not explicitly requested. A
+     * base table that cannot be resolved is skipped (base_relations is a performance hint), and
+     * logged when resolving it failed for a reason that is not infrastructure. Duplicate base-table
+     * IDs are deduplicated across the entire request stream. When a view has more base relations
+     * than fit in the current chunk, remaining base relations are carried over and emitted in
+     * subsequent chunks.
      */
     private void drainEagerBaseTables(List<ResolvedRelation> toPin) {
       while (pending.size() < MAX_RESOLUTIONS_PER_CHUNK && !eagerBaseQueue.isEmpty()) {
@@ -728,15 +811,23 @@ public class UserObjectBundleService {
           && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
         throwIfCancelled(this::isCancelled);
         NameRef baseRef = baseRelations.get(cursor.nextBaseIndex++);
+        String accountId = ctx.getPrincipal().getAccountId();
+        NameRef enriched;
+        try {
+          enriched =
+              ViewContextUtils.enrichForViewContext(baseRef, cursor.view, defaultCatalogName());
+        } catch (RuntimeException e) {
+          RelationFailures.isolate(RelationFailures.label(accountId, baseRef), e);
+          continue;
+        }
         long resolveStartNs = System.nanoTime();
         try {
-          NameRef enriched =
-              ViewContextUtils.enrichForViewContext(baseRef, cursor.view, defaultCatalogName());
           Optional<ResourceId> baseIdOpt = resolveName(enriched);
           if (baseIdOpt.isEmpty()) {
             continue;
           }
           ResourceId baseId = baseIdOpt.get();
+          eagerBaseViews.computeIfAbsent(baseId, ignored -> new HashSet<>()).add(cursor.view.id());
           String baseKey = SnapshotSelections.selectionKey(baseId);
           if (eagerBaseSeen.contains(baseKey)) {
             continue; // deduplicate
@@ -758,6 +849,8 @@ public class UserObjectBundleService {
           // AS-OF overrides). Avoid re-adding a synthetic TABLE_ID selection here, which would
           // otherwise resolve to CURRENT and can overwrite AS-OF selections in the same batch.
           pending.add(new PendingFound(-1, syntheticRelation));
+        } catch (RuntimeException e) {
+          RelationFailures.isolate(RelationFailures.label(accountId, enriched), e);
         } finally {
           timings.addBaseInjectNanos(System.nanoTime() - resolveStartNs);
         }
@@ -841,22 +934,27 @@ public class UserObjectBundleService {
               "Resolved candidate missing graph node query_id=%s input_index=%d resource_id=%s",
               ctx.getQueryId(), inputIndex, e.relationId() == null ? "" : e.relationId().getId());
         }
-        ResolutionFailure failure =
-            ResolutionFailure.newBuilder()
-                .setCode("catalog_bundle.graph.missing_node")
-                .setMessage("relation resolved but missing from graph")
-                .putDetails("resource_id", e.relationId().getId())
-                .putDetails("default_catalog", defaultCatalogForDiagnostics())
-                .addAllAttempted(planned.normalized())
-                .build();
         return new PendingResolved(
-            RelationResolution.newBuilder()
-                .setInputIndex(inputIndex)
-                .setStatus(ResolutionStatus.RESOLUTION_STATUS_ERROR)
-                .setFailure(failure)
-                .build());
+            errorResolution(
+                inputIndex,
+                "catalog_bundle.graph.missing_node",
+                e.relationId().getId(),
+                ai.floedb.floecat.common.rpc.Error.newBuilder()
+                    .setMessage("relation resolved but missing from graph")
+                    .build(),
+                planned.normalized()));
       } catch (RuntimeException e) {
-        return new PendingFailure(inputIndex, e);
+        if (RelationFailures.isInfrastructure(e)) {
+          // Deferred to this input's position in the stream, like a planning failure.
+          return new PendingFailure(inputIndex, e);
+        }
+        return new PendingResolved(
+            errorResolution(
+                inputIndex,
+                SELECT_FAILED_CODE,
+                "",
+                GrpcErrors.relationFailure(inputLabel(planned), e, correlationId),
+                planned.normalized()));
       }
       if (LOG.isTraceEnabled()) {
         LOG.tracef(
@@ -877,6 +975,20 @@ public class UserObjectBundleService {
               .setStatus(ResolutionStatus.RESOLUTION_STATUS_NOT_FOUND)
               .setFailure(failure)
               .build());
+    }
+
+    /** A requested input as its candidates name it. */
+    private String inputLabel(PlannedInput planned) {
+      String accountId = ctx.getPrincipal().getAccountId();
+      return planned.normalized().stream()
+          .map(
+              input ->
+                  switch (input.getTargetCase()) {
+                    case TABLE_ID -> RelationFailures.label(input.getTableId());
+                    case VIEW_ID -> RelationFailures.label(input.getViewId());
+                    default -> RelationFailures.label(accountId, input.getName());
+                  })
+          .collect(Collectors.joining(" | "));
     }
 
     /**
@@ -964,8 +1076,9 @@ public class UserObjectBundleService {
 
     /**
      * Build one relation's full payload, timing into a task-local accumulator so parallel builds
-     * need no shared-counter deltas. A build failure is isolated to this relation as an ERROR
-     * resolution — one relation's decoration/schema/stats fault must not sink the whole bundle.
+     * need no shared-counter deltas. A build failure that is not infrastructure is isolated to this
+     * relation as an ERROR resolution — one relation's decoration/schema/stats fault must not sink
+     * the whole bundle.
      */
     private BuildOutcome buildOne(
         BuildPlan plan, QueryContext liveCtx, Optional<StatsProvider.TableStatsView> tableStats) {
@@ -991,28 +1104,18 @@ public class UserObjectBundleService {
         long decoration = Math.max(0L, taskTimings.decorationTotalNanos());
         return new BuildOutcome(found, result.info(), null, relationBuild, decoration, taskTimings);
       }
-      if (LOG.isDebugEnabled()) {
-        LOG.debugf(
-            "relation build failed query_id=%s input_index=%d resource_id=%s",
-            ctx.getQueryId(), found.inputIndex(), found.relation().relationId().getId());
-      }
       return new BuildOutcome(
-          found, null, buildErrorResolution(found, result.error()), 0L, 0L, taskTimings);
-    }
-
-    private RelationResolution buildErrorResolution(
-        PendingFound found, RelationBundleBuilder.BuildError error) {
-      ResolutionFailure failure =
-          ResolutionFailure.newBuilder()
-              .setCode(error.code())
-              .setMessage(error.message())
-              .putDetails("resource_id", error.resourceId())
-              .build();
-      return RelationResolution.newBuilder()
-          .setInputIndex(found.inputIndex())
-          .setStatus(ResolutionStatus.RESOLUTION_STATUS_ERROR)
-          .setFailure(failure)
-          .build();
+          found,
+          null,
+          errorResolution(
+              found.inputIndex(),
+              RelationBundleBuilder.BUILD_FAILED_CODE,
+              found.relation().relationId().getId(),
+              result.error(),
+              List.of()),
+          0L,
+          0L,
+          taskTimings);
     }
 
     private static RelationResolution foundResolution(int inputIndex, RelationInfo relation) {
@@ -1300,11 +1403,11 @@ public class UserObjectBundleService {
       return defaultCatalogName;
     }
 
-    // Reads the plain defaultCatalog* fields from selectOne failure builders, which run on fan-out
-    // threads. Safe without volatile: the driver resolves the default catalog in the serial
-    // planInput loop before mapOrdered submits any task, and task submission happens-before the
-    // task body -- so a fan-out thread sees the resolved value or the initial false/"" (never a
-    // torn write). Diagnostic-only; do not read these fields on a path that can precede the loop.
+    // Reads the plain defaultCatalog* fields from the ERROR resolution builders, some of which run
+    // on fan-out threads. Safe without volatile: the driver resolves the default catalog in the
+    // serial planInput loop before mapOrdered submits any task, and task submission happens-before
+    // the task body -- so a fan-out thread sees the resolved value or the initial false/"" (never
+    // a torn write). Diagnostic-only; do not read these fields on a path that can precede the loop.
     private String defaultCatalogForDiagnostics() {
       return defaultCatalogResolved ? defaultCatalogName : "";
     }

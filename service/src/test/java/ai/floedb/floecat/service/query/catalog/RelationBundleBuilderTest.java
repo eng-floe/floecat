@@ -780,7 +780,7 @@ class RelationBundleBuilderTest {
   }
 
   @Test
-  void buildFailureMapsToBuildErrorWithResourceId() {
+  void buildFailureIsThatRelationsError() {
     graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
@@ -798,10 +798,7 @@ class RelationBundleBuilderTest {
                 Optional.empty());
 
     assertThat(result.isSuccess()).isFalse();
-    RelationBundleBuilder.BuildError error = result.error();
-    assertThat(error.code()).isEqualTo("catalog_bundle.build_failed");
-    assertThat(error.resourceId()).isEqualTo(TABLE.getId());
-    assertThat(error.message()).contains("schema unavailable");
+    assertThat(result.error().getParamsMap().get("root_message")).contains("schema unavailable");
     assertThat(result.timings()).isNotNull();
   }
 

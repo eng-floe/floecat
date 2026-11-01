@@ -16,7 +16,11 @@
 
 package ai.floedb.floecat.storage.errors;
 
-public class StorageAbortRetryableException extends StorageException {
+import ai.floedb.floecat.types.InfrastructureFailure;
+
+/** A transient store failure; the operation may succeed if retried. */
+public class StorageAbortRetryableException extends StorageException
+    implements InfrastructureFailure {
   public StorageAbortRetryableException(String message) {
     super(message);
   }

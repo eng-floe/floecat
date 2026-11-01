@@ -32,6 +32,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageThrottledException;
 import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -512,6 +513,46 @@ public class IdempotencyGuardTest {
 
     assertThat(retried.resource()).isEqualTo("R1");
     assertThat(callbacks).hasValue(2);
+  }
+
+  @Test
+  void aThrottledMutationReleasesItsKeySoTheRetrySucceeds() {
+    var throttling =
+        new ConfirmedAbortOncePointerStore(
+            new InMemoryPointerStore(), () -> new StorageThrottledException("throttled", null));
+    repo = new IdempotencyRepositoryImpl(throttling, blobs);
+    var id = resourceId("throttled");
+    Function<IdempotencyGuard.SuccessCommitter<String>, IdempotencyGuard.CommittedCreate<String>>
+        mutation =
+            committer -> {
+              var committed = new IdempotencyGuard.CommittedCreate<>("done", id, meta(1));
+              var pointer =
+                  PointerReferences.blobPointer(
+                      "acct/" + ACCOUNT + "/things/throttled", "blob://things/throttled", 1L);
+              throttling.compareAndSetBatch(
+                  List.of(
+                      new PointerStore.CasUpsert(pointer.getKey(), 0L, pointer),
+                      committer.prepareSuccessOps(committed).getFirst()));
+              return committed;
+            };
+    Supplier<IdempotencyGuard.Result<String>> attempt =
+        () ->
+            IdempotencyGuard.runOnceCommitted(
+                ACCOUNT,
+                OP,
+                "throttled",
+                "request".getBytes(StandardCharsets.UTF_8),
+                id,
+                mutation,
+                strSer(),
+                strParser(),
+                repo,
+                60,
+                NOW,
+                () -> "corr");
+
+    assertThatThrownBy(attempt::get).isInstanceOf(StorageThrottledException.class);
+    assertThat(attempt.get().resource()).isEqualTo("done");
   }
 
   @Test
@@ -1037,15 +1078,24 @@ public class IdempotencyGuardTest {
   private static final class ConfirmedAbortOncePointerStore
       extends RepoTestPointerStores.DelegatingPointerStore {
     private final AtomicBoolean conflict = new AtomicBoolean(true);
+    private final Supplier<RuntimeException> abort;
 
     private ConfirmedAbortOncePointerStore(PointerStore delegate) {
+      this(
+          delegate,
+          () -> new StorageTransactionConflictException("injected confirmed abort", null));
+    }
+
+    private ConfirmedAbortOncePointerStore(
+        PointerStore delegate, Supplier<RuntimeException> abort) {
       super(delegate);
+      this.abort = abort;
     }
 
     @Override
     public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
       if (conflict.compareAndSet(true, false)) {
-        throw new StorageTransactionConflictException("injected confirmed abort", null);
+        throw abort.get();
       }
       return super.compareAndSetBatch(ops);
     }

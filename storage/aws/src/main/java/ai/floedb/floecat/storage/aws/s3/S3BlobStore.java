@@ -16,13 +16,12 @@
 
 package ai.floedb.floecat.storage.aws.s3;
 
-import ai.floedb.floecat.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.common.rpc.BlobHeader;
+import ai.floedb.floecat.storage.aws.AwsFailures;
 import ai.floedb.floecat.storage.aws.S3ClientManager;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageConflictException;
 import ai.floedb.floecat.storage.errors.StorageCorruptionException;
-import ai.floedb.floecat.storage.errors.StorageException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.errors.StoragePreconditionFailedException;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -39,7 +38,6 @@ import java.util.Optional;
 import java.util.function.Function;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
-import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -139,16 +137,11 @@ public class S3BlobStore implements BlobStore {
               .setVersionId(r.versionId() == null ? "" : r.versionId());
 
       return Optional.of(hb.build());
-    } catch (S3Exception e) {
-      if (e.statusCode() == 404) {
+    } catch (RuntimeException e) {
+      if (notFound(e)) {
         return Optional.empty();
       }
-
-      throw mapAndWrap("HEAD", k, e);
-    } catch (SdkClientException e) {
-      throw new StorageAbortRetryableException(msg("HEAD", k, e.getMessage()));
-    } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("HEAD", k, e);
+      throw s3Failure("HEAD", k, e);
     }
   }
 
@@ -162,15 +155,8 @@ public class S3BlobStore implements BlobStore {
                       GetObjectRequest.builder().bucket(bucket).key(k).build(),
                       ResponseTransformer.toBytes()))
           .asByteArray();
-    } catch (S3Exception e) {
-      if (e.statusCode() == 404) {
-        throw new StorageNotFoundException(msg("GET", k, "not found"));
-      }
-      throw mapAndWrap("GET", k, e);
-    } catch (SdkClientException e) {
-      throw new StorageAbortRetryableException(msg("GET", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("GET", k, e);
+      throw s3Failure("GET", k, e);
     }
   }
 
@@ -197,15 +183,8 @@ public class S3BlobStore implements BlobStore {
             msg("GET", k, "range returned " + bytes.length + " bytes; expected " + length), null);
       }
       return bytes;
-    } catch (S3Exception e) {
-      if (e.statusCode() == 404) {
-        throw new StorageNotFoundException(msg("GET", k, "not found"));
-      }
-      throw mapAndWrap("GET", k, e);
-    } catch (SdkClientException e) {
-      throw new StorageAbortRetryableException(msg("GET", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("GET", k, e);
+      throw s3Failure("GET", k, e);
     }
   }
 
@@ -232,15 +211,8 @@ public class S3BlobStore implements BlobStore {
             msg("GET", k, "range returned more than " + length + " bytes"), null);
       }
       return bytes;
-    } catch (S3Exception e) {
-      if (e.statusCode() == 404) {
-        throw new StorageNotFoundException(msg("GET", k, "not found"));
-      }
-      throw mapAndWrap("GET", k, e);
-    } catch (SdkClientException e) {
-      throw new StorageAbortRetryableException(msg("GET", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("GET", k, e);
+      throw s3Failure("GET", k, e);
     }
   }
 
@@ -360,12 +332,8 @@ public class S3BlobStore implements BlobStore {
           PutObjectRequest.builder().bucket(bucket).key(k).contentType(ct).metadata(meta).build();
 
       s3.call(c -> c.putObject(req, RequestBody.fromBytes(bytes)));
-    } catch (S3Exception e) {
-      throw mapAndWrap("PUT", k, e);
-    } catch (SdkClientException e) {
-      throw new StorageAbortRetryableException(msg("PUT", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("PUT", k, e);
+      throw s3Failure("PUT", k, e);
     }
   }
 
@@ -386,12 +354,8 @@ public class S3BlobStore implements BlobStore {
       PutObjectRequest req =
           PutObjectRequest.builder().bucket(bucket).key(k).contentType(ct).metadata(meta).build();
       s3.call(c -> c.putObject(req, RequestBody.fromBytes(bytes)));
-    } catch (S3Exception e) {
-      throw mapAndWrap("PUT", k, e);
-    } catch (SdkClientException e) {
-      throw new StorageAbortRetryableException(msg("PUT", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("PUT", k, e);
+      throw s3Failure("PUT", k, e);
     }
   }
 
@@ -437,15 +401,11 @@ public class S3BlobStore implements BlobStore {
 
       return new PageImpl(keys, next);
 
-    } catch (S3Exception e) {
-      if (e.statusCode() == 404) {
+    } catch (RuntimeException e) {
+      if (notFound(e)) {
         return new PageImpl(List.of(), "");
       }
-      throw mapAndWrap("LIST", p, e);
-    } catch (SdkClientException e) {
-      throw new StorageAbortRetryableException(msg("LIST", p, e.getMessage()));
-    } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("LIST", p, e);
+      throw s3Failure("LIST", p, e);
     }
   }
 
@@ -464,12 +424,8 @@ public class S3BlobStore implements BlobStore {
           response.commonPrefixes().stream().map(value -> value.prefix()).toList();
       String next = response.isTruncated() ? response.nextContinuationToken() : "";
       return new PageImpl(prefixes, next);
-    } catch (S3Exception e) {
-      throw mapAndWrap("LIST", p, e);
-    } catch (SdkClientException e) {
-      throw new StorageAbortRetryableException(msg("LIST", p, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("LIST", p, e);
+      throw s3Failure("LIST", p, e);
     }
   }
 
@@ -479,15 +435,11 @@ public class S3BlobStore implements BlobStore {
     try {
       s3.call(c -> c.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(k).build()));
       return true;
-    } catch (S3Exception e) {
-      if (e.statusCode() == 404) {
+    } catch (RuntimeException e) {
+      if (notFound(e)) {
         return true;
       }
-      throw mapAndWrap("DELETE", k, e);
-    } catch (SdkClientException e) {
-      throw new StorageAbortRetryableException(msg("DELETE", k, e.getMessage()));
-    } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("DELETE", k, e);
+      throw s3Failure("DELETE", k, e);
     }
   }
 
@@ -556,15 +508,11 @@ public class S3BlobStore implements BlobStore {
                       .versionId(versionId)
                       .build()));
       return true;
-    } catch (S3Exception e) {
-      if (e.statusCode() == 404) {
+    } catch (RuntimeException e) {
+      if (notFound(e)) {
         return true;
       }
-      throw mapAndWrap("DELETE_VERSION", k, e);
-    } catch (SdkClientException e) {
-      throw new StorageAbortRetryableException(msg("DELETE_VERSION", k, e.getMessage()));
-    } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("DELETE_VERSION", k, e);
+      throw s3Failure("DELETE_VERSION", k, e);
     }
   }
 
@@ -632,12 +580,8 @@ public class S3BlobStore implements BlobStore {
       }
       return deleted;
 
-    } catch (S3Exception e) {
-      throw mapAndWrap("DELETE_PREFIX", p, e);
-    } catch (SdkClientException e) {
-      throw new StorageAbortRetryableException(msg("DELETE_PREFIX", p, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("DELETE_PREFIX", p, e);
+      throw s3Failure("DELETE_PREFIX", p, e);
     }
   }
 
@@ -663,35 +607,31 @@ public class S3BlobStore implements BlobStore {
     return "s3 " + op + " failed for key=" + key + (detail == null ? "" : " : " + detail);
   }
 
-  private static StorageException mapAndWrap(String op, String key, S3Exception e) {
-    int sc = e.statusCode();
-    String detail =
-        e.awsErrorDetails() != null ? e.awsErrorDetails().errorMessage() : e.getMessage();
-
-    if (sc == 404) {
-      return new StorageNotFoundException(msg(op, key, "not found"));
+  /**
+   * An S3 call's failure: not found, conflict and failed precondition as themselves, anything else
+   * by the shared AWS rule.
+   */
+  private static RuntimeException s3Failure(String op, String key, RuntimeException e) {
+    if (e instanceof S3Exception s3) {
+      String detail =
+          s3.awsErrorDetails() != null ? s3.awsErrorDetails().errorMessage() : s3.getMessage();
+      switch (s3.statusCode()) {
+        case 404 -> {
+          return new StorageNotFoundException(msg(op, key, "not found"));
+        }
+        case 409 -> {
+          return new StorageConflictException(msg(op, key, detail));
+        }
+        case 412 -> {
+          return new StoragePreconditionFailedException(msg(op, key, detail));
+        }
+        default -> {}
+      }
     }
-
-    if (sc == 409) {
-      return new StorageConflictException(msg(op, key, detail));
-    }
-
-    if (sc == 412) {
-      return new StoragePreconditionFailedException(msg(op, key, detail));
-    }
-
-    if (sc == 408 || sc == 429 || sc >= 500) {
-      return new StorageAbortRetryableException(msg(op, key, detail));
-    }
-
-    return new StorageException(msg(op, key, detail), e);
+    return AwsFailures.toStorageFailure("s3 " + op + " for key=" + key, e);
   }
 
-  private static RuntimeException mapClosedPoolOrRethrow(
-      String op, String key, RuntimeException e) {
-    if (ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
-      return new StorageAbortRetryableException(msg(op, key, e.getMessage()), e);
-    }
-    return e;
+  private static boolean notFound(RuntimeException e) {
+    return e instanceof S3Exception s3 && s3.statusCode() == 404;
   }
 }

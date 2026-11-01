@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.aws;
 
+import ai.floedb.floecat.types.InfrastructureFailure;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -273,7 +274,15 @@ public final class RefreshingAwsClient<T extends AutoCloseable> implements AutoC
 
   private void requireOpen() {
     if (closed.get()) {
-      throw new IllegalStateException(name + " client is shut down");
+      throw new ClosedException(name);
+    }
+  }
+
+  /** A call on a client that has been closed: the process is shutting down. */
+  public static final class ClosedException extends IllegalStateException
+      implements InfrastructureFailure {
+    private ClosedException(String name) {
+      super(name + " client is shut down");
     }
   }
 

@@ -16,7 +16,11 @@
 
 package ai.floedb.floecat.storage.errors;
 
-public final class StorageCorruptionException extends StorageException {
+import ai.floedb.floecat.types.InfrastructureFailure;
+
+/** Stored bytes that do not match what the store recorded for them. */
+public final class StorageCorruptionException extends StorageException
+    implements InfrastructureFailure {
   public StorageCorruptionException(String message, Throwable cause) {
     super(message, cause);
   }

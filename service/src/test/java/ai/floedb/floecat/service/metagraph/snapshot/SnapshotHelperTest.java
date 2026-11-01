@@ -47,11 +47,13 @@ import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.types.InfrastructureFailure;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
@@ -406,6 +408,8 @@ class SnapshotHelperTest {
 
     assertThatThrownBy(() -> helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class)
+        // Lost snapshot metadata fails the call, not only this relation.
+        .isInstanceOf(InfrastructureFailure.class)
         .satisfies(
             e ->
                 assertThat(((StatusRuntimeException) e).getStatus().getCode())
@@ -796,6 +800,8 @@ class SnapshotHelperTest {
                     SnapshotRef.newBuilder().setSnapshotId(9).build(),
                     Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class)
+        // A broken table root fails the call, not only this relation.
+        .isInstanceOf(InfrastructureFailure.class)
         .satisfies(
             e ->
                 assertThat(((StatusRuntimeException) e).getStatus().getCode())
@@ -958,8 +964,8 @@ class SnapshotHelperTest {
   @Test
   void aPersistentlyUnreadableRootBlobFailsThePinAndEnqueuesRepair() {
     // The pointer names a blob no read can load, and the re-follow reads the same dead URI back:
-    // the table is broken for every query until its root is re-derived. The pin still fails this
-    // query, but the table must also be durably enqueued for the resync re-drive to converge.
+    // the table is broken for every query until its root is re-derived. The pin fails the call as
+    // lost data, and the table is durably enqueued for the resync re-drive to converge.
     var ptr = new InMemoryPointerStore();
     var blobStore = new InMemoryBlobStore();
     var deadRoots =
@@ -989,7 +995,7 @@ class SnapshotHelperTest {
     var deadHelper = new SnapshotHelper(repository, deadRoots, null, pins, repairs);
 
     assertThatThrownBy(() -> deadHelper.resolvedSnapshotFor("corr", table, null, Optional.empty()))
-        .isInstanceOf(StatusRuntimeException.class);
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class);
     assertThat(repairEnqueued(table)).isTrue();
   }
 
@@ -1016,7 +1022,9 @@ class SnapshotHelperTest {
     var localHelper = new SnapshotHelper(repository, roots, null, pins, repairs);
 
     assertThatThrownBy(() -> localHelper.resolvedSnapshotFor("corr", table, null, Optional.empty()))
-        .hasMessageContaining("INTERNAL");
+        .hasMessageContaining("INTERNAL")
+        // Lost snapshot metadata fails the call, not only this relation.
+        .isInstanceOf(InfrastructureFailure.class);
     // A broken root invariant: the table is durably enqueued for the resync re-drive.
     assertThat(repairEnqueued(table)).isTrue();
   }

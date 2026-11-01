@@ -39,13 +39,12 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.catalog.impl.surface.RelationScope.Segment;
 import ai.floedb.floecat.service.common.MutationOps;
-import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
-import io.grpc.StatusRuntimeException;
+import ai.floedb.floecat.types.RelationFailures;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -231,11 +230,10 @@ public final class CatalogSurfaceRelations {
                     name,
                     includeStatus);
         return result.setRelation(relation).build();
-      } catch (StatusRuntimeException failure) {
-        if (!GrpcErrors.isRelationScoped(failure)) {
-          throw failure;
-        }
-        return result.setError(toError(name, failure, corr)).build();
+      } catch (RuntimeException thrown) {
+        return result
+            .setError(GrpcErrors.relationFailure(RelationFailures.label(id), thrown, corr))
+            .build();
       }
     }
     return result.setError(noCandidateResolved(reference, corr)).build();
@@ -291,13 +289,14 @@ public final class CatalogSurfaceRelations {
                 ? source.hydrateRelation(ref, name, includeStatus, corr, mapper)
                 : mapper.fromRef(ref, name, includeStatus);
         results.add(RelationListResult.newBuilder().setRelation(relation).build());
-      } catch (StatusRuntimeException failure) {
-        if (!GrpcErrors.isRelationScoped(failure)) {
-          throw failure;
-        }
+      } catch (RuntimeException thrown) {
         results.add(
             RelationListResult.newBuilder()
-                .setError(toListError(ref.id(), name, failure, corr))
+                .setError(
+                    toListError(
+                        ref.id(),
+                        name,
+                        GrpcErrors.relationFailure(RelationFailures.label(ref.id()), thrown, corr)))
                 .build());
       }
     }
@@ -312,9 +311,7 @@ public final class CatalogSurfaceRelations {
     };
   }
 
-  private static RelationListError toListError(
-      ResourceId relationId, NameRef name, StatusRuntimeException failure, String corr) {
-    Error error = toError(name, failure, corr);
+  private static RelationListError toListError(ResourceId relationId, NameRef name, Error error) {
     return RelationListError.newBuilder()
         .setRelationId(relationId)
         .setName(name)
@@ -345,29 +342,6 @@ public final class CatalogSurfaceRelations {
         .setCode(ErrorCode.MC_NOT_FOUND)
         .setMessage("relation not found for any candidate: " + tried)
         .setCorrelationId(corr)
-        .build();
-  }
-
-  /**
-   * The error the failure already carries, so a per-item result keeps the code, message key and
-   * params the rest of the error surface reports. A throwable with no error detail attached is
-   * summarised instead.
-   */
-  private static Error toError(NameRef name, StatusRuntimeException failure, String corr) {
-    FloecatStatus decoded = FloecatStatus.fromThrowable(failure);
-    if (decoded == null) {
-      return Error.newBuilder()
-          .setCode(ErrorCode.MC_INTERNAL)
-          .setMessage("relation unreadable: " + name.getName())
-          .setCorrelationId(corr)
-          .build();
-    }
-    return Error.newBuilder()
-        .setCode(decoded.errorCode())
-        .setMessage(decoded.message())
-        .setMessageKey(decoded.messageKey())
-        .putAllParams(decoded.params())
-        .setCorrelationId(decoded.correlationId().isBlank() ? corr : decoded.correlationId())
         .build();
   }
 }

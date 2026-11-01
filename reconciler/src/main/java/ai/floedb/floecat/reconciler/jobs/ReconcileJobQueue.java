@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import ai.floedb.floecat.types.InfrastructureFailure;
 import org.eclipse.microprofile.config.ConfigProvider;
 
 /** Process-wide admission switch for every reconcile job queue implementation. */
@@ -41,7 +42,8 @@ public final class ReconcileJobQueue {
     }
   }
 
-  public static final class DisabledException extends IllegalStateException {
+  public static final class DisabledException extends IllegalStateException
+      implements InfrastructureFailure {
     public DisabledException() {
       super("Floecat reconcile job queue is disabled");
     }

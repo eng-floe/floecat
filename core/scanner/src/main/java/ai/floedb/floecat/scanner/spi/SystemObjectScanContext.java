@@ -27,6 +27,7 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.types.RelationFailures;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -217,6 +218,21 @@ public record SystemObjectScanContext(
 
   public Optional<GraphNode> tryResolve(ResourceId id) {
     return graph.resolve(id, catalogContext);
+  }
+
+  /**
+   * The system scans' entry point for one relation's step: the step's result, or empty when it
+   * fails for a reason that is not infrastructure, which leaves the relation {@code label} names
+   * (see {@link RelationFailures#label}) out of the scan and logs it. Infrastructure fails the
+   * scan.
+   */
+  public <T> Optional<T> forRelation(String label, Supplier<Optional<T>> step) {
+    try {
+      return step.get();
+    } catch (RuntimeException failure) {
+      RelationFailures.isolate(label, failure);
+      return Optional.empty();
+    }
   }
 
   /** Lightweight namespace refs from the graph view. */

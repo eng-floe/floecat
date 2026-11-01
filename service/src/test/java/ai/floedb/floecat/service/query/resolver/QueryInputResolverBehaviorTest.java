@@ -251,6 +251,34 @@ class QueryInputResolverBehaviorTest {
   }
 
   @Test
+  void anIsolatingResolutionReportsAnInputsOwnFailureAndPinsTheRest() {
+    List<QueryInput> inputs =
+        List.of(
+            QueryInput.newBuilder().setTableId(TABLE).build(),
+            QueryInput.newBuilder().setTableId(OTHER_TABLE).build());
+    graph.failSnapshotFor(OTHER_TABLE, new IllegalStateException("no queryable snapshot"));
+
+    var result = resolveIsolating(inputs);
+
+    assertThat(result.inputFailures()).containsOnlyKeys(1);
+    assertThat(result.relationPinSet().getPinsList()).hasSize(1);
+  }
+
+  private QueryInputResolver.ResolutionResult resolveIsolating(List<QueryInput> inputs) {
+    return resolver.resolveInputs(
+        "",
+        "cid",
+        inputs,
+        Optional.empty(),
+        Optional.empty(),
+        QueryInputResolver.ResolutionAttempt.isolating(
+            new QueryInputResolver.SnapshotSelectionMemo(),
+            null,
+            () -> false,
+            CatalogContext.empty()));
+  }
+
+  @Test
   void unresolvedNameFailsWithoutCreatingASelection() {
     QueryInput missing = QueryInput.newBuilder().setName(name("cat", "missing")).build();
 

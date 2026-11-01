@@ -37,7 +37,9 @@ public class TestCatalogGraphView extends BaseTestCatalogGraphView {
 
   private final Map<TypeKey, TypeNode> typesByQName = new HashMap<>();
   private final Map<ResourceId, AtomicInteger> tableSchemaLookups = new HashMap<>();
+  private final Map<ResourceId, RuntimeException> tableSchemaFailures = new HashMap<>();
   private final Map<String, AtomicInteger> resolveTableLookups = new HashMap<>();
+  private RuntimeException resolveTableFailure;
 
   public TestCatalogGraphView addType(TypeNode type) {
     addNode(type);
@@ -48,6 +50,16 @@ public class TestCatalogGraphView extends BaseTestCatalogGraphView {
 
   public Optional<TypeNode> findType(ResourceId namespaceId, String name) {
     return Optional.ofNullable(typesByQName.get(new TypeKey(namespaceId, name)));
+  }
+
+  /** Makes {@link #tableSchema} throw {@code failure} for {@code tableId}. */
+  public void failTableSchema(ResourceId tableId, RuntimeException failure) {
+    tableSchemaFailures.put(tableId, failure);
+  }
+
+  /** Makes {@link #resolveTable} throw {@code failure}. */
+  public void failResolveTable(RuntimeException failure) {
+    resolveTableFailure = failure;
   }
 
   public int tableSchemaLookupCount(ResourceId tableId) {
@@ -74,6 +86,9 @@ public class TestCatalogGraphView extends BaseTestCatalogGraphView {
     }
     String target = NameRefUtil.matchKey(ref);
     resolveTableLookups.computeIfAbsent(target, ignored -> new AtomicInteger()).incrementAndGet();
+    if (resolveTableFailure != null) {
+      throw resolveTableFailure;
+    }
     for (GraphNode node : nodes.values()) {
       if (!(node instanceof UserTableNode table)) {
         continue;
@@ -97,6 +112,10 @@ public class TestCatalogGraphView extends BaseTestCatalogGraphView {
   @Override
   public List<SchemaColumn> tableSchema(ResourceId tableId, CatalogContext context) {
     tableSchemaLookups.computeIfAbsent(tableId, ignored -> new AtomicInteger()).incrementAndGet();
+    RuntimeException failure = tableSchemaFailures.get(tableId);
+    if (failure != null) {
+      throw failure;
+    }
     List<SchemaColumn> explicit = super.tableSchema(tableId, context);
     if (!explicit.isEmpty()) {
       return explicit;

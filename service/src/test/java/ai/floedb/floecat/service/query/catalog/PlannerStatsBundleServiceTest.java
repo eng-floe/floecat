@@ -526,6 +526,8 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     TargetStatsResult result = results.get(0);
     assertEquals(StatsResultStatus.STATS_RESULT_ERROR, result.getStatus());
     assertEquals("planner_stats.target_stats.error", result.getFailure().getCode());
+    assertEquals("boom", result.getFailure().getDetailsMap().get("root_message"));
+    assertEquals("corr", result.getFailure().getDetailsMap().get("correlation_id"));
 
     TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(0L, end.getReturnedTargets());
