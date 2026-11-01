@@ -58,6 +58,7 @@ class RelationPurgeTest {
             Keys.snapshotTargetStatsManifestPointer(accountId, tableId, 7L),
             Keys.snapshotIndexArtifactActiveGenerationPointer(accountId, tableId, 7L),
             Keys.snapshotConstraintsPointer(accountId, tableId, 7L),
+            Keys.reconcileFinalizedSnapshotIdentityPointer(accountId, tableId, 7L),
             Keys.tableOwnerReuseLeasePointer(accountId, tableId, "publication"),
             Keys.tableOwnerPublicationProgressPointer(accountId, tableId, "publication"),
             Keys.tableRootByTable(accountId, tableId));

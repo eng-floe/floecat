@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.repo.cache;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -101,9 +102,11 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+    var fenced = TableWriteFence.fence(durable, List.of(new CasUpsert(key, expectedVersion, next)));
+    if (!fenced.writable()) return false;
     return index.mutateKeys(
         List.of(key),
-        () -> durable.compareAndSet(key, expectedVersion, next),
+        () -> durable.compareAndSetBatch(fenced.operations()),
         won -> {
           if (won) publish(key, next, expectedVersion + 1L);
           else index.refresh(key, durable.getConsistent(key));
@@ -135,10 +138,12 @@ public class IndexedPointerStore implements PointerStore {
   @Override
   public boolean compareAndSetBatch(List<CasOp> ops) {
     if (ops == null || ops.isEmpty()) return durable.compareAndSetBatch(ops);
-    List<String> keys = ops.stream().map(CasOp::key).distinct().toList();
+    var fenced = TableWriteFence.fence(durable, ops);
+    if (!fenced.writable()) return false;
+    List<String> keys = fenced.operations().stream().map(CasOp::key).distinct().toList();
     return index.mutateKeys(
         keys,
-        () -> durable.compareAndSetBatch(ops),
+        () -> durable.compareAndSetBatch(fenced.operations()),
         won -> {
           if (!won) {
             // Same ordering rule as the winning path: refresh is publish-if-present and

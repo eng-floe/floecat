@@ -1566,6 +1566,17 @@ public final class Keys {
         + String.format("%019d", sid);
   }
 
+  public static String reconcileFinalizedSnapshotIdentityPointerPrefix(
+      String accountId, String tableId) {
+    String tid = req("account_id", accountId);
+    String table = req("table_id", tableId);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/finalized-snapshots/by-id/"
+        + encode(table)
+        + "/";
+  }
+
   public static String reconcileDirtyParentPointerRootPrefix() {
     // This namespace deliberately does not descend from the legacy "dirty-parents/" prefix.
     // Older deployments scan that entire prefix and delete markers whose payload schema they do

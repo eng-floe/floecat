@@ -23,6 +23,7 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
@@ -170,6 +171,17 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       return true;
     }
     List<TransactWriteItem> tx = new ArrayList<>();
+    List<PointerStore.CasOp> tableWrites =
+        pointerTouches == null ? List.of() : List.copyOf(pointerTouches);
+    for (String tableRow : TableWriteFence.tableRowsRequiringChecks(tableWrites)) {
+      Optional<Long> version = loadGenericPointerVersion(tableRow);
+      if (version.isEmpty()) {
+        return false;
+      }
+      tx.add(
+          DynamoReconcileJobIndexBackend.buildGenericPointerCheck(
+              table, tableRow, version.orElseThrow()));
+    }
     for (PointerStore.CasCheckAbsent fence :
         accountFenceChecks(jobIndexBatch, leaseBatch, pointerTouches)) {
       tx.add(DynamoReconcileJobIndexBackend.buildGenericPointerCheckAbsent(table, fence.key()));
@@ -350,6 +362,27 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       sources.addAll(pointerTouches);
     }
     return AccountDeletionFence.checksForAccountWrites(sources);
+  }
+
+  private Optional<Long> loadGenericPointerVersion(String pointerKey) {
+    var key = DynamoReconcileJobIndexBackend.genericPointerKey(pointerKey);
+    var response =
+        dynamoCaller.call(
+            dynamoDbClientManager,
+            client ->
+                client.getItem(
+                    GetItemRequest.builder()
+                        .tableName(table)
+                        .consistentRead(true)
+                        .key(
+                            Map.of(
+                                ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()),
+                                ATTR_SORT_KEY, AttributeValue.fromS(key.sortKey())))
+                        .build()));
+    if (!response.hasItem() || response.item().isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(Long.parseLong(response.item().get(ATTR_VERSION).n()));
   }
 
   private String leaseRecordKey(String accountId, String jobId) {

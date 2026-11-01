@@ -41,6 +41,9 @@ public class RelationPurge {
     // Route root removal through the repository first so its pointer cache observes the delete.
     tableRoots.purgeRoot(tableId);
     pointerStore.deleteByPrefix(Keys.tablePrefix(tableId.getAccountId(), tableId.getId()));
+    pointerStore.deleteByPrefix(
+        Keys.reconcileFinalizedSnapshotIdentityPointerPrefix(
+            tableId.getAccountId(), tableId.getId()));
     hints.deleteRelation(tableId);
   }
 

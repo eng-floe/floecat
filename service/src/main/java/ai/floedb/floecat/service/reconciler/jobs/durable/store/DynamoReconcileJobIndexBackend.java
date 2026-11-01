@@ -23,6 +23,7 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -457,6 +458,13 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     List<PointerStore.CasOp> fenceSources = new ArrayList<>();
     fenceSources.addAll(JobIndexWriteBatchSupport.toCasOps(batch));
     fenceSources.addAll(extraPointerOps);
+    for (String tableRow : TableWriteFence.tableRowsRequiringChecks(fenceSources)) {
+      JobIndexEntrySnapshot current = loadGenericPointer(tableRow).orElse(null);
+      if (current == null) {
+        return false;
+      }
+      tx.add(buildGenericPointerCheck(tableRow, current.version()));
+    }
     for (PointerStore.CasCheckAbsent fence :
         AccountDeletionFence.checksForAccountWrites(fenceSources)) {
       tx.add(buildGenericPointerCheckAbsent(fence.key()));
@@ -1223,6 +1231,11 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   private TransactWriteItem buildGenericPointerCheck(String pointerKey, long expectedVersion) {
+    return buildGenericPointerCheck(table, pointerKey, expectedVersion);
+  }
+
+  static TransactWriteItem buildGenericPointerCheck(
+      String table, String pointerKey, long expectedVersion) {
     GenericPointerKey key = genericPointerKey(pointerKey);
     return TransactWriteItem.builder()
         .conditionCheck(
@@ -1276,7 +1289,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     return key.startsWith("/") ? key.substring(1) : key;
   }
 
-  private static GenericPointerKey genericPointerKey(String pointerKey) {
+  static GenericPointerKey genericPointerKey(String pointerKey) {
     String key = pointerKey == null ? "" : pointerKey;
     String k = key.startsWith("/") ? key.substring(1) : key;
     String accountByIdPrefix = stripLeadingSlash(Keys.accountPointerByIdPrefix());
@@ -1309,7 +1322,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     return new GenericPointerKey(accountRootPrefix + accountId, remainder);
   }
 
-  private record GenericPointerKey(String partitionKey, String sortKey) {}
+  record GenericPointerKey(String partitionKey, String sortKey) {}
 
   private TransactWriteItem buildCanonicalDelete(
       String partitionKey, String sortKey, ReconcileJobIndexStore.JobIndexDelete delete) {
