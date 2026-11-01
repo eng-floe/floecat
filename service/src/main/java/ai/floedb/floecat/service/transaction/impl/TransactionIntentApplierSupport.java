@@ -19,10 +19,12 @@ package ai.floedb.floecat.service.transaction.impl;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.catalog.impl.RelationPurge;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -139,6 +141,7 @@ public class TransactionIntentApplierSupport {
   @Inject EngineContextProvider engineContext;
   @Inject CatalogRepository catalogRepo;
   @Inject MarkerStore markerStore;
+  @Inject RelationPurge relationPurge;
 
   public boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
@@ -331,6 +334,7 @@ public class TransactionIntentApplierSupport {
       return ApplyOutcome.retryable("POINTER_TXN_CAS_FAILED", "pointer transaction conflict");
     }
 
+    purgeAppliedTableDeletes(intents);
     return ApplyOutcome.applied();
   }
 
@@ -405,6 +409,7 @@ public class TransactionIntentApplierSupport {
     }
 
     if (pointerStore.compareAndSetBatch(batch.operations())) {
+      purgeAppliedTableDeletes(intents);
       return ApplyOutcome.applied();
     }
     ApplyOutcome fenceOutcomeAfterFailure = findAccountDeletionConflict(intents);
@@ -413,6 +418,27 @@ public class TransactionIntentApplierSupport {
     }
     return classifyAtomicApplyFailure(
         appliedTransaction, expectedTransactionPointerVersion, intents, intentRepo);
+  }
+
+  private void purgeAppliedTableDeletes(List<TransactionIntent> intents) {
+    for (TransactionIntent intent : intents) {
+      if (!isDeleteSentinel(intent)) {
+        continue;
+      }
+      String prefix = Keys.tablePointerByIdPrefix(intent.getAccountId());
+      String tableId = Keys.idAfterPrefix(prefix, intent.getTargetPointerKey());
+      if (tableId == null
+          || !Keys.tablePointerById(intent.getAccountId(), tableId)
+              .equals(intent.getTargetPointerKey())) {
+        continue;
+      }
+      relationPurge.purgeTableState(
+          ResourceId.newBuilder()
+              .setAccountId(intent.getAccountId())
+              .setKind(ResourceKind.RK_TABLE)
+              .setId(tableId)
+              .build());
+    }
   }
 
   private ApplyOutcome appendAccountDeletionFenceChecks(

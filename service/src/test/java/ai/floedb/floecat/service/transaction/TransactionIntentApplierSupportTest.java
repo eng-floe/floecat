@@ -18,11 +18,15 @@ package ai.floedb.floecat.service.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.cache.HintCache;
+import ai.floedb.floecat.service.catalog.impl.RelationPurge;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -353,8 +357,8 @@ class TransactionIntentApplierSupportTest {
     String catalogId = "cat-1";
     String namespaceId = "ns-1";
     seedNamespace(pointers, accountId, namespaceId);
-    String tableId = "table-1";
-    String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
+    String tableId = "123e4567-e89b-12d3-a456-426614174000";
+    String blobUri = "/accounts/acct/tables/" + tableId + "/table/blob.pb";
     String byIdKey = Keys.tablePointerById(accountId, tableId);
     String byNameKey = Keys.tablePointerByName(accountId, catalogId, namespaceId, "orders");
 
@@ -380,6 +384,16 @@ class TransactionIntentApplierSupportTest {
     blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
     pointers.compareAndSet(byIdKey, 0L, PointerReferences.blobPointer(byIdKey, blobUri, 1L));
     pointers.compareAndSet(byNameKey, 0L, PointerReferences.blobPointer(byNameKey, blobUri, 1L));
+    List<String> tableScoped =
+        List.of(
+            Keys.snapshotPointerById(accountId, tableId, 7L),
+            Keys.snapshotTargetStatsManifestPointer(accountId, tableId, 7L),
+            Keys.snapshotConstraintsPointer(accountId, tableId, 7L),
+            Keys.tableOwnerReuseLeasePointer(accountId, tableId, "publication"));
+    for (String key : tableScoped) {
+      pointers.compareAndSet(
+          key, 0L, Pointer.newBuilder().setKey(key).setBlobUri("blob://value").build());
+    }
 
     TransactionIntent intent =
         TransactionIntent.newBuilder()
@@ -396,6 +410,98 @@ class TransactionIntentApplierSupportTest {
     assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
     assertTrue(pointers.get(byIdKey).isEmpty(), "table by-id pointer should be removed");
     assertTrue(pointers.get(byNameKey).isEmpty(), "owned table by-name pointer should be removed");
+    tableScoped.forEach(
+        key -> assertTrue(pointers.get(key).isEmpty(), () -> key + " should be removed"));
+  }
+
+  @Test
+  void applyTransactionAtomicallyPurgesDeletedTableState() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var txRepo = new TransactionRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    String tableId = "123e4567-e89b-12d3-a456-426614174000";
+    String tableBlob = "/accounts/acct/tables/" + tableId + "/table/blob.pb";
+    String byIdKey = Keys.tablePointerById(accountId, tableId);
+    String byNameKey = Keys.tablePointerByName(accountId, catalogId, namespaceId, "orders");
+    seedNamespace(pointers, accountId, namespaceId);
+
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName("orders")
+            .build();
+    blobs.put(tableBlob, table.toByteArray(), "application/x-protobuf");
+    pointers.compareAndSet(byIdKey, 0L, PointerReferences.blobPointer(byIdKey, tableBlob, 1L));
+    pointers.compareAndSet(byNameKey, 0L, PointerReferences.blobPointer(byNameKey, tableBlob, 1L));
+    String tableState = Keys.snapshotConstraintsPointer(accountId, tableId, 7L);
+    pointers.compareAndSet(
+        tableState,
+        0L,
+        Pointer.newBuilder().setKey(tableState).setBlobUri("blob://constraint").build());
+
+    Transaction currentTxn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_APPLYING)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    txRepo.create(currentTxn);
+    long txPointerVersion = txRepo.metaFor(accountId, txId).getPointerVersion();
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(Keys.transactionDeleteSentinelUri(accountId, txId, byIdKey))
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    intentRepo.create(intent);
+
+    Transaction appliedTxn =
+        currentTxn.toBuilder()
+            .setState(TransactionState.TS_APPLIED)
+            .setUpdatedAt(Timestamps.fromMillis(10))
+            .build();
+    var outcome =
+        support.applyTransactionAtomically(
+            appliedTxn, txPointerVersion, List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertTrue(pointers.get(byIdKey).isEmpty(), "table by-id pointer should be removed");
+    assertTrue(pointers.get(byNameKey).isEmpty(), "owned table by-name pointer should be removed");
+    assertTrue(pointers.get(tableState).isEmpty(), "table-scoped state should be removed");
+    assertEquals(
+        TransactionState.TS_APPLIED,
+        readTransaction(
+                blobs,
+                pointers
+                    .get(Keys.transactionPointerById(accountId, txId))
+                    .orElseThrow()
+                    .getBlobUri())
+            .getState());
   }
 
   @Test
@@ -1282,6 +1388,11 @@ class TransactionIntentApplierSupportTest {
     var markerStore = new MarkerStore();
     inject(markerStore, "pointerStore", pointerStore);
     inject(support, "markerStore", markerStore);
+    var relationPurge = new RelationPurge();
+    inject(relationPurge, "pointerStore", pointerStore);
+    inject(relationPurge, "tableRoots", mock(TableRootRepository.class));
+    inject(relationPurge, "hints", mock(HintCache.class));
+    inject(support, "relationPurge", relationPurge);
     return support;
   }
 
