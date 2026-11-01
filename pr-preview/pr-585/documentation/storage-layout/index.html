@@ -1838,11 +1838,15 @@ and therefore have no blob key.</p>
 /accounts/by-name/{account_name}
 /accounts/{account_id}
 /accounts/{account_id}/deleting
+/account-purge/{account_id}
+/catalog-integration-credential-cleanup/{account_id}/{integration_id}/{credential_generation}
 /accounts/{account_id}/catalogs/by-id/{catalog_id}
 /accounts/{account_id}/catalogs/by-name/{catalog_name}
+/accounts/{account_id}/catalogs/deleting/{catalog_id}
 /accounts/{account_id}/storage-authorities/by-id/{authority_id}
 /accounts/{account_id}/storage-authorities/by-name/{authority_name}
 /accounts/{account_id}/namespaces/by-id/{namespace_id}
+/accounts/{account_id}/namespaces/deleting/{namespace_id}
 /accounts/{account_id}/catalogs/{catalog_id}/namespaces/by-path/{path...}
 /accounts/{account_id}/tables/by-id/{table_id}
 /accounts/{account_id}/catalogs/{catalog_id}/namespaces/{namespace_id}/tables/by-name/{table_name}
@@ -1870,6 +1874,10 @@ and therefore have no blob key.</p>
 /accounts/{account_id}/tables/{table_id}/owner-reuse-leases/{publication_id}
 /accounts/{account_id}/tables/{table_id}/owner-publication-progress/{publication_id}
 </code></pre></div>
+<p>The two global maintenance queues sit outside <code>/accounts/{account_id}/</code>: account purge entries
+survive the account-prefix sweep, and credential-cleanup entries survive deletion of their source
+integration. An account purge entry is created atomically with the durable account deletion fence
+and is removed only after the owning replica completes the account-wide purge.</p>
 <p>A catalog carries a <code>markers/children</code> marker versioning its set of namespaces. Every writer that
 adds one asserts and advances it in its own batch — the namespace services, the overlay reconciler,
 a catalog move, and bootstrap seeding — and a catalog delete requires both it and the overlays
@@ -1913,8 +1921,9 @@ together or neither does:</p>
 <p>An overlay references a supplied or automatically created Catalog. Its <code>by-integration</code> and
 <code>by-catalog</code> dependency pointers are written and removed atomically with the overlay resource. An
 automatically created Catalog is written in that same create batch and removed in the owning
-Overlay's final fenced delete batch. Fixed generation markers on both parents close create/delete
-races, and the per-overlay deletion marker fences reconciliation while an overlay is retired.</p>
+Overlay's final fenced delete batch after the shared catalog cascade driver has removed its
+namespaces and prepared its durable catalog fence. Fixed generation markers on both parents close
+create/delete races, and the per-overlay deletion marker fences reconciliation during deletion.</p>
 <p>Catalog integration secret payloads are stored outside the resource blob through SecretsManager:</p>
 <div class="highlight"><pre><span></span><code>accounts/{account_id}/catalog-integrations/{integration_id}.credentials.{credential_generation}
 </code></pre></div>

@@ -519,6 +519,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#cascading-deletion" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cascading Deletion
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#security-and-context" class="md-nav__link">
     <span class="md-ellipsis">
       Security and Context
@@ -1968,6 +1977,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#cascading-deletion" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cascading Deletion
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#security-and-context" class="md-nav__link">
     <span class="md-ellipsis">
       Security and Context
@@ -2180,10 +2198,10 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
 <li><strong>DirectoryServiceImpl</strong> – Provides fast name↔ID lookup via <code>MetadataGraph</code> (Resolve<em>/Lookup</em>) and
   reuses the graph’s ResolveFQ helpers for list/prefix pagination.</li>
 <li><strong>AccountServiceImpl</strong> – Administers accounts and enforces conventional permissions. Account
-  deletion installs a durable write fence, then uses strongly consistent enumeration to remove
-  catalog overlays before their integrations, followed by legacy connectors and local catalog
-  descendants. Retrying a committed account delete resumes cleanup using the deletion record's
-  original mutation metadata.</li>
+  deletion atomically installs its durable sharded write fence and queues an account purge, deletes
+  the account row, and revokes storage-authority, connector, and catalog-integration credentials.
+  A retry repeats the idempotent credential revocation. The RPC does not walk the account's
+  catalogs, namespaces, or relations.</li>
 <li><strong>CatalogIntegrationsImpl</strong> – Provides CRUD for external catalog identity records. The contract is
   intentionally independent of legacy Connectors. It persists typed non-secret authentication
   configuration for OAuth client credentials, bearer tokens, AWS assume-role/access-key, and AWS
@@ -2219,8 +2237,8 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
   dependent overlays also requires <code>catalog-overlay.delete</code>.</li>
 <li><strong>CatalogOverlaysImpl</strong> – Binds an integration and optional upstream namespace filters to a
   supplied Catalog, or atomically creates an owned Catalog when the target is omitted. Supplied
-  Catalogs remain independently managed and may be shared; owned Catalogs are removed with their
-  Overlay once empty and unshared. Creating an overlay atomically publishes Integration and Catalog
+  Catalogs remain independently managed and may be shared; unshared owned Catalogs and their
+  contents are recursively deleted with their Overlay. Creating an overlay atomically publishes Integration and Catalog
   dependency pointers while requiring both parents to remain at their validated versions, and
   advances both dependency markers in the same transaction. <code>CM_REPLACE</code> atomically swaps in a new
   overlay identity and may bind it to another Integration or Catalog while advancing all affected
@@ -2453,6 +2471,37 @@ writer against a user's <code>DeleteCatalog</code>.</p>
 catalog has no parent namespace, so its parent fence is empty and the catalog fence is the only thing
 standing between it and a concurrent delete.</p>
 <p>Namespace deletes assert nothing about their catalog. Removal is the direction that orphans nothing.</p>
+<h3 id="cascading-deletion">Cascading Deletion<a class="headerlink" href="#cascading-deletion" title="Permanent link">&para;</a></h3>
+<p><code>DeleteCatalog</code> and <code>DeleteNamespace</code> take <code>cascade</code>. Without it a non-empty target is a conflict, as
+above. With it the RPC deletes only the rows that give relations their place in the tree, and leaves
+the relations to GC, so its cost grows with the number of namespaces rather than tables
+(<code>CascadeDeletion</code>):</p>
+<ol>
+<li>The caller's precondition is checked against the target before anything is deleted.</li>
+<li>A durable deletion fence is installed on the target. A catalog fence blocks new namespaces and
+   overlays; a namespace fence blocks new child namespaces and relations. Updates and ordinary
+   deletes also require the fence to be absent.</li>
+<li>A catalog's overlays are deleted behind their deletion fence, without retiring what they
+   materialized — step 4 removes all of it anyway. This needs <code>catalog-overlay.delete</code>.</li>
+<li>Every namespace in the captured subtree is fenced before any of those rows are removed, then
+   deleted deepest first under its shape markers and the same no-child check as a plain delete, but
+   without the relation check. Each namespace fence is removed atomically with its row.</li>
+<li>The target row, its shape markers, and its deletion fence are removed atomically.</li>
+</ol>
+<p><code>CascadeDeletion</code> is the transactional driver for both catalog and namespace cascades;
+<code>CatalogIntegrationCascadeDeletion</code> applies the same fence/work/final-transaction workflow to
+integration-owned overlays. Catalogs, namespaces, integrations and overlays all acquire the same
+<code>DurableDeletionFence.Fence</code> token, which carries the exact fence version into the final CAS without
+a second pointer read. Account deletion deliberately uses its separate sharded fence and durable
+purge queue because its account row is removed before cleanup begins.</p>
+<p>The target remains addressable while cleanup is in progress, but descendant writers are excluded by
+the durable fences. If the RPC crashes or exhausts its retry budget, the fences remain and a later
+call resumes the same deletion. A child that committed before its parent was fenced is discovered by
+the next pass; it cannot extend further after that parent fence is installed.</p>
+<p>A relation whose namespace is gone no longer resolves (<code>MetaGraph.resolve</code>), and <code>PointerGc</code>
+deletes it — row, snapshot, stats, root and hint pointers — on its next pass over the account's
+relation name keys. <code>CasBlobGc</code> then reclaims its blobs. A cascade requires <code>table.write</code> and
+<code>view.write</code> in addition to the target's own write permission.</p>
 <h3 id="security-and-context">Security and Context<a class="headerlink" href="#security-and-context" title="Permanent link">&para;</a></h3>
 <p><code>InboundContextInterceptor</code> reads <code>x-query-id</code>, <code>x-engine-kind</code>, <code>x-engine-version</code>,
 <code>x-environment-kind</code>, <code>x-environment-version</code>, and <code>x-correlation-id</code> headers,
@@ -2537,8 +2586,10 @@ abandoned after <code>floecat.gc.cas.max-consecutive-continuation-ticks</code> s
 account; raise that bound if the oldest-sweep-age metric shows a large account repeatedly restarting.
 Snapshot compatibility artifacts under <code>snapshots/&lt;id&gt;/compat/</code> are gateway-managed mutable
 artifacts, not CAS objects, and remain owned by explicit snapshot/table lifecycle cleanup rather
-than this CAS sweep. <code>PointerGc</code> removes
-orphan/stale pointers. <code>TransactionGc</code> reaps expired/aborted transaction artifacts and dangling
+than this CAS sweep. <code>PointerGcScheduler</code> also drains <code>AccountPurge</code>: only the replica that owns a
+fenced account first revokes its credentials, then removes its reconcile jobs, account-scoped
+pointers and blobs, evicts its caches, and acknowledges the durable purge entry. <code>PointerGc</code> removes
+orphan/stale pointers, and relations stranded by a cascading delete (see Cascading Deletion). <code>TransactionGc</code> reaps expired/aborted transaction artifacts and dangling
 intent indices. <code>ReconcileJobGc</code> enforces durable reconcile retention and queue/dedupe cleanup for
 terminal jobs. The default finished reconcile-job retention window is 24 h
 (<code>floecat.gc.reconcile-jobs.retention-ms=86400000</code>); older terminal jobs are removed from job-list

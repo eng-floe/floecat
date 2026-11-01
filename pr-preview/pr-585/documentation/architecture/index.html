@@ -1858,11 +1858,13 @@ connectivity validation, adapter selection, or reconciliation. Legacy connectors
 and are not part of either new contract.</p>
 <p>An overlay references one Catalog. The caller may provide an independently managed Catalog, or
 Floecat can atomically create an owned Catalog with the overlay. Multiple overlays may target an
-independent Catalog; an owned Catalog is deleted with its overlay once empty and unshared. Overlay
-creation is conditioned on current parent pointer versions and atomically publishes dependency
-indexes while advancing fixed dependency markers. Integration and Catalog deletion check the
-strongly consistent indexes and matching markers, closing concurrent create/delete races. Account
-deletion removes overlays before integrations and catalogs.</p>
+independent Catalog; deleting an unshared owning overlay recursively deletes its Catalog and
+contents. Overlay creation is conditioned on current parent pointer versions and atomically
+publishes dependency indexes while advancing fixed dependency markers. Integration and Catalog
+deletion check the strongly consistent indexes and matching markers, closing concurrent
+create/delete races. Account deletion fences every account-scoped writer, then an owner-local GC
+worker removes all account-scoped pointers in one prefix sweep; overlay dependency ordering is
+therefore unnecessary.</p>
 <h2 id="components">Components<a class="headerlink" href="#components" title="Permanent link">&para;</a></h2>
 <p>The following modules compose the system (see linked docs for deep dives):</p>
 <table>

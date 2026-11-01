@@ -2281,8 +2281,8 @@ Catalog &quot;analytics&quot;                     independently managed target
 </code></pre></div>
 <p>An overlay is a mapping resource that references exactly one Integration and one Floecat <code>Catalog</code>.
 The caller may supply an independently managed Catalog, or omit it and let Floecat create an owned
-Catalog with the overlay name. Deleting an owning overlay deletes that Catalog once it is empty and
-unshared. Multiple overlays may target an independently managed Catalog. An overlay owns the
+Catalog with the overlay name. Deleting an owning overlay recursively deletes that Catalog once it
+is unshared. Multiple overlays may target an independently managed Catalog. An overlay owns the
 materialized contributions produced by its mapping. Name resolution, listing, pinning, planning,
 and garbage collection operate on ordinary Catalog, Namespace, Table, View, and Snapshot resources
 with no overlay-specific read path.</p>
@@ -2376,8 +2376,8 @@ Overlay references it. Renaming either resource does not rename the other becaus
 immutable resource identity rather than display name.</p>
 <p>An explicitly selected target Catalog remains directly manageable. Clients may create local
 namespaces and relations in it, and other overlays may contribute non-conflicting resources. An
-owned Catalog must be empty of user-managed namespaces, tables, and views and unshared before its
-Overlay can be deleted. Materialized Tables and Views carry
+owned Catalog must be unshared before its Overlay can be deleted; deleting the Overlay recursively
+deletes every namespace and relation in that Catalog. Materialized Tables and Views carry
 typed Integration and Overlay provenance and reject direct mutation while managed by the Overlay.
 Namespaces are shared structural containers rather than exclusively Overlay-owned resources.
 Namespace claim state records every Overlay using a path and whether the container was originally
@@ -2395,9 +2395,11 @@ relation names do not collide.</p>
 <p>The Integration and Catalog bindings are immutable through update because changing either retargets
 everything the Overlay has materialized. A replacing create produces a new Overlay identity and may
 choose different bindings after the previous Overlay's contributions are retired.</p>
-<p>Deleting an Overlay installs a deletion fence, removes only Tables, Views, snapshot state, and
-namespace claims managed by that Overlay, then removes its dependencies and resource record. It
-never deletes the target Catalog or unrelated content.</p>
+<p>Deleting an Overlay installs a deletion fence. For an independently managed target it removes only
+Tables, Views, snapshot state, and namespace claims managed by that Overlay, then removes its
+dependencies and resource record. For an owned target, it uses the catalog cascade driver to fence
+and recursively delete the unshared Catalog and all of its contents, then atomically removes the
+Overlay, Catalog, and their deletion fences.</p>
 <h2 id="namespace-selection">Namespace selection<a class="headerlink" href="#namespace-selection" title="Permanent link">&para;</a></h2>
 <p>Selection is expressed as include and exclude namespace paths in the upstream catalog's namespace
 space.</p>
@@ -2624,7 +2626,7 @@ deletion changes invalidate older work.</p>
 </tr>
 <tr>
 <td>Delete overlay</td>
-<td>Preflights owned-Catalog emptiness and sharing, installs an Overlay deletion fence, explicitly retires its materialized relations and namespace claims, then atomically removes the Overlay and any owned Catalog</td>
+<td>Preflights owned-Catalog sharing and installs an Overlay deletion fence; independent targets explicitly retire the Overlay's materialized relations and namespace claims, while owned targets use the catalog cascade driver and atomically remove the Overlay with the recursively emptied Catalog</td>
 <td>Cancel and drain durable jobs</td>
 </tr>
 <tr>
@@ -2639,7 +2641,7 @@ deletion changes invalidate older work.</p>
 </tr>
 <tr>
 <td>Cascade integration delete</td>
-<td>Durable Integration and Overlay deletion fences, explicit retirement of each dependent Overlay's contributions, owned-Catalog cleanup, Overlay and Integration resource deletion, and credential cleanup</td>
+<td>Durable Integration and Overlay deletion fences; independent targets explicitly retire each dependent Overlay's contributions, while owned targets use the catalog cascade driver; then delete Overlay and Integration resources and clean up credentials</td>
 <td>Cancel and drain durable jobs</td>
 </tr>
 <tr>
@@ -2649,13 +2651,14 @@ deletion changes invalidate older work.</p>
 </tr>
 </tbody>
 </table>
-<p>Overlay lifecycle code explicitly deletes its logical <code>Table</code> and <code>View</code> resources, releases its
-Namespace claims, prunes only eligible empty Overlay-created Namespaces, and purges Table
-snapshot/root pointer state. It never deletes the target Catalog, another Overlay's resources, or
-directly managed content. Existing pointer and CAS-blob garbage collection remains responsible for
-reclaiming unreachable immutable blobs. Garbage collection is not a substitute for retiring the
-logical resource pointers. Validation-error records will be retained with their Table and atomically
-replaced or removed when a later validation generation is published.</p>
+<p>For an independently managed target, Overlay lifecycle code explicitly deletes its logical <code>Table</code>
+and <code>View</code> resources, releases its Namespace claims, prunes only eligible empty Overlay-created
+Namespaces, and purges Table snapshot/root pointer state. It never deletes that target Catalog,
+another Overlay's resources, or directly managed content. For an owned target, the shared catalog
+cascade path removes all namespace pointers synchronously and leaves relation cleanup to pointer GC.
+Existing pointer and CAS-blob garbage collection remains responsible for reclaiming unreachable
+immutable blobs. Validation-error records will be retained with their Table and atomically replaced
+or removed when a later validation generation is published.</p>
 <h2 id="durability-contract">Durability contract<a class="headerlink" href="#durability-contract" title="Permanent link">&para;</a></h2>
 <p>Integration-owned resources are held to a stricter durability contract than the Connector path they
 replace. This is a deliberate decision, not a side effect of the decomposition, and it is intended
