@@ -97,6 +97,7 @@ public class AccountPurge {
     String deletionFence = Keys.accountDeletionMarker(accountId);
     int pointersDeleted = pointerStore.deleteByPrefixExcluding(accountPrefix, deletionFence);
     assertAccountPointerSweepComplete(accountPrefix, deletionFence);
+    pointerStore.deleteByPrefix(Keys.relationPurgeAccountPrefix(accountId));
     int blobsDeleted = blobStore.deletePrefix(accountPrefix);
 
     // Evict last so local reads cannot repopulate deleted content from a live durable pointer.

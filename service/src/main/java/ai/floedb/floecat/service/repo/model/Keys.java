@@ -71,6 +71,7 @@ public final class Keys {
   public static final String SEG_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP =
       "/catalog-integration-credential-cleanup/";
   public static final String SEG_ACCOUNT_PURGE = "/account-purge/";
+  public static final String SEG_RELATION_PURGE = "/relation-purge/";
 
   private static String req(String name, String v) {
     if (v == null || v.isBlank()) {
@@ -141,6 +142,22 @@ public final class Keys {
 
   public static String accountPurgePointer(String accountId) {
     return SEG_ACCOUNT_PURGE + encode(req("account_id", accountId));
+  }
+
+  public static String relationPurgePrefix() {
+    return SEG_RELATION_PURGE;
+  }
+
+  public static String relationPurgeAccountPrefix(String accountId) {
+    return SEG_RELATION_PURGE + encode(req("account_id", accountId)) + "/";
+  }
+
+  public static String relationPurgePointer(
+      String accountId, String catalogId, String namespaceId) {
+    return relationPurgeAccountPrefix(accountId)
+        + encode(req("catalog_id", catalogId))
+        + "/"
+        + encode(req("namespace_id", namespaceId));
   }
 
   private static String joinPathSegments(List<String> segments) {

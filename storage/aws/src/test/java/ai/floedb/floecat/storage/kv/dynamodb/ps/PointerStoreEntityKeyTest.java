@@ -45,4 +45,20 @@ class PointerStoreEntityKeyTest {
     assertEquals(PointerStoreEntity.CREDENTIAL_CLEANUP_PK, key.partitionKey());
     assertEquals("catalog-integration-credential-cleanup/", key.sortKey());
   }
+
+  @Test
+  void relationPurgePointerUsesDedicatedPartition() {
+    var key = PointerStoreEntity._testKey("/relation-purge/account/catalog/namespace");
+
+    assertEquals(PointerStoreEntity.RELATION_PURGE_PK, key.partitionKey());
+    assertEquals("relation-purge/account/catalog/namespace", key.sortKey());
+  }
+
+  @Test
+  void relationPurgePrefixUsesDedicatedPartition() {
+    var key = PointerStoreEntity.prefixKey("/relation-purge/");
+
+    assertEquals(PointerStoreEntity.RELATION_PURGE_PK, key.partitionKey());
+    assertEquals("relation-purge/", key.sortKey());
+  }
 }

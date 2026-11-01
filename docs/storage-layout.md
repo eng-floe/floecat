@@ -85,6 +85,7 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/{account_id}/deleting
 /account-purge/{account_id}
 /catalog-integration-credential-cleanup/{account_id}/{integration_id}/{credential_generation}
+/relation-purge/{account_id}/{catalog_id}/{namespace_id}
 /accounts/{account_id}/catalogs/by-id/{catalog_id}
 /accounts/{account_id}/catalogs/by-name/{catalog_name}
 /accounts/{account_id}/catalogs/deleting/{catalog_id}
@@ -122,10 +123,12 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/{account_id}/tables/{table_id}/owner-publication-progress/{publication_id}
 ```
 
-The two global maintenance queues sit outside `/accounts/{account_id}/`: account purge entries
-survive the account-prefix sweep, and credential-cleanup entries survive deletion of their source
-integration. An account purge entry is created atomically with the durable account deletion fence
-and is removed only after the owning replica completes the account-wide purge.
+The three global maintenance queues sit outside `/accounts/{account_id}/`: account purge entries
+survive the account-prefix sweep, credential-cleanup entries survive deletion of their source
+integration, and relation-purge entries survive namespace and catalog row deletion. A namespace
+delete creates its relation-purge entry atomically with removing the namespace row. An account
+purge entry is created atomically with the durable account deletion fence and is removed only after
+the owning replica completes the account-wide purge.
 
 A catalog carries a `markers/children` marker versioning its set of namespaces. Every writer that
 adds one asserts and advances it in its own batch — the namespace services, the overlay reconciler,
@@ -249,7 +252,7 @@ Reconcile job pointers:
 /accounts/{account_id}/reconcile/jobs/by-id/{job_id}
 /accounts/by-id/reconcile/jobs/by-id/{job_id}
 /accounts/{account_id}/reconcile/finalized-snapshots/by-id/{table_id}/{snapshot_id:019d}
-/accounts/by-id/reconcile/jobs/dirty-parents/{account_id}/{parent_job_id}
+/accounts/by-id/reconcile/jobs/dirty-parents-by-worker-affinity/{worker_affinity}/{account_id}/{parent_job_id}
 /accounts/by-id/reconcile/jobs/cancellation-cleanup/{account_id}/{root_job_id}
 /accounts/{account_id}/reconcile/jobs/projections/by-id/{job_id}
 /accounts/{account_id}/reconcile/jobs/root-summaries/by-account/{sortable_job_token}

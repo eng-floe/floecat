@@ -156,6 +156,7 @@ class CascadeDeletionTest {
     @Override
     public boolean deleteForCascade(
         ResourceId namespaceId,
+        ResourceId catalogId,
         long expectedPointerVersion,
         long expectedFenceVersion,
         MarkerStore.MarkerRemoval markers) {
@@ -164,7 +165,7 @@ class CascadeDeletionTest {
         return false;
       }
       return super.deleteForCascade(
-          namespaceId, expectedPointerVersion, expectedFenceVersion, markers);
+          namespaceId, catalogId, expectedPointerVersion, expectedFenceVersion, markers);
     }
   }
 }

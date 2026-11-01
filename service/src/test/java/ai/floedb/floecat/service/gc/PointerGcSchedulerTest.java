@@ -22,7 +22,6 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.account.rpc.Account;
@@ -46,7 +45,6 @@ class PointerGcSchedulerTest {
     RecordingTablePurges purges = new RecordingTablePurges();
     TestObservability observability = new TestObservability();
     PointerGcScheduler scheduler = new PointerGcScheduler();
-    AccountPurge purge = accountPurge();
     scheduler.accounts =
         () ->
             new OwnedAccounts(
@@ -62,9 +60,7 @@ class PointerGcSchedulerTest {
                 null,
                 null,
                 ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
-    scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.tablePurges = () -> purges;
-    scheduler.accountPurge = () -> purge;
     scheduler.observability = observability;
     scheduler.initMeters();
 
@@ -76,7 +72,6 @@ class PointerGcSchedulerTest {
     }
 
     assertThat(gc.accountIds).containsExactlyInAnyOrder("acct-a", "acct-b", "acct-c");
-    verify(purge).drain(anyLong(), anyInt());
   }
 
   @Test
@@ -103,9 +98,7 @@ class PointerGcSchedulerTest {
                 null,
                 null,
                 ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
-    scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.tablePurges = () -> purges;
-    scheduler.accountPurge = () -> accountPurge();
     scheduler.observability = observability;
     scheduler.initMeters();
 
@@ -147,9 +140,7 @@ class PointerGcSchedulerTest {
                 null,
                 null,
                 ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
-    scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.tablePurges = () -> purges;
-    scheduler.accountPurge = () -> accountPurge();
     scheduler.observability = new TestObservability();
     scheduler.initMeters();
 
@@ -224,6 +215,31 @@ class PointerGcSchedulerTest {
       deadlines.add(deadlineMs);
       return new Result(0, 0);
     }
+  }
+
+  @Test
+  void deletionQueuesRunOnTheirOwnTick() {
+    PointerGcScheduler scheduler = new PointerGcScheduler();
+    CatalogIntegrationCredentialCleanup credentials = credentialCleanup();
+    AccountPurge accounts = accountPurge();
+    RelationPurgeQueue relations = mock(RelationPurgeQueue.class);
+    when(relations.drain(anyLong(), anyInt())).thenReturn(new RelationPurgeQueue.Result(0, 0, 0));
+    scheduler.credentialCleanup = () -> credentials;
+    scheduler.accountPurge = () -> accounts;
+    scheduler.relationPurge = () -> relations;
+    scheduler.observability = new TestObservability();
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.pointer.enabled", "true");
+    try {
+      scheduler.deletionTick();
+    } finally {
+      System.clearProperty("floecat.gc.pointer.enabled");
+    }
+
+    org.mockito.Mockito.verify(accounts).drain(anyLong(), anyInt());
+    org.mockito.Mockito.verify(credentials).drain(anyLong(), anyInt());
+    org.mockito.Mockito.verify(relations).drain(anyLong(), anyInt());
   }
 
   private static Account account(String accountId) {

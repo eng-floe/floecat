@@ -119,7 +119,11 @@ public class CascadeDeletion {
           "namespace gained a child during cascade deletion");
     }
     if (!namespaceRepo.deleteForCascade(
-        namespaceId, namespaceMeta.getPointerVersion(), fence.version(), shapeMarkers)) {
+        namespaceId,
+        namespace.getCatalogId(),
+        namespaceMeta.getPointerVersion(),
+        fence.version(),
+        shapeMarkers)) {
       throw BaseResourceRepository.AbortRetryableException.lostFence("namespace cascade deletion");
     }
     return namespaceMeta;
@@ -220,7 +224,11 @@ public class CascadeDeletion {
           "namespace gained a child during cascade deletion");
     }
     if (!namespaceRepo.deleteForCascade(
-        namespaceId, entry.meta().getPointerVersion(), fenced.fence().version(), markers)) {
+        namespaceId,
+        catalogId,
+        entry.meta().getPointerVersion(),
+        fenced.fence().version(),
+        markers)) {
       throw new BaseResourceRepository.AbortRetryableException(
           "namespace changed during cascade deletion");
     }

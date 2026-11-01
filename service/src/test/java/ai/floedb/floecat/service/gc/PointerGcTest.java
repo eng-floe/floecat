@@ -17,16 +17,8 @@
 package ai.floedb.floecat.service.gc;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.service.catalog.impl.RelationPurge;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -53,7 +45,6 @@ class PointerGcTest {
     pointers = new InMemoryPointerStore();
     gc = new PointerGc();
     gc.pointerStore = pointers;
-    gc.relations = mock(RelationPurge.class);
     useBlobs(new InMemoryBlobStore());
   }
 
@@ -166,40 +157,6 @@ class PointerGcTest {
 
     assertTrue(pointers.get(canonical).isPresent());
     assertTrue(pointers.get(secondary).isEmpty());
-  }
-
-  @Test
-  void deletesRelationWhoseNamespaceIsGone() {
-    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
-    putPointer(Keys.tablePointerByName(ACCOUNT_ID, "cat-1", "ns-gone", "tbl_name"), tableBlob);
-
-    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
-
-    verify(gc.relations)
-        .deleteStranded(
-            ResourceId.newBuilder()
-                .setAccountId(ACCOUNT_ID)
-                .setId(TABLE_ID)
-                .setKind(ResourceKind.RK_TABLE)
-                .build(),
-            "ns-gone");
-  }
-
-  @Test
-  void keepsRelationWhoseNamespaceExists() {
-    String namespaceBlob = Keys.namespaceBlobUri(ACCOUNT_ID, "ns-1", "sha-ns");
-    blobs.put(namespaceBlob, "ns".getBytes(StandardCharsets.UTF_8), "text/plain");
-    putPointer(Keys.namespacePointerById(ACCOUNT_ID, "ns-1"), namespaceBlob);
-    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
-    putPointer(Keys.tablePointerByName(ACCOUNT_ID, "cat-1", "ns-1", "tbl_name"), tableBlob);
-
-    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
-
-    verify(gc.relations, never()).deleteStranded(any(), anyString());
   }
 
   private void putPointer(String key, String blobUri) {

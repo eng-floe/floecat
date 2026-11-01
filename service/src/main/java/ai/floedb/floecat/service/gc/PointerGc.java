@@ -17,8 +17,6 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.service.catalog.impl.RelationPurge;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -40,7 +38,6 @@ public class PointerGc {
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
-  @Inject RelationPurge relations;
 
   public record Result(int scanned, int deleted, int missingBlobs, int staleSecondaries) {}
 
@@ -101,8 +98,6 @@ public class PointerGc {
     int deleted = 0;
     int missingBlobs = 0;
     int staleSecondaries = 0;
-
-    String acct = encode(accountId);
 
     List<String> tableIds = new ArrayList<>();
 
@@ -279,7 +274,8 @@ public class PointerGc {
               return key != null
                   && (key.contains(Keys.SEG_NAMESPACE_BY_PATH)
                       || key.contains(Keys.SEG_TABLES_BY_NAME)
-                      || key.contains(Keys.SEG_VIEWS_BY_NAME));
+                      || key.contains(Keys.SEG_VIEWS_BY_NAME)
+                      || key.contains("/relations/by-name/"));
             },
             nowMs,
             minAgeMs);
@@ -287,8 +283,6 @@ public class PointerGc {
     deleted += catalogIndexPointers.deleted;
     missingBlobs += catalogIndexPointers.missingBlobs;
     staleSecondaries += catalogIndexPointers.staleSecondaries;
-
-    deleted += purgeStrandedRelations(accountId, pageSize, deadlineMs);
 
     for (String tableId : tableIds) {
       if (System.currentTimeMillis() >= deadlineMs) {
@@ -327,63 +321,6 @@ public class PointerGc {
     }
 
     return new Result(scanned, deleted, missingBlobs, staleSecondaries);
-  }
-
-  /**
-   * Deletes relations whose namespace a cascading catalog or namespace delete removed.
-   *
-   * <p>The relation's by-name key is the work item: it names the namespace, and it goes only with
-   * the row. A namespace absent now is absent for good -- ids never recur -- and no relation can
-   * join one that is gone, because every relation create asserts its namespace row in its own
-   * batch. So unlike the blob-backed sweeps above, this one needs no age gate.
-   */
-  private int purgeStrandedRelations(String accountId, int pageSize, long deadlineMs) {
-    String prefix = Keys.catalogRootPrefix(accountId);
-    Map<String, Boolean> namespaceLive = new HashMap<>();
-    int deleted = 0;
-    String token = "";
-    while (System.currentTimeMillis() < deadlineMs) {
-      StringBuilder next = new StringBuilder();
-      List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
-      for (Pointer p : pointers) {
-        if (System.currentTimeMillis() >= deadlineMs) {
-          break;
-        }
-        String[] parts = p.getKey().substring(prefix.length()).split("/", -1);
-        if (parts.length != 6
-            || !"namespaces".equals(parts[1])
-            || "by-path".equals(parts[2])
-            || !"by-name".equals(parts[4])) {
-          continue;
-        }
-        ResourceKind kind =
-            switch (parts[3]) {
-              case "tables" -> ResourceKind.RK_TABLE;
-              case "views" -> ResourceKind.RK_VIEW;
-              default -> null;
-            };
-        if (kind == null) {
-          continue;
-        }
-        String namespaceId = Keys.decodeSegment(parts[2]);
-        boolean live =
-            namespaceLive.computeIfAbsent(
-                namespaceId,
-                id -> pointerStore.get(Keys.namespacePointerById(accountId, id)).isPresent());
-        if (live) {
-          continue;
-        }
-        var relation = PointerReferences.relationRef(accountId, kind, p);
-        if (relation.isPresent() && relations.deleteStranded(relation.get().id(), namespaceId)) {
-          deleted++;
-        }
-      }
-      token = next.toString();
-      if (token.isEmpty()) {
-        break;
-      }
-    }
-    return deleted;
   }
 
   private Result scanPrefix(
@@ -583,9 +520,5 @@ public class PointerGc {
     } catch (NumberFormatException e) {
       return 0L;
     }
-  }
-
-  private static String encode(String value) {
-    return Keys.encodeSegment(value);
   }
 }

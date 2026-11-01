@@ -24,6 +24,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView.NamespaceRef;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.NamespaceKey;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.DurableDeletionFence;
@@ -151,6 +152,7 @@ public class NamespaceRepository {
   /** Removes one namespace, its shape markers, and its durable cascade fence atomically. */
   public boolean deleteForCascade(
       ResourceId namespaceId,
+      ResourceId catalogId,
       long expectedPointerVersion,
       long expectedFenceVersion,
       MarkerStore.MarkerRemoval markers) {
@@ -158,11 +160,17 @@ public class NamespaceRepository {
     String fence = Keys.namespaceDeletionMarker(namespaceId.getAccountId(), namespaceId.getId());
     Map<String, Long> deletes = new java.util.LinkedHashMap<>(markers.toDelete());
     deletes.put(fence, expectedFenceVersion);
-    return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
+    String purgeKey =
+        Keys.relationPurgePointer(
+            namespaceId.getAccountId(), catalogId.getId(), namespaceId.getId());
+    return repo.deleteWithPreconditionWhilePointersMatchAndMutatePointers(
         new NamespaceKey(namespaceId.getAccountId(), namespaceId.getId()),
         expectedPointerVersion,
         markers.conditions(),
-        Map.copyOf(deletes));
+        Map.copyOf(deletes),
+        List.of(
+            new PointerStore.CasUpsert(
+                purgeKey, 0L, PointerReferences.opaqueMarkerPointer(purgeKey, purgeKey, 1L))));
   }
 
   public Optional<MutationMeta> updateWhilePointersMatch(

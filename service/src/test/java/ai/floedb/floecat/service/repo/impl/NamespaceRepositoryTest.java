@@ -184,9 +184,12 @@ class NamespaceRepositoryTest {
     assertFalse(
         namespaceRepo.deleteWhileShapeUnchanged(namespaceId, 1L, markers),
         "the non-cascade path cannot strand the durable fence");
-    assertTrue(namespaceRepo.deleteForCascade(namespaceId, 1L, resumed.version(), markers));
+    assertTrue(namespaceRepo.deleteForCascade(namespaceId, catRid, 1L, resumed.version(), markers));
     assertTrue(namespaceRepo.getById(namespaceId).isEmpty());
     assertTrue(ptr.get(Keys.namespaceDeletionMarker(account, namespaceId.getId())).isEmpty());
+    assertTrue(
+        ptr.get(Keys.relationPurgePointer(account, catRid.getId(), namespaceId.getId()))
+            .isPresent());
   }
 
   private static ResourceId rid(String account, ResourceKind kind) {

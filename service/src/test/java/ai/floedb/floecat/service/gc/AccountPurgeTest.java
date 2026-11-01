@@ -63,6 +63,8 @@ class AccountPurgeTest {
     String pointer = Keys.tablePointerById("acct", "table");
     String blob = Keys.tableBlobPrefix("acct", "table") + "orphan.pb";
     put(pointer, "broken");
+    String relationPurge = Keys.relationPurgePointer("acct", "catalog", "namespace");
+    put(relationPurge, relationPurge);
     blobStore.put(blob, new byte[] {1}, "application/octet-stream");
     when(purge.accounts.owns("acct")).thenReturn(true);
     when(jobs.cleanupAccount("acct")).thenReturn(3);
@@ -72,6 +74,7 @@ class AccountPurgeTest {
     assertEquals(new AccountPurge.Result(1, 1), result);
     assertFalse(pointers.get(pointer).isPresent());
     assertFalse(pointers.get(Keys.accountPurgePointer("acct")).isPresent());
+    assertFalse(pointers.get(relationPurge).isPresent());
     assertTrue(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
     assertTrue(blobStore.get(blob) == null);
     verify(jobs).cleanupAccount("acct");
