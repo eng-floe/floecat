@@ -443,7 +443,9 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
   // ---- Helpers (testing)
 
   private String keyOf(Key key) {
-    if (key.partitionKey().equals(GLOBAL_PK) || key.partitionKey().equals(CREDENTIAL_CLEANUP_PK)) {
+    if (key.partitionKey().equals(GLOBAL_PK)
+        || key.partitionKey().equals(ACCOUNT_PURGE_PK)
+        || key.partitionKey().equals(CREDENTIAL_CLEANUP_PK)) {
       return "/" + key.sortKey();
     } else if (key.partitionKey()
         .startsWith(PointerStoreKeys.ACCOUNT_DELETION_FENCE_PARTITION_PREFIX)) {

@@ -508,6 +508,17 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
   }
 
   @Test
+  void listKeysByPrefix_account_purge_partition_returns_keys() {
+    String key = "/account-purge/99";
+    Pointer p = Pointer.newBuilder().setKey(key).build();
+    assertTrue(pointers.compareAndSet(key, 0L, p).await().indefinitely());
+
+    var page =
+        pointers.listKeysByPrefix("account-purge/", 10, Optional.empty()).await().indefinitely();
+    assertEquals(List.of(key), page.items());
+  }
+
+  @Test
   void listKeysByPrefix_account_partition_returns_keys() {
     String key = "accounts/123/catalog/a";
     Pointer p = Pointer.newBuilder().setKey(key).setBlobUri("s3://b/a").build();
