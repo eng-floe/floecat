@@ -5,6 +5,7 @@
  */
 package ai.floedb.floecat.service.integration;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -758,6 +759,87 @@ class CatalogOverlaysImplTest {
   }
 
   @Test
+  void integrationCascadeAllowsCatalogDependentsFromTheSameIntegration() {
+    installRealLifecycle();
+    var owner =
+        overlay(id("owner", ResourceKind.RK_CATALOG_OVERLAY), integrationId(), catalogId(), "sales")
+            .toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    var sibling =
+        overlay(
+            id("sibling", ResourceKind.RK_CATALOG_OVERLAY),
+            integrationId(),
+            catalogId(),
+            "sales-copy");
+    when(service.catalogs.getByIdWithMeta(catalogId()))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder().setResourceId(catalogId()).setDisplayName("sales").build(),
+                    5L)));
+    when(service.overlays.listByCatalogWithMetaConsistent(
+            eq("acct"), eq("catalog"), eq(100), eq(""), any()))
+        .thenReturn(List.of(row(owner, 7L), row(sibling, 8L)));
+
+    assertDoesNotThrow(
+        () -> service.lifecycle.preflightOwnedCatalogRemoval(owner, "corr", integrationId()));
+  }
+
+  @Test
+  void integrationCascadeRejectsCatalogDependentsFromAnotherIntegration() {
+    installRealLifecycle();
+    var owner =
+        overlay(id("owner", ResourceKind.RK_CATALOG_OVERLAY), integrationId(), catalogId(), "sales")
+            .toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    var external =
+        overlay(
+            id("external", ResourceKind.RK_CATALOG_OVERLAY),
+            id("other-integration", ResourceKind.RK_CATALOG_INTEGRATION),
+            catalogId(),
+            "external");
+    when(service.catalogs.getByIdWithMeta(catalogId()))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder().setResourceId(catalogId()).setDisplayName("sales").build(),
+                    5L)));
+    when(service.overlays.listByCatalogWithMetaConsistent(
+            eq("acct"), eq("catalog"), eq(100), eq(""), any()))
+        .thenReturn(List.of(row(owner, 7L), row(external, 8L)));
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> service.lifecycle.preflightOwnedCatalogRemoval(owner, "corr", integrationId()));
+  }
+
+  @Test
+  void ownedOverlayCanBeDeletedWhenItsCatalogIsAlreadyMissing() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+    when(service.overlays.acquireDeletionFence(overlayId, 7L))
+        .thenReturn(Optional.of(fence(1L, true)));
+    when(service.overlays.deleteWithFence(overlayId, 7L, 1L)).thenReturn(true);
+    when(service.catalogs.getByIdWithMeta(catalogId())).thenReturn(Optional.empty());
+
+    service
+        .deleteCatalogOverlay(
+            DeleteCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+        .await()
+        .indefinitely();
+
+    verify(service.overlays).deleteWithFence(overlayId, 7L, 1L);
+    verify(cascadeDeletion, never()).prepareCatalogDeletion(any(), any(), any(), any());
+  }
+
+  @Test
   void ownedDeleteRequiresEveryCatalogCascadePermissionBeforeFencing() {
     service.authz = new Authorizer();
     when(service.principal.get())
@@ -814,8 +896,6 @@ class CatalogOverlaysImplTest {
         .thenReturn(false);
 
     assertFalse(service.lifecycle.deleteFenced(current, 7L, 1L, "corr"));
-
-    verify(service.overlays, never()).cancelDeletion(any(), anyLong(), anyLong());
   }
 
   @Test
@@ -840,8 +920,6 @@ class CatalogOverlaysImplTest {
     assertThrows(
         BaseResourceRepository.AbortRetryableException.class,
         () -> service.lifecycle.deleteFenced(current, 7L, 1L, "corr"));
-
-    verify(service.overlays, never()).cancelDeletion(any(), anyLong(), anyLong());
   }
 
   private void installRealLifecycle() {

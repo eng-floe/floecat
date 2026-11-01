@@ -196,6 +196,10 @@ namespaces and relations in it, and other overlays may contribute non-conflictin
 owned Catalog must be unshared before its Overlay can be deleted; deleting the Overlay recursively
 deletes every namespace and relation in that Catalog. Materialized Tables and Views carry
 typed Integration and Overlay provenance and reject direct mutation while managed by the Overlay.
+During a cascading Integration delete, overlays of that same Integration do not count as external
+sharing because the operation removes them all; an Overlay belonging to another Integration still
+blocks deletion of the owned Catalog. If the owned Catalog is already absent, deletion removes the
+stale Overlay and its dependency pointers instead of treating the missing Catalog as corruption.
 Namespaces are shared structural containers rather than exclusively Overlay-owned resources.
 Namespace claim state records every Overlay using a path and whether the container was originally
 created by Overlay materialization. A claim prevents structural deletion or movement of the

@@ -13,6 +13,7 @@ import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.DurableDeletionFence;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
@@ -59,14 +60,15 @@ class CatalogIntegrationCascadeDeletion {
         if (dependent.value().getOwnsCatalog()) {
           try {
             requireOwnedCatalogDelete.run();
-          } catch (RuntimeException denied) {
+            overlayLifecycle.preflightOwnedCatalogRemoval(
+                dependent.value(), correlationId, integrationId);
+          } catch (StatusRuntimeException rejected) {
             if (fence.newlyInstalled()) {
               integrations.cancelCascadeDeletion(
                   integrationId, integrationMeta.getPointerVersion(), fence.version());
             }
-            throw denied;
+            throw rejected;
           }
-          overlayLifecycle.preflightOwnedCatalogRemoval(dependent.value(), correlationId);
         }
         DurableDeletionFence.Fence overlayFence =
             overlays
@@ -77,12 +79,21 @@ class CatalogIntegrationCascadeDeletion {
                             "overlay changed while integration cascade deletion was fenced"));
         boolean deleted;
         if (dependent.value().getOwnsCatalog()) {
-          deleted =
-              overlayLifecycle.deleteFenced(
-                  dependent.value(),
-                  dependent.meta().getPointerVersion(),
-                  overlayFence.version(),
-                  correlationId);
+          try {
+            deleted =
+                overlayLifecycle.deleteFenced(
+                    dependent.value(),
+                    dependent.meta().getPointerVersion(),
+                    overlayFence.version(),
+                    correlationId,
+                    integrationId);
+          } catch (StatusRuntimeException rejected) {
+            if (fence.newlyInstalled()) {
+              integrations.cancelCascadeDeletion(
+                  integrationId, integrationMeta.getPointerVersion(), fence.version());
+            }
+            throw rejected;
+          }
         } else {
           overlayReconciler.retireMaterializedResources(dependent.value());
           deleted =
@@ -120,7 +131,8 @@ class CatalogIntegrationCascadeDeletion {
       for (var dependent : dependents) {
         if (!dependent.value().getOwnsCatalog()) continue;
         requireOwnedCatalogDelete.run();
-        overlayLifecycle.preflightOwnedCatalogRemoval(dependent.value(), correlationId);
+        overlayLifecycle.preflightOwnedCatalogRemoval(
+            dependent.value(), correlationId, integrationId);
       }
       token = next.toString();
     } while (!token.isEmpty());

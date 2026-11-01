@@ -8,7 +8,10 @@ package ai.floedb.floecat.service.integration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -101,7 +104,8 @@ class CatalogIntegrationCascadeDeletionTest {
             List.of());
     when(deletion.overlays.acquireDeletionFence(overlayId, 3L))
         .thenReturn(Optional.of(new DurableDeletionFence.Fence(5L, true)));
-    when(deletion.overlayLifecycle.deleteFenced(overlay, 3L, 5L, "correlation")).thenReturn(true);
+    when(deletion.overlayLifecycle.deleteFenced(overlay, 3L, 5L, "correlation", integrationId))
+        .thenReturn(true);
     when(deletion.overlays.countByIntegration("acct", "integration")).thenReturn(0);
     when(deletion.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId))
         .thenReturn(4L);
@@ -115,9 +119,75 @@ class CatalogIntegrationCascadeDeletionTest {
 
     verify(requireOwnedCatalogDelete, org.mockito.Mockito.times(2)).run();
     verify(deletion.overlayLifecycle, org.mockito.Mockito.times(2))
-        .preflightOwnedCatalogRemoval(overlay, "correlation");
-    verify(deletion.overlayLifecycle).deleteFenced(overlay, 3L, 5L, "correlation");
+        .preflightOwnedCatalogRemoval(overlay, "correlation", integrationId);
+    verify(deletion.overlayLifecycle).deleteFenced(overlay, 3L, 5L, "correlation", integrationId);
     verify(deletion.overlayReconciler, never()).retireMaterializedResources(any());
+  }
+
+  @Test
+  void releasesNewIntegrationFenceWhenSharingAppearsAfterPreflight() {
+    ResourceId integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
+    MutationMeta integrationMeta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    CatalogOverlay overlay =
+        CatalogOverlay.newBuilder()
+            .setResourceId(id("overlay", ResourceKind.RK_CATALOG_OVERLAY))
+            .setCatalogId(id("catalog", ResourceKind.RK_CATALOG))
+            .setIntegrationId(integrationId)
+            .setOwnsCatalog(true)
+            .build();
+    MutationMeta overlayMeta = MutationMeta.newBuilder().setPointerVersion(3L).build();
+    when(deletion.overlays.listByIntegrationWithMetaConsistent(
+            eq("acct"), eq("integration"), eq(100), eq(""), any()))
+        .thenReturn(
+            List.of(new ResourceWithMeta<>(overlay, overlayMeta)),
+            List.of(new ResourceWithMeta<>(overlay, overlayMeta)));
+    when(deletion.integrations.acquireCascadeDeletionFence(integrationId, 7L))
+        .thenReturn(Optional.of(new DurableDeletionFence.Fence(11L, true)));
+    doNothing()
+        .doThrow(
+            io.grpc.Status.ABORTED.withDescription("catalog became shared").asRuntimeException())
+        .when(deletion.overlayLifecycle)
+        .preflightOwnedCatalogRemoval(overlay, "correlation", integrationId);
+
+    org.junit.jupiter.api.Assertions.assertThrows(
+        io.grpc.StatusRuntimeException.class,
+        () -> deletion.delete(integrationId, integrationMeta, "correlation", () -> {}));
+
+    verify(deletion.integrations).cancelCascadeDeletion(integrationId, 7L, 11L);
+    verify(deletion.overlays, never()).acquireDeletionFence(any(), anyLong());
+  }
+
+  @Test
+  void releasesNewIntegrationFenceWhenSharingAppearsDuringOwnedCatalogDelete() {
+    ResourceId integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
+    MutationMeta integrationMeta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    ResourceId overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    CatalogOverlay overlay =
+        CatalogOverlay.newBuilder()
+            .setResourceId(overlayId)
+            .setCatalogId(id("catalog", ResourceKind.RK_CATALOG))
+            .setIntegrationId(integrationId)
+            .setOwnsCatalog(true)
+            .build();
+    MutationMeta overlayMeta = MutationMeta.newBuilder().setPointerVersion(3L).build();
+    when(deletion.overlays.listByIntegrationWithMetaConsistent(
+            eq("acct"), eq("integration"), eq(100), eq(""), any()))
+        .thenReturn(
+            List.of(new ResourceWithMeta<>(overlay, overlayMeta)),
+            List.of(new ResourceWithMeta<>(overlay, overlayMeta)));
+    when(deletion.integrations.acquireCascadeDeletionFence(integrationId, 7L))
+        .thenReturn(Optional.of(new DurableDeletionFence.Fence(11L, true)));
+    when(deletion.overlays.acquireDeletionFence(overlayId, 3L))
+        .thenReturn(Optional.of(new DurableDeletionFence.Fence(5L, true)));
+    doThrow(io.grpc.Status.ABORTED.withDescription("catalog became shared").asRuntimeException())
+        .when(deletion.overlayLifecycle)
+        .deleteFenced(overlay, 3L, 5L, "correlation", integrationId);
+
+    org.junit.jupiter.api.Assertions.assertThrows(
+        io.grpc.StatusRuntimeException.class,
+        () -> deletion.delete(integrationId, integrationMeta, "correlation", () -> {}));
+
+    verify(deletion.integrations).cancelCascadeDeletion(integrationId, 7L, 11L);
   }
 
   private static ResourceId id(String value, ResourceKind kind) {

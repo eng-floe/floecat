@@ -118,17 +118,6 @@ public class CatalogOverlayRepository {
     return deletionFenceVersion(overlayId) != 0L;
   }
 
-  /** Removes a deletion fence while the overlay identity is still unchanged. */
-  public boolean cancelDeletion(
-      ResourceId overlayId, long expectedPointerVersion, long expectedFenceVersion) {
-    String canonical = Keys.catalogOverlayPointerById(overlayId.getAccountId(), overlayId.getId());
-    String fence = Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId());
-    return pointerStore.compareAndSetBatch(
-        List.of(
-            new PointerStore.CasCheck(canonical, expectedPointerVersion),
-            new PointerStore.CasDelete(fence, expectedFenceVersion)));
-  }
-
   /** Removes the Overlay, both dependency pointers, and its deletion fence atomically. */
   public boolean deleteWithFence(
       ResourceId overlayId, long expectedPointerVersion, long expectedFenceVersion) {

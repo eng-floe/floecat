@@ -325,7 +325,11 @@ the region for both validation and reads. Only when none is set does the deploym
 - An integration cannot be deleted while overlays refer to it.
 - Integration deletion supports `--cascade` to delete dependent overlays.
 - Deleting an overlay also recursively deletes a catalog that Floecat created for it, including its
-  namespaces and relations. The catalog must not be shared by another overlay.
+  namespaces and relations. A direct overlay delete requires the catalog to be unshared. An
+  integration cascade may remove a catalog shared only by that integration's overlays, because it
+  deletes all of them; an overlay from another integration still blocks the cascade.
+- If an owned catalog is already absent, deleting its overlay still removes the stale overlay and
+  its dependency pointers.
 - Renaming an overlay does not rename its owned catalog.
 - Supplying the owned catalog ID explicitly in a replacing create makes the catalog independent;
   subsequent overlay deletion leaves it in place.
