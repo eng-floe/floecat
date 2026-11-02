@@ -203,6 +203,13 @@ public class NamespaceRepository {
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
+  /** The namespace body and the metadata of the pointer version it was read from. */
+  public Optional<GenericResourceRepository.ResourceWithMeta<Namespace>> getByIdWithMeta(
+      ResourceId namespaceResourceId) {
+    return repo.getByKeyWithMeta(
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
+  }
+
   public Optional<Namespace> getByPath(
       String accountId, String catalogId, List<String> pathSegments) {
     return repo.get(Keys.namespacePointerByPath(accountId, catalogId, pathSegments));

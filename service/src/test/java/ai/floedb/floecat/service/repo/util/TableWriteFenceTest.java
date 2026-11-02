@@ -191,6 +191,44 @@ class TableWriteFenceTest {
   }
 
   @Test
+  void viewRowDeleteRecordsItsPurgeMarkerAndBlocksRecreation() {
+    var pointers = new InMemoryPointerStore();
+    String row = Keys.viewPointerById("account", "view");
+    String marker = Keys.viewPurgePointer("account", "view");
+    assertTrue(pointers.compareAndSet(row, 0L, pointer(row)));
+
+    List<PointerStore.CasOp> delete = List.of(new PointerStore.CasDelete(row, 1L));
+    assertEquals(1, TableWriteFence.addedOperationCount(delete));
+    assertTrue(pointers.compareAndSetBatch(TableWriteFence.fence(pointers, delete).operations()));
+    assertTrue(pointers.get(row).isEmpty());
+    assertTrue(pointers.get(marker).isPresent());
+
+    var recreate =
+        TableWriteFence.fence(pointers, List.of(new PointerStore.CasUpsert(row, 0L, pointer(row))));
+    assertFalse(pointers.compareAndSetBatch(recreate.operations()));
+    assertTrue(pointers.delete(marker));
+    assertTrue(pointers.compareAndSetBatch(recreate.operations()));
+  }
+
+  @Test
+  void onlyUserViewRowsOwnAPurgeMarker() {
+    assertTrue(TableWriteFence.ownsPurgeMarker(Keys.viewPointerById("account", "view")));
+    assertTrue(TableWriteFence.ownsPurgeMarker(Keys.tablePointerById("account", "table")));
+    assertFalse(
+        TableWriteFence.ownsPurgeMarker(
+            Keys.viewPointerByName("account", "catalog", "namespace", "view")));
+    assertFalse(TableWriteFence.ownsPurgeMarker(Keys.viewPurgePointer("account", "view")));
+    assertFalse(TableWriteFence.ownsPurgeMarker(Keys.viewPointerById("_system", "view")));
+    assertFalse(
+        TableWriteFence.requiresFence(
+            List.of(
+                new PointerStore.CasUpsert(
+                    Keys.viewPointerById("account", "view"),
+                    3L,
+                    pointer(Keys.viewPointerById("account", "view"))))));
+  }
+
+  @Test
   void tableRowUpdateDoesNotConsultTheLifecycleMarkers() {
     String row = Keys.tablePointerById("account", "table");
 

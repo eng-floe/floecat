@@ -2278,6 +2278,15 @@ public final class Keys {
         + encode(req("table_id", tableId));
   }
 
+  /** The view counterpart of {@link #tablePurgePointer}: the view's hints still await purge. */
+  public static String viewPurgePointer(String accountId, String viewId) {
+    return viewPurgePrefix(accountId) + encode(req("view_id", viewId));
+  }
+
+  public static String viewPurgePrefix(String accountId) {
+    return "/accounts/" + encode(req("account_id", accountId)) + "/views/purging/";
+  }
+
   // ===== Markers =====
 
   public static String catalogChildrenMarker(String accountId, String catalogId) {

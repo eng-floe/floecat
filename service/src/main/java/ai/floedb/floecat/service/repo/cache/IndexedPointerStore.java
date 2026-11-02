@@ -134,8 +134,8 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public boolean delete(String key) {
-    if (TableWriteFence.isTableRow(key)) {
-      // A table row leaves only together with its lifecycle markers, which need a versioned delete.
+    if (TableWriteFence.ownsPurgeMarker(key)) {
+      // A table or view row leaves only with its lifecycle markers, requiring a versioned delete.
       for (int attempt = 0; attempt < MAX_TABLE_DELETE_ATTEMPTS; attempt++) {
         Optional<Pointer> current =
             index.mutateKeys(
@@ -164,7 +164,7 @@ public class IndexedPointerStore implements PointerStore {
       if (last.isEmpty()) {
         return false;
       }
-      throw new StorageAbortRetryableException("table row delete lost every CAS under " + key);
+      throw new StorageAbortRetryableException("relation row delete lost every CAS under " + key);
     }
     return index.mutateKeys(
         List.of(key),
@@ -177,7 +177,7 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public boolean compareAndDelete(String key, long expectedVersion) {
-    if (expectedVersion > 0L && TableWriteFence.isTableRow(key)) {
+    if (expectedVersion > 0L && TableWriteFence.ownsPurgeMarker(key)) {
       return compareAndSetBatch(List.of(new CasDelete(key, expectedVersion)));
     }
     return index.mutateKeys(
@@ -224,7 +224,9 @@ public class IndexedPointerStore implements PointerStore {
               // doing two point lookups can land between them, and absence in the index is
               // authoritative. A rename may show both names to such a caller; it must never show
               // neither. Both switches stay exhaustive so a new CasOp cannot be silently dropped.
-              for (CasOp op : ops) {
+              // They walk the batch as written, fence ops included: a purge marker the fence added
+              // can sit in a resident family (views/purging) and must not read as absent.
+              for (CasOp op : fenced.operations()) {
                 switch (op) {
                   case CasUpsert upsert ->
                       publish(upsert.key(), upsert.next(), upsert.expectedVersion() + 1L);
@@ -237,7 +239,7 @@ public class IndexedPointerStore implements PointerStore {
               }
               // Splitting the passes cannot reorder two ops against each other: only planner-key
               // batches reach the index, and the assemblers that build those reject duplicate keys.
-              for (CasOp op : ops) {
+              for (CasOp op : fenced.operations()) {
                 switch (op) {
                   case CasDelete delete -> index.remove(delete.key());
                   case CasCheckAbsent absent -> index.remove(absent.key());

@@ -119,6 +119,7 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
 /accounts/{account_id}/tables/purging/{table_id}
 /accounts/{account_id}/tables/retired/{table_id}
+/accounts/{account_id}/views/purging/{view_id}
 /accounts/{account_id}/tables/{table_id}/owner-reuse-leases/{publication_id}
 /accounts/{account_id}/tables/{table_id}/owner-publication-progress/{publication_id}
 ```
@@ -148,6 +149,11 @@ requires it absent in every batch that creates a table row, so a table id is nev
 reconcile job, transaction, or purge that captured the id before the drop can only find the row
 missing; it can never publish into, or purge, a later table under the same id. Only account deletion
 removes retired markers.
+
+A view row delete leaves a `views/purging/{view_id}` marker the same way, for the view's hints, so
+a cascade that loses a view's name pointer before its hints are gone still leaves the work queued.
+View creation requires that marker absent, preventing reuse only until the previous view's purge is
+complete.
 
 Two operations assert nothing here, and for the same reason: deleting a relation, and deleting a
 child namespace. Both are the removal direction — a namespace delete racing either can only find the

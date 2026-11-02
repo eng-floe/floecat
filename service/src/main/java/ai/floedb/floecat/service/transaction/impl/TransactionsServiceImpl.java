@@ -145,6 +145,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   // The table-row check TableWriteFence adds for each table whose state (snapshots, root, stats
   // pointers) the batch writes without writing the row itself.
   private static final int APPLY_OPS_PER_FENCED_TABLE = 1;
+
+  // The purge-marker op TableWriteFence adds when a batch creates or deletes a view row. Charged
+  // for every view-row intent, since an update (which adds none) is not decidable here.
+  private static final int APPLY_OPS_PER_VIEW_ROW_MARKER = 1;
   private static final int APPLY_OPS_FOR_TRANSACTION_FINALIZE = 1;
 
   // The account-deletion fence check the applier adds once per batch.
@@ -754,6 +758,9 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         estimatedOps += APPLY_OPS_PER_CONNECTOR_INTENT;
       } else {
         estimatedOps += APPLY_OPS_PER_PLAIN_INTENT;
+        if (TableWriteFence.isViewRow(pointerKey)) {
+          estimatedOps += APPLY_OPS_PER_VIEW_ROW_MARKER;
+        }
       }
       if (tableUpsert) {
         // Charged for every table UPSERT, not only the ones carrying an inline table: the applier

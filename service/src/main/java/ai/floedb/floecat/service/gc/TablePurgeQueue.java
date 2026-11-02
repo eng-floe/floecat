@@ -30,14 +30,16 @@ import java.util.function.LongSupplier;
 import org.jboss.logging.Logger;
 
 /**
- * Finishes table purges that did not complete after their table row was deleted.
+ * Finishes table and view purges that did not complete after their row was deleted.
  *
- * <p>Every table-row delete leaves a {@link Keys#tablePurgePointer} marker, and the purge removes
- * it once the table's state is gone. A marker this pass finds therefore names a purge that failed,
- * was interrupted, outgrew its inline batch budget, or is still running inline. This pass advances
- * each one a batch at a time so it stops at its deadline. Overlapping with an inline purge is safe:
- * both fence their deletes on the marker, so whichever finishes second stops after the first
- * acknowledges completed cleanup (see {@link RelationPurge#purgeTableState}).
+ * <p>Every table-row delete leaves a {@link Keys#tablePurgePointer} marker, every view-row delete a
+ * {@link Keys#viewPurgePointer}, and the purge removes it once the relation's state is gone. A
+ * marker this pass finds therefore names a purge that failed, was interrupted, outgrew its inline
+ * batch budget, or is still running inline. This pass advances each one a batch at a time so it
+ * stops at its deadline. Overlapping with an inline purge is safe: both fence their deletes on the
+ * marker, so whichever finishes second stops after the first acknowledges cleanup. Table IDs are
+ * permanently retired; view IDs remain blocked only until their versioned purge marker is removed
+ * (see {@link RelationPurge#purgeTableState}).
  */
 @ApplicationScoped
 public class TablePurgeQueue {
@@ -51,7 +53,14 @@ public class TablePurgeQueue {
   public record Result(int scanned, int purged) {}
 
   public Result drainAccount(String accountId, long deadlineMs, int pageSize) {
-    String prefix = Keys.tablePurgePrefix(accountId);
+    Result tables = drain(accountId, ResourceKind.RK_TABLE, deadlineMs, pageSize);
+    Result views = drain(accountId, ResourceKind.RK_VIEW, deadlineMs, pageSize);
+    return new Result(tables.scanned() + views.scanned(), tables.purged() + views.purged());
+  }
+
+  private Result drain(String accountId, ResourceKind kind, long deadlineMs, int pageSize) {
+    boolean table = kind == ResourceKind.RK_TABLE;
+    String prefix = table ? Keys.tablePurgePrefix(accountId) : Keys.viewPurgePrefix(accountId);
     int scanned = 0;
     int purged = 0;
     String token = "";
@@ -62,28 +71,29 @@ public class TablePurgeQueue {
       for (Pointer marker : markers) {
         if (nowMillis.getAsLong() >= deadlineMs) break;
         scanned++;
-        String tableId = Keys.idAfterPrefix(prefix, marker.getKey());
-        if (tableId == null || !ResourceIds.isCanonicalUuid(tableId)) {
-          LOG.errorf("invalid table purge key=%s", marker.getKey());
+        String relationId = Keys.idAfterPrefix(prefix, marker.getKey());
+        if (relationId == null || !ResourceIds.isCanonicalUuid(relationId)) {
+          LOG.errorf("invalid relation purge marker key=%s", marker.getKey());
           pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
           continue;
         }
-        ResourceId resourceId =
-            ResourceId.newBuilder()
-                .setAccountId(accountId)
-                .setId(tableId)
-                .setKind(ResourceKind.RK_TABLE)
-                .build();
+        ResourceId id =
+            ResourceId.newBuilder().setAccountId(accountId).setId(relationId).setKind(kind).build();
         try {
           while (nowMillis.getAsLong() < deadlineMs
               && pointerStore.get(marker.getKey()).isPresent()) {
-            if (relations.purgeTableState(resourceId, 1)) {
+            if (table ? relations.purgeTableState(id, 1) : relations.purgeViewState(id, 1)) {
               purged++;
               break;
             }
           }
         } catch (RuntimeException failure) {
-          LOG.errorf(failure, "table_purge_failed account_id=%s table_id=%s", accountId, tableId);
+          LOG.errorf(
+              failure,
+              "relation_state_purge_failed account_id=%s kind=%s id=%s",
+              accountId,
+              kind,
+              relationId);
         }
       }
       token = next.toString();

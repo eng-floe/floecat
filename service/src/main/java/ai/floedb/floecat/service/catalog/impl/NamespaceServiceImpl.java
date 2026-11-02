@@ -521,7 +521,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var namespaceId = request.getNamespaceId();
                   catalogSurfaceWritePolicy().requireDeletableNamespace(namespaceId, correlationId);
 
-                  var namespace = namespaceRepo.getById(namespaceId).orElse(null);
+                  // Body and version come from one pointer read. The path checked below comes from
+                  // the body, and every delete CASes on this version, so a rename after this read
+                  // costs the delete its CAS instead of deleting under a path the namespace left.
+                  var loaded = namespaceRepo.getByIdWithMeta(namespaceId).orElse(null);
+                  var namespace = loaded == null ? null : loaded.value();
                   var catalogId =
                       (namespace != null && namespace.hasCatalogId())
                           ? namespace.getCatalogId()
@@ -542,7 +546,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   }
 
                   var parentPath = append(namespace.getParentsList(), namespace.getDisplayName());
-                  var meta = namespaceRepo.metaFor(namespaceId);
+                  var meta = loaded.meta();
                   MutationOps.BaseServiceChecks.enforcePreconditions(
                       correlationId, meta, request.getPrecondition());
                   if (cascade) {
@@ -577,7 +581,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   var deleted =
                       MutationOps.deleteWithPreconditions(
-                          () -> namespaceRepo.metaFor(namespaceId),
+                          () -> meta,
                           request.getPrecondition(),
                           expected ->
                               namespaceRepo.deleteWhileShapeUnchanged(

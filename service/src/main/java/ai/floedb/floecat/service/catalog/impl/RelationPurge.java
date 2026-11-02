@@ -77,18 +77,53 @@ public class RelationPurge {
     }
     requireCanonicalTableId(tableId);
     String accountId = tableId.getAccountId();
-    String marker = Keys.tablePurgePointer(accountId, tableId.getId());
+    return purgeState(
+        tableId,
+        Keys.tablePurgePointer(accountId, tableId.getId()),
+        List.of(
+            Keys.tablePrefix(accountId, tableId.getId()),
+            Keys.reconcileFinalizedSnapshotIdentityPointerPrefix(accountId, tableId.getId()),
+            Keys.relationHintsPointerPrefix(accountId, tableId.getId())),
+        List.of(Keys.rootResyncPendingPointer(accountId, tableId.getId())),
+        maxBatches);
+  }
+
+  /**
+   * Deletes a view's persisted and resident hints after its row has been removed, then acknowledges
+   * the view's purge marker, under the same fencing as {@link #purgeTableState}.
+   *
+   * @return whether this purge finished and acknowledged its marker
+   */
+  public boolean purgeViewState(ResourceId viewId) {
+    return purgeViewState(viewId, INLINE_BATCH_BUDGET);
+  }
+
+  public boolean purgeViewState(ResourceId viewId, int maxBatches) {
+    if (maxBatches < 1) {
+      throw new IllegalArgumentException("maxBatches must be positive");
+    }
+    String accountId = viewId.getAccountId();
+    return purgeState(
+        viewId,
+        Keys.viewPurgePointer(accountId, viewId.getId()),
+        List.of(Keys.relationHintsPointerPrefix(accountId, viewId.getId())),
+        List.of(),
+        maxBatches);
+  }
+
+  private boolean purgeState(
+      ResourceId relationId,
+      String marker,
+      List<String> prefixes,
+      List<String> keys,
+      int maxBatches) {
     Optional<Pointer> started = pointerStore.get(marker);
     if (started.isEmpty()) {
       return false;
     }
     PointerStore.CasCheck fence = new PointerStore.CasCheck(marker, started.get().getVersion());
     int batches = 0;
-    for (String prefix :
-        List.of(
-            Keys.tablePrefix(accountId, tableId.getId()),
-            Keys.reconcileFinalizedSnapshotIdentityPointerPrefix(accountId, tableId.getId()),
-            Keys.relationHintsPointerPrefix(accountId, tableId.getId()))) {
+    for (String prefix : prefixes) {
       while (true) {
         if (batches >= maxBatches) {
           // The budget is spent: carry on only to confirm nothing is left to delete.
@@ -107,15 +142,19 @@ public class RelationPurge {
         batches++;
       }
     }
-    // Remove pending work that would otherwise keep re-driving against the retired table id.
-    String rootResync = Keys.rootResyncPendingPointer(accountId, tableId.getId());
-    if (batches >= maxBatches && pointerStore.get(rootResync).isPresent()) {
-      return false;
+    for (String key : keys) {
+      if (batches >= maxBatches && pointerStore.get(key).isPresent()) {
+        return false;
+      }
+      DeleteStep step = deleteKeyWhileFenced(key, fence);
+      if (step == DeleteStep.LOST_FENCE) {
+        return false;
+      }
+      if (step == DeleteStep.DELETED) {
+        batches++;
+      }
     }
-    if (deleteKeyWhileFenced(rootResync, fence) == DeleteStep.LOST_FENCE) {
-      return false;
-    }
-    hints.evictRelation(tableId);
+    hints.evictRelation(relationId);
     return pointerStore.compareAndDelete(marker, started.get().getVersion());
   }
 
@@ -167,7 +206,7 @@ public class RelationPurge {
       }
       // A listed pointer changed between the listing and the delete: list again.
       if (++stalled >= MAX_STALLED_BATCHES) {
-        throw new IllegalStateException("table purge made no progress under " + prefix);
+        throw new IllegalStateException("relation purge made no progress under " + prefix);
       }
     }
   }
@@ -187,11 +226,6 @@ public class RelationPurge {
     if (tableId == null || !ResourceIds.isCanonicalUuid(tableId.getId())) {
       throw new IllegalArgumentException("table id must be a canonical UUID");
     }
-  }
-
-  /** Deletes a view's persisted and resident hints after its row has been removed. */
-  public void purgeViewState(ResourceId viewId) {
-    hints.deleteRelation(viewId);
   }
 
   /**
