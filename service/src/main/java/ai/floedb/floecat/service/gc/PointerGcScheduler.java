@@ -44,6 +44,7 @@ public class PointerGcScheduler {
   @Inject Provider<OwnedAccounts> accounts;
   @Inject Provider<PointerGc> pointerGc;
   @Inject Provider<SnapshotExpiry> snapshotExpiry;
+  @Inject Provider<TablePurgeQueue> tablePurges;
 
   @Inject Provider<CatalogIntegrationCredentialCleanup> credentialCleanup;
 
@@ -88,10 +89,12 @@ public class PointerGcScheduler {
 
     final OwnedAccounts accountRepo;
     final PointerGc gc;
+    final TablePurgeQueue purges;
     final CatalogIntegrationCredentialCleanup credentials;
     try {
       accountRepo = accounts.get();
       gc = pointerGc.get();
+      purges = tablePurges.get();
       credentials = credentialCleanup.get();
     } catch (Throwable ignored) {
       return;
@@ -135,6 +138,11 @@ public class PointerGcScheduler {
         String accountId = account.getResourceId().getId();
         int expired = snapshotExpiry.get().expireAccount(accountId, expiryDeadline);
         gcMetrics.recordCollection(expired, Tag.of(TagKey.RESULT, "snapshots-expired"));
+        // Ahead of the pointer sweep: only failed or interrupted purges leave markers, so this is
+        // one short listing per account and must not starve behind the sweep's blob probes.
+        TablePurgeQueue.Result purged = purges.drainAccount(accountId, deadline, pointerPageSize);
+        gcMetrics.recordCollection(
+            purged.purged(), Tag.of(TagKey.RESULT, "table-purges-completed"));
         PointerGc.Result result = gc.runForAccount(accountId, deadline);
         gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "account-scanned"));
         gcMetrics.recordCollection(result.deleted(), Tag.of(TagKey.RESULT, "account-deleted"));

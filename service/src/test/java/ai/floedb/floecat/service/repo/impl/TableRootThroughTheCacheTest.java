@@ -122,22 +122,6 @@ class TableRootThroughTheCacheTest {
   }
 
   @Test
-  void aPurgeInvalidatesTheCachedPointerLikeAnyOtherWrite() {
-    var pointers = new CountingPointerStore();
-    var repo = cachedRepo(pointers);
-    var tableId = table("t-purge");
-    seedTable(pointers, tableId);
-    repo.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
-    assertEquals(1, repo.get(tableId).orElseThrow().getRootSeq()); // populate the cache
-
-    // DROP/account-cascade purge: the pointer AND the cached entry must go — a bare pointer-store
-    // delete would leave the dropped table's root serving from the cache indefinitely.
-    repo.purgeRoot(tableId);
-
-    assertTrue(repo.get(tableId).isEmpty(), "read-your-writes must hold for purges too");
-  }
-
-  @Test
   void absenceIsNotCachedSoTheFirstRootIsVisibleImmediately() {
     var pointers = new CountingPointerStore();
     var repo = cachedRepo(pointers);

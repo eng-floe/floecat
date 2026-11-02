@@ -50,7 +50,6 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
 
   private static final String CONTENT_TYPE = "application/x-protobuf";
 
-  private final PointerStore pointerStore;
   private final BlobStore blobStore;
   // Serialized-content cache for immutable root blobs and manifest pages.
   private final BlobCacheAccess blobCache;
@@ -81,18 +80,8 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
         TableRoot::parseFrom,
         TableRoot::toByteArray,
         blobCache);
-    this.pointerStore = pointerStore;
     this.blobStore = blobStore;
     this.blobCache = java.util.Objects.requireNonNull(blobCache, "blobCache");
-  }
-
-  /**
-   * Unconditional root-pointer removal for DROP / account-cascade purges. Root blobs are
-   * deliberately left behind for CasBlobGc, since a query may still read a resolved immutable
-   * selection while it remains inside the retention and grace horizons.
-   */
-  public void purgeRoot(ResourceId tableId) {
-    pointerStore.delete(Keys.tableRootByTable(tableId.getAccountId(), tableId.getId()));
   }
 
   /** Loads a root directly from its immutable blob URI (a resolved root, not the live pointer). */

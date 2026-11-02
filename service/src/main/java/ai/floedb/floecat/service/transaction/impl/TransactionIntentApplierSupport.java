@@ -35,6 +35,7 @@ import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
@@ -312,13 +313,9 @@ public class TransactionIntentApplierSupport {
       if (planOutcome.status != ApplyStatus.APPLIED) {
         return planOutcome;
       }
-      if (batch.size() > MAX_POINTER_TXN_OPS) {
-        return ApplyOutcome.conflict(
-            "POINTER_TXN_TOO_LARGE",
-            "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
-            null,
-            null,
-            null);
+      ApplyOutcome sizeOutcome = checkFencedBatchSize(batch, 0);
+      if (sizeOutcome.status != ApplyStatus.APPLIED) {
+        return sizeOutcome;
       }
     }
 
@@ -378,13 +375,9 @@ public class TransactionIntentApplierSupport {
       if (cleanupOutcome.status != ApplyStatus.APPLIED) {
         return cleanupOutcome;
       }
-      if (batch.size() > MAX_POINTER_TXN_OPS - 1 - completionOps.size()) {
-        return ApplyOutcome.conflict(
-            "POINTER_TXN_TOO_LARGE",
-            "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
-            null,
-            null,
-            null);
+      ApplyOutcome sizeOutcome = checkFencedBatchSize(batch, 1 + completionOps.size());
+      if (sizeOutcome.status != ApplyStatus.APPLIED) {
+        return sizeOutcome;
       }
     }
 
@@ -399,13 +392,9 @@ public class TransactionIntentApplierSupport {
         return completionOutcome;
       }
     }
-    if (batch.size() > MAX_POINTER_TXN_OPS) {
-      return ApplyOutcome.conflict(
-          "POINTER_TXN_TOO_LARGE",
-          "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
-          null,
-          null,
-          null);
+    ApplyOutcome sizeOutcome = checkFencedBatchSize(batch, 0);
+    if (sizeOutcome.status != ApplyStatus.APPLIED) {
+      return sizeOutcome;
     }
 
     if (pointerStore.compareAndSetBatch(batch.operations())) {
@@ -418,6 +407,34 @@ public class TransactionIntentApplierSupport {
     }
     return classifyAtomicApplyFailure(
         appliedTransaction, expectedTransactionPointerVersion, intents, intentRepo);
+  }
+
+  /**
+   * Refuses a batch whose size, once the store's {@link TableWriteFence} has expanded it, would
+   * exceed the pointer-transaction limit with {@code reserved} operations still to be added.
+   *
+   * <p>The fence runs inside the pointer store, below this check, adding a row check per table
+   * whose state the batch writes and a purge-marker op per table row it creates or deletes.
+   * Counting only the planned operations let a batch pass here and then fail in the backend after
+   * its intents were staged.
+   */
+  private static ApplyOutcome checkFencedBatchSize(PointerBatch batch, int reserved) {
+    int fenceOps;
+    try {
+      fenceOps = TableWriteFence.addedOperationCount(batch.operations());
+    } catch (IllegalArgumentException e) {
+      return ApplyOutcome.conflict(
+          "TABLE_DELETE_WITH_TABLE_WRITE", e.getMessage(), null, null, null);
+    }
+    if (batch.size() + fenceOps > MAX_POINTER_TXN_OPS - reserved) {
+      return ApplyOutcome.conflict(
+          "POINTER_TXN_TOO_LARGE",
+          "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
+          null,
+          null,
+          null);
+    }
+    return ApplyOutcome.applied();
   }
 
   private void purgeAppliedTableDeletes(List<TransactionIntent> intents) {
@@ -441,8 +458,8 @@ public class TransactionIntentApplierSupport {
                 .build());
       } catch (RuntimeException purgeFailure) {
         // The pointer batch has already committed, and the atomic path has also made the
-        // transaction terminal. Report the committed outcome rather than inviting a retry that
-        // cannot re-run this post-commit cleanup.
+        // transaction terminal. Report the committed outcome: the row delete left a purge marker,
+        // so pointer GC finishes this cleanup and the table id stays unusable until it does.
         LOG.errorf(
             purgeFailure,
             "transaction_table_purge_failed account_id=%s table_id=%s tx_id=%s",

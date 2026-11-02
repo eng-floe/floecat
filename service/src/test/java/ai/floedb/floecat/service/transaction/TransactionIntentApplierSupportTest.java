@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -28,7 +29,9 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.catalog.impl.RelationPurge;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.gc.TablePurgeQueue;
+import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
+import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -37,6 +40,7 @@ import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
@@ -72,6 +76,117 @@ class TransactionIntentApplierSupportTest {
     var outcome = support.applyTransactionBestEffort(intents, intentRepo);
     assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
     assertEquals("POINTER_TXN_TOO_LARGE", outcome.errorCode());
+  }
+
+  /**
+   * The reviewer's case: 32 snapshot changes across 32 tables plan as 98 pointer ops, and the
+   * store's table fence adds a row check per table, 130 in all. The budget must count the fence, or
+   * the batch passes here and the backend refuses it after the intents were staged.
+   */
+  @Test
+  void applyTransactionAtomicallyCountsTableFenceOpsAgainstTheLimit() throws Exception {
+    var pointers = new CountingPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var txRepo = new TransactionRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    String accountId = "acct";
+    String txId = "tx-1";
+    Transaction currentTxn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_APPLYING)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    txRepo.create(currentTxn);
+    long txPointerVersion = txRepo.metaFor(accountId, txId).getPointerVersion();
+    List<TransactionIntent> intents = snapshotIntents(accountId, txId, 32);
+    for (TransactionIntent intent : intents) {
+      intentRepo.create(intent);
+    }
+    Transaction appliedTxn =
+        currentTxn.toBuilder()
+            .setState(TransactionState.TS_APPLIED)
+            .setUpdatedAt(Timestamps.fromMillis(2))
+            .build();
+    pointers.batches = 0;
+
+    var outcome =
+        support.applyTransactionAtomically(appliedTxn, txPointerVersion, intents, intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("POINTER_TXN_TOO_LARGE", outcome.errorCode());
+    assertEquals(0, pointers.batches, "an oversize batch never reaches the store");
+    for (TransactionIntent intent : intents) {
+      assertTrue(pointers.get(intent.getTargetPointerKey()).isEmpty());
+    }
+  }
+
+  /** The limit applies to the fenced size: exactly 100 is accepted, 101 is refused. */
+  @Test
+  void applyTransactionAcceptsAFencedBatchOfExactlyTheLimit() throws Exception {
+    // 1 account-deletion fence + 49 snapshot upserts + 49 table fences + 1 plain upsert = 100.
+    assertEquals(
+        TransactionIntentApplierSupport.ApplyStatus.APPLIED,
+        applySnapshotsPlusPlainKeys(49, 1).status());
+
+    // One more plain key is 101.
+    var tooLarge = applySnapshotsPlusPlainKeys(49, 2);
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, tooLarge.status());
+    assertEquals("POINTER_TXN_TOO_LARGE", tooLarge.errorCode());
+  }
+
+  private TransactionIntentApplierSupport.ApplyOutcome applySnapshotsPlusPlainKeys(
+      int tables, int plainKeys) throws Exception {
+    var pointers = new CountingPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    List<TransactionIntent> intents = new ArrayList<>(snapshotIntents("acct", "tx-1", tables));
+    for (int i = 0; i < plainKeys; i++) {
+      intents.add(
+          TransactionIntent.newBuilder()
+              .setAccountId("acct")
+              .setTxId("tx-1")
+              .setTargetPointerKey("/accounts/acct/custom/key-" + i)
+              .setBlobUri("s3://bucket/plain-" + i)
+              .setCreatedAt(Timestamps.fromMillis(1))
+              .build());
+    }
+    var outcome = support.applyTransactionBestEffort(intents, intentRepo);
+    if (outcome.status() != TransactionIntentApplierSupport.ApplyStatus.APPLIED) {
+      assertEquals(0, pointers.batches, "an oversize batch never reaches the store");
+    }
+    return outcome;
+  }
+
+  /** One snapshot-pointer write in each of {@code tables} distinct tables. */
+  private static List<TransactionIntent> snapshotIntents(
+      String accountId, String txId, int tables) {
+    List<TransactionIntent> intents = new ArrayList<>();
+    for (int i = 0; i < tables; i++) {
+      String tableId = String.format("00000000-0000-0000-0000-%012d", i);
+      intents.add(
+          TransactionIntent.newBuilder()
+              .setAccountId(accountId)
+              .setTxId(txId)
+              .setTargetPointerKey(Keys.snapshotPointerById(accountId, tableId, 1L))
+              .setBlobUri("s3://bucket/snapshot-" + i)
+              .setCreatedAt(Timestamps.fromMillis(1))
+              .build());
+    }
+    return intents;
+  }
+
+  private static final class CountingPointerStore extends InMemoryPointerStore {
+    int batches;
+
+    @Override
+    public boolean compareAndSetBatch(List<ai.floedb.floecat.storage.spi.PointerStore.CasOp> ops) {
+      batches++;
+      return super.compareAndSetBatch(ops);
+    }
   }
 
   @Test
@@ -508,7 +623,9 @@ class TransactionIntentApplierSupportTest {
 
   @Test
   void applyTransactionAtomicallyReportsCommittedWhenPostCommitPurgeFails() throws Exception {
-    var pointers = new InMemoryPointerStore();
+    // Through the production store seam, where the table fence records the purge marker.
+    var durable = new InMemoryPointerStore();
+    PointerStore pointers = new IndexedPointerStore(durable, new PlanningPointerIndex(durable));
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
     var txRepo = new TransactionRepository(pointers, blobs);
@@ -548,6 +665,12 @@ class TransactionIntentApplierSupportTest {
     blobs.put(tableBlob, table.toByteArray(), "application/x-protobuf");
     pointers.compareAndSet(byIdKey, 0L, PointerReferences.blobPointer(byIdKey, tableBlob, 1L));
     pointers.compareAndSet(byNameKey, 0L, PointerReferences.blobPointer(byNameKey, tableBlob, 1L));
+    String tableState = Keys.snapshotConstraintsPointer(accountId, tableId, 7L);
+    assertTrue(
+        pointers.compareAndSet(
+            tableState,
+            0L,
+            Pointer.newBuilder().setKey(tableState).setBlobUri("blob://constraint").build()));
 
     Transaction currentTxn =
         Transaction.newBuilder()
@@ -593,6 +716,25 @@ class TransactionIntentApplierSupportTest {
                     .getBlobUri())
             .getState());
     verify(relationPurge).purgeTableState(tableResourceId);
+
+    String marker = Keys.tablePurgePointer(accountId, tableId);
+    assertTrue(pointers.get(marker).isPresent(), "the committed delete must queue its purge");
+    assertTrue(pointers.get(tableState).isPresent());
+    assertFalse(
+        pointers.compareAndSet(byIdKey, 0L, PointerReferences.blobPointer(byIdKey, tableBlob, 1L)),
+        "the table id must not be reused while its purge is pending");
+
+    // Recovery: pointer GC drains the marker the failed purge left behind.
+    var purge = new RelationPurge();
+    inject(purge, "pointerStore", pointers);
+    inject(purge, "hints", mock(HintCache.class));
+    var queue = new TablePurgeQueue();
+    inject(queue, "pointerStore", pointers);
+    inject(queue, "relations", purge);
+    queue.drainAccount(accountId, System.currentTimeMillis() + 10_000L, 10);
+
+    assertTrue(pointers.get(tableState).isEmpty(), "table-scoped state should be purged");
+    assertTrue(pointers.get(marker).isEmpty(), "the purge marker should be acknowledged");
   }
 
   @Test
@@ -1469,7 +1611,7 @@ class TransactionIntentApplierSupportTest {
   }
 
   private TransactionIntentApplierSupport newSupport(
-      InMemoryPointerStore pointerStore, InMemoryBlobStore blobStore) throws Exception {
+      PointerStore pointerStore, InMemoryBlobStore blobStore) throws Exception {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointerStore);
     inject(support, "blobStore", blobStore);
@@ -1481,7 +1623,6 @@ class TransactionIntentApplierSupportTest {
     inject(support, "markerStore", markerStore);
     var relationPurge = new RelationPurge();
     inject(relationPurge, "pointerStore", pointerStore);
-    inject(relationPurge, "tableRoots", mock(TableRootRepository.class));
     inject(relationPurge, "hints", mock(HintCache.class));
     inject(support, "relationPurge", relationPurge);
     return support;
@@ -1608,8 +1749,7 @@ class TransactionIntentApplierSupportTest {
    * that was never created reads as deleted and the intent is refused. Only the pointer's presence
    * and version matter to that assertion.
    */
-  private static void seedNamespace(
-      InMemoryPointerStore pointers, String accountId, String namespaceId) {
+  private static void seedNamespace(PointerStore pointers, String accountId, String namespaceId) {
     String key = Keys.namespacePointerById(accountId, namespaceId);
     pointers.compareAndSet(key, 0L, PointerReferences.opaqueMarkerPointer(key, namespaceId, 1L));
   }

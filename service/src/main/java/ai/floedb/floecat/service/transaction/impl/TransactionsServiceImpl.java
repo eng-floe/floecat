@@ -62,6 +62,7 @@ import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository.PreconditionFailedException;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
@@ -119,18 +120,21 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   // A table UPSERT: canonical pointer, by-name pointer, shared relation claim, and the old name's
   // pointer and claim when a rename moves it -- five, plus two cleanup. Deliberately the worst case
   // and deliberately not narrowed further: whether an upsert renames is only decidable by comparing
-  // the staged table against the row it replaces, which Prepare does not read.
+  // the staged table against the row it replaces, which Prepare does not read. A create also gets
+  // the purge-marker check TableWriteFence adds, which still fits: a create moves no old name.
   /** The applier's reason code for a lost pointer CAS -- the one apply failure worth retrying. */
   private static final String POINTER_TXN_CAS_FAILED = "POINTER_TXN_CAS_FAILED";
 
   private static final int APPLY_OPS_PER_TABLE_UPSERT_INTENT = 7;
 
-  // A table DELETE sentinel: the canonical delete, the owned name delete, and the relation claim
-  // delete -- three, plus two cleanup. It never joins a namespace, because planTableDeleteIntentOps
+  // A table DELETE sentinel: the canonical delete, the owned name delete, the relation claim
+  // delete,
+  // and the purge marker TableWriteFence adds for the deleted row -- four, plus two cleanup. It
+  // never joins a namespace, because planTableDeleteIntentOps
   // does not read one: nothing is orphaned by a namespace that became emptier than the caller
   // checked. Charging it the upsert's estimate cost a client roughly half the batch size it had
   // before this fence existed, which is a regression rather than a conservative estimate.
-  private static final int APPLY_OPS_PER_TABLE_DELETE_INTENT = 5;
+  private static final int APPLY_OPS_PER_TABLE_DELETE_INTENT = 6;
 
   // A connector: canonical pointer, new name pointer, and the old name delete when a rename moves
   // it -- three, plus two cleanup. Connectors hold no relations, so they never join a namespace.
@@ -140,6 +144,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   // namespace canonical-pointer check. Source removal is safe without a fence, like relation
   // deletion, and keeping this shape at two also avoids rejecting valid near-limit batches.
   private static final int APPLY_OPS_PER_JOINED_NAMESPACE = 2;
+
+  // The table-row check TableWriteFence adds for each table whose state (snapshots, root, stats
+  // pointers) the batch writes without writing the row itself.
+  private static final int APPLY_OPS_PER_FENCED_TABLE = 1;
   private static final int APPLY_OPS_FOR_TRANSACTION_FINALIZE = 1;
 
   // The account-deletion fence check the applier adds once per batch.
@@ -717,6 +725,9 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     java.util.Set<String> seenTargets = new java.util.HashSet<>();
     java.util.Set<String> joinedNamespaces = new java.util.HashSet<>();
     List<PendingBlob> pendingBlobs = new ArrayList<>();
+    java.util.Set<String> writtenTableRows = new java.util.HashSet<>();
+    java.util.Set<String> deletedTableRows = new java.util.HashSet<>();
+    java.util.Set<String> tableScopedWriteRows = new java.util.LinkedHashSet<>();
     int estimatedOps = APPLY_OPS_FOR_ACCOUNT_DELETION_FENCE;
 
     for (var change : effectiveChanges) {
@@ -730,6 +741,14 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       boolean deletesItsTarget =
           isDeleteSentinelBlobUri(accountId, txn.getTxId(), pointerKey, planned.blobUri());
       boolean tableUpsert = isTableByIdPointer(pointerKey) && !deletesItsTarget;
+      if (isTableByIdPointer(pointerKey)) {
+        (deletesItsTarget ? deletedTableRows : writtenTableRows).add(pointerKey);
+      } else if (!deletesItsTarget) {
+        String tableRow = TableWriteFence.canonicalTableRow(pointerKey);
+        if (tableRow != null && !tableRow.equals(pointerKey)) {
+          tableScopedWriteRows.add(tableRow);
+        }
+      }
       if (tableUpsert) {
         estimatedOps += APPLY_OPS_PER_TABLE_UPSERT_INTENT;
       } else if (isTableByIdPointer(pointerKey)) {
@@ -784,6 +803,18 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       TransactionIntent intent = intentBuilder.build();
       intents.add(intent);
     }
+    // TableWriteFence refuses a batch that deletes a table row and writes state below it, so the
+    // applier could never commit this transaction. Refuse it here, before anything is staged.
+    for (String tableRow : tableScopedWriteRows) {
+      if (deletedTableRows.contains(tableRow)) {
+        throw new IllegalArgumentException(
+            "transaction cannot delete a table and write its state: " + tableRow);
+      }
+    }
+    // The fence also adds one row check per table whose state the batch writes, unless the batch
+    // writes that row itself. It is charged once per table, however many of its keys change.
+    tableScopedWriteRows.removeAll(writtenTableRows);
+    estimatedOps += tableScopedWriteRows.size() * APPLY_OPS_PER_FENCED_TABLE;
     estimatedOps += APPLY_OPS_FOR_TRANSACTION_FINALIZE;
     if (committer != null) {
       estimatedOps += 1;

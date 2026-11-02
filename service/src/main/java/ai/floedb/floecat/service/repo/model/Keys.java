@@ -2211,6 +2211,21 @@ public final class Keys {
     return "/accounts/" + encode(req("account_id", accountId)) + "/root-resyncs/by-table/";
   }
 
+  // ===== Table purge =====
+
+  /**
+   * Durable marker: this table's row is deleted and its table-scoped state still awaits purge.
+   * {@code TableWriteFence} writes it in the batch that deletes the row and refuses to recreate the
+   * row while it exists; the purge removes it last, so a failed purge is retried by pointer GC.
+   */
+  public static String tablePurgePointer(String accountId, String tableId) {
+    return tablePurgePrefix(accountId) + encode(req("table_id", tableId));
+  }
+
+  public static String tablePurgePrefix(String accountId) {
+    return "/accounts/" + encode(req("account_id", accountId)) + "/tables/purging/";
+  }
+
   // ===== Markers =====
 
   public static String catalogChildrenMarker(String accountId, String catalogId) {

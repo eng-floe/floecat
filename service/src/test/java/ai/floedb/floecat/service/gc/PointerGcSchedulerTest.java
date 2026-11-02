@@ -41,6 +41,7 @@ class PointerGcSchedulerTest {
     when(accounts.list(anyInt(), anyString(), any()))
         .thenReturn(List.of(account("acct-a"), account("acct-b"), account("acct-c")));
     RecordingPointerGc gc = new RecordingPointerGc();
+    RecordingTablePurges purges = new RecordingTablePurges();
     TestObservability observability = new TestObservability();
     PointerGcScheduler scheduler = new PointerGcScheduler();
     scheduler.accounts =
@@ -59,6 +60,7 @@ class PointerGcSchedulerTest {
                 null,
                 ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
     scheduler.credentialCleanup = () -> credentialCleanup();
+    scheduler.tablePurges = () -> purges;
     scheduler.observability = observability;
     scheduler.initMeters();
 
@@ -78,6 +80,7 @@ class PointerGcSchedulerTest {
     when(accounts.list(anyInt(), anyString(), any()))
         .thenReturn(List.of(account("acct-a"), account("acct-b")));
     RecordingPointerGc gc = new RecordingPointerGc();
+    RecordingTablePurges purges = new RecordingTablePurges();
     TestObservability observability = new TestObservability();
     PointerGcScheduler scheduler = new PointerGcScheduler();
     scheduler.accounts =
@@ -96,6 +99,7 @@ class PointerGcSchedulerTest {
                 null,
                 ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
     scheduler.credentialCleanup = () -> credentialCleanup();
+    scheduler.tablePurges = () -> purges;
     scheduler.observability = observability;
     scheduler.initMeters();
 
@@ -115,6 +119,7 @@ class PointerGcSchedulerTest {
     when(accounts.list(anyInt(), anyString(), any()))
         .thenReturn(List.of(account("acct-a"), account("acct-b")));
     RecordingPointerGc gc = new RecordingPointerGc();
+    RecordingTablePurges purges = new RecordingTablePurges();
     PointerGcScheduler scheduler = new PointerGcScheduler();
     scheduler.accounts =
         () ->
@@ -137,6 +142,7 @@ class PointerGcSchedulerTest {
                 null,
                 ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
     scheduler.credentialCleanup = () -> credentialCleanup();
+    scheduler.tablePurges = () -> purges;
     scheduler.observability = new TestObservability();
     scheduler.initMeters();
 
@@ -148,6 +154,17 @@ class PointerGcSchedulerTest {
     }
 
     assertThat(gc.accountIds).containsExactly("acct-a");
+    assertThat(purges.accountIds).containsExactly("acct-a");
+  }
+
+  private static final class RecordingTablePurges extends TablePurgeQueue {
+    private final List<String> accountIds = new ArrayList<>();
+
+    @Override
+    public Result drainAccount(String accountId, long deadlineMs, int pageSize) {
+      accountIds.add(accountId);
+      return new Result(0, 0);
+    }
   }
 
   private static Account account(String accountId) {

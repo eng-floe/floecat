@@ -112,6 +112,7 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/{account_id}/namespaces/{namespace_id}/markers/relations
 /accounts/{account_id}/gc/cas/generation-cursor
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
+/accounts/{account_id}/tables/purging/{table_id}
 /accounts/{account_id}/tables/{table_id}/owner-reuse-leases/{publication_id}
 /accounts/{account_id}/tables/{table_id}/owner-publication-progress/{publication_id}
 ```
@@ -123,6 +124,12 @@ marker, removing each with the catalog rather than advancing markers that would 
 A marker that has never been written is required **absent** instead: it reads as version zero, so
 advancing it would create a row for a resource the same batch is deleting, and requiring it absent is
 what makes the writer that adds the first child of that kind lose to this delete. A namespace delete asserts nothing about it: removal is the direction that orphans nothing.
+
+A table's state outside its row is purged after the row delete commits, so the delete leaves a
+`tables/purging/{table_id}` marker in the same batch. `TableWriteFence` adds it to every batch that
+deletes a table row, and requires it absent in every batch that creates one, so a table id cannot be
+reused while the purge of its previous state could still delete the new table's state. The purge
+removes the marker last; pointer GC retries any purge that failed or was interrupted before then.
 
 Two operations assert nothing here, and for the same reason: deleting a relation, and deleting a
 child namespace. Both are the removal direction — a namespace delete racing either can only find the

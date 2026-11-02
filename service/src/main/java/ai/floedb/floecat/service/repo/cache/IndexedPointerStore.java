@@ -103,7 +103,7 @@ public class IndexedPointerStore implements PointerStore {
   @Override
   public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
     List<CasOp> operation = List.of(new CasUpsert(key, expectedVersion, next));
-    if (TableWriteFence.tableRowsRequiringChecks(operation).isEmpty()) {
+    if (!TableWriteFence.requiresFence(operation)) {
       return index.mutateKeys(
           List.of(key),
           () -> durable.compareAndSet(key, expectedVersion, next),
@@ -125,6 +125,19 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public boolean delete(String key) {
+    if (TableWriteFence.isTableRow(key)) {
+      // A table row leaves only together with its purge marker, which needs a versioned delete.
+      while (true) {
+        Optional<Pointer> current = durable.getConsistent(key);
+        if (current.isEmpty()) {
+          index.refresh(key, current);
+          return false;
+        }
+        if (compareAndSetBatch(List.of(new CasDelete(key, current.get().getVersion())))) {
+          return true;
+        }
+      }
+    }
     return index.mutateKeys(
         List.of(key),
         () -> durable.delete(key),
@@ -136,6 +149,9 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public boolean compareAndDelete(String key, long expectedVersion) {
+    if (expectedVersion > 0L && TableWriteFence.isTableRow(key)) {
+      return compareAndSetBatch(List.of(new CasDelete(key, expectedVersion)));
+    }
     return index.mutateKeys(
         List.of(key),
         () -> durable.compareAndDelete(key, expectedVersion),
