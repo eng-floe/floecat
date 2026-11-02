@@ -16,12 +16,14 @@
 package ai.floedb.floecat.service.repo.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.service.testsupport.CountingBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -134,6 +136,18 @@ class TableRootThroughTheCacheTest {
         1,
         repo.get(tableId).orElseThrow().getRootSeq(),
         "a cached 'no root' would hide the first commit");
+  }
+
+  @Test
+  void missingTableRowClassifiesRootPublicationAsPermanentDeletion() {
+    var pointers = new CountingPointerStore();
+    var repo = cachedRepo(pointers);
+    var tableId = table("t-deleted");
+
+    assertThrows(
+        TableWriteFence.TableDeletedException.class,
+        () ->
+            repo.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build()));
   }
 
   @Test

@@ -113,14 +113,19 @@ public class IndexedPointerStore implements PointerStore {
           });
     }
     var fenced = TableWriteFence.fence(durable, operation);
-    if (!fenced.writable()) return false;
-    return index.mutateKeys(
+    if (!fenced.writable()) {
+      TableWriteFence.requireTableRowsPresent(durable, operation);
+      return false;
+    }
+    boolean won = index.mutateKeys(
         List.of(key),
         () -> durable.compareAndSetBatch(fenced.operations()),
-        won -> {
-          if (won) publish(key, next, expectedVersion + 1L);
+        committed -> {
+          if (committed) publish(key, next, expectedVersion + 1L);
           else index.refresh(key, durable.getConsistent(key));
         });
+    if (!won) TableWriteFence.requireTableRowsPresent(durable, operation);
+    return won;
   }
 
   @Override
@@ -170,13 +175,16 @@ public class IndexedPointerStore implements PointerStore {
   public boolean compareAndSetBatch(List<CasOp> ops) {
     if (ops == null || ops.isEmpty()) return durable.compareAndSetBatch(ops);
     var fenced = TableWriteFence.fence(durable, ops);
-    if (!fenced.writable()) return false;
+    if (!fenced.writable()) {
+      TableWriteFence.requireTableRowsPresent(durable, ops);
+      return false;
+    }
     List<String> keys = fenced.operations().stream().map(CasOp::key).distinct().toList();
-    return index.mutateKeys(
+    boolean won = index.mutateKeys(
         keys,
         () -> durable.compareAndSetBatch(fenced.operations()),
-        won -> {
-          if (!won) {
+        committed -> {
+          if (!committed) {
             // Same ordering rule as the winning path: refresh is publish-if-present and
             // remove-if-absent, so resyncing in key order could remove a name before
             // republishing the other one.
@@ -220,6 +228,8 @@ public class IndexedPointerStore implements PointerStore {
             }
           }
         });
+    if (!won) TableWriteFence.requireTableRowsPresent(durable, ops);
+    return won;
   }
 
   @Override

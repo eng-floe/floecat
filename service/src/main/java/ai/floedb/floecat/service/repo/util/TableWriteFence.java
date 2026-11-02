@@ -7,6 +7,7 @@
 package ai.floedb.floecat.service.repo.util;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -26,6 +27,23 @@ public final class TableWriteFence {
   private TableWriteFence() {}
 
   public record FencedBatch(boolean writable, List<PointerStore.CasOp> operations) {}
+
+  /** A table-scoped write lost because its owning table row was deleted. */
+  public static final class TableDeletedException extends BaseResourceRepository.NotFoundException {
+    public TableDeletedException(String tableRow) {
+      super(ResourceKind.RK_TABLE, "table deleted during scoped publication: " + tableRow);
+    }
+  }
+
+  /** Distinguishes a permanent table deletion from an ordinary retryable CAS conflict. */
+  public static void requireTableRowsPresent(
+      PointerStore pointerStore, List<? extends PointerStore.CasOp> operations) {
+    for (String row : tableRowsRequiringChecks(operations)) {
+      if (pointerStore.getConsistent(row).isEmpty()) {
+        throw new TableDeletedException(row);
+      }
+    }
+  }
 
   /**
    * Adds a version check for every table row named by an upsert in {@code operations}, and the
