@@ -16,19 +16,17 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.view;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
+import ai.floedb.floecat.connector.common.resolver.IcebergSchemaMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.ViewMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests.ViewRepresentation;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests.ViewVersion;
 import ai.floedb.floecat.gateway.iceberg.rest.common.ReservedPropertyUtil;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.types.LogicalField;
-import ai.floedb.floecat.types.LogicalKind;
-import ai.floedb.floecat.types.LogicalType;
-import ai.floedb.floecat.types.LogicalTypeFormat;
-import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.ViewOutputColumns;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -44,8 +42,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 @ApplicationScoped
 public class ViewMetadataService {
@@ -316,10 +312,10 @@ public class ViewMetadataService {
   }
 
   /**
-   * Maps the schema matching the current view version into a list of {@link SchemaColumn} protos.
-   * Each Iceberg field type value (a JSON string for primitives, a Map for complex types) is
-   * converted to a canonical logical-type string. Returns an empty list when the schema has no
-   * fields. Throws {@link IllegalArgumentException} if a field type cannot be recognized.
+   * The output columns of the current view version's schema, mapped as table schemas are
+   * (IcebergSchemaMapper): its top-level columns, at their positions. Returns an empty list when
+   * the schema has no fields. Throws {@link IllegalArgumentException} for a schema Iceberg cannot
+   * parse or Floecat cannot type.
    */
   public List<SchemaColumn> extractOutputColumns(MetadataContext ctx) {
     int schemaId = findCurrentVersion(ctx).map(ViewMetadataView.ViewVersion::schemaId).orElse(-1);
@@ -331,33 +327,14 @@ public class ViewMetadataService {
     if (schema == null || schema.fields().isEmpty()) {
       return List.of();
     }
-    List<SchemaColumn> columns = new ArrayList<>();
-    for (Map<String, Object> field : schema.fields()) {
-      String name = (String) field.get("name");
-      boolean required = Boolean.TRUE.equals(field.get("required"));
-      Object typeValue = field.get("type");
-      try {
-        LogicalType logical = icebergTypeValueToLogical(typeValue);
-        boolean isContainer =
-            logical.kind() == LogicalKind.ARRAY
-                || logical.kind() == LogicalKind.MAP
-                || logical.kind() == LogicalKind.STRUCT;
-        SchemaColumn.Builder column =
-            SchemaColumn.newBuilder()
-                .setName(name)
-                .setNullable(!required)
-                .setType(LogicalTypeProtoAdapter.toProto(logical))
-                .setLeaf(!isContainer);
-        if (field.get("id") instanceof Number id) {
-          column.setFieldId(id.intValue());
-        }
-        columns.add(column.build());
-      } catch (Exception e) {
-        throw new IllegalArgumentException(
-            "Cannot parse type for field '" + name + "': " + e.getMessage());
-      }
+    String schemaJson;
+    try {
+      schemaJson = mapper.writeValueAsString(schema);
+    } catch (JsonProcessingException e) {
+      throw new IllegalArgumentException("Cannot write the view's schema: " + e.getMessage(), e);
     }
-    return columns;
+    return ViewOutputColumns.of(
+        IcebergSchemaMapper.map(ColumnIdAlgorithm.CID_FIELD_ID, schemaJson, Set.of()));
   }
 
   private Optional<ViewMetadataView.ViewVersion> findCurrentVersion(MetadataContext ctx) {
@@ -366,111 +343,6 @@ public class ViewMetadataService {
         : ctx.metadata().versions().stream()
             .filter(v -> v.versionId() == ctx.metadata().currentVersionId())
             .findFirst();
-  }
-
-  private static final Pattern DECIMAL_TYPE_RE =
-      Pattern.compile("^decimal\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)$", Pattern.CASE_INSENSITIVE);
-
-  /**
-   * Converts the Iceberg REST JSON type value for a schema field to the flat canonical logical-type
-   * string used by FloeCAT (container tag only for complex types). Prefer {@link
-   * #icebergTypeValueToLogical(Object)} where the full nested tree is needed.
-   */
-  static String icebergTypeValueToCanonical(Object typeValue) {
-    return LogicalTypeFormat.formatTag(icebergTypeValueToLogical(typeValue));
-  }
-
-  /**
-   * Converts the Iceberg REST JSON type value for a schema field to a canonical {@link
-   * LogicalType}, recursing into complex types. Iceberg uses JSON strings for primitives (e.g.
-   * {@code "int"}) and JSON objects for complex types (e.g. {@code {"type":"list",...}}).
-   *
-   * <p>Mapping follows {@code IcebergTypeMappings.toLogical()} semantics: both {@code int} and
-   * {@code long} map to {@code INT}; {@code timestamptz} maps to {@code TIMESTAMPTZ}; {@code
-   * decimal(p,s)} maps to {@code DECIMAL(p,s)}; list/map/struct preserve element/key/value/field
-   * types and nullability ({@code element-required}, {@code value-required}, {@code required}).
-   */
-  static LogicalType icebergTypeValueToLogical(Object typeValue) {
-    return icebergTypeValueToLogical(typeValue, 0);
-  }
-
-  private static LogicalType icebergTypeValueToLogical(Object typeValue, int depth) {
-    if (depth > LogicalTypeFormat.MAX_NESTING_DEPTH) {
-      throw new IllegalArgumentException(
-          "nested type depth exceeds " + LogicalTypeFormat.MAX_NESTING_DEPTH);
-    }
-    if (typeValue instanceof String s) {
-      String lower = s.trim().toLowerCase();
-      return switch (lower) {
-        case "int", "integer", "long" -> LogicalType.of(LogicalKind.INT);
-        case "float" -> LogicalType.of(LogicalKind.FLOAT);
-        case "double" -> LogicalType.of(LogicalKind.DOUBLE);
-        case "boolean" -> LogicalType.of(LogicalKind.BOOLEAN);
-        case "string" -> LogicalType.of(LogicalKind.STRING);
-        case "binary", "fixed" -> LogicalType.of(LogicalKind.BINARY);
-        case "uuid" -> LogicalType.of(LogicalKind.UUID);
-        case "date" -> LogicalType.of(LogicalKind.DATE);
-        case "time" -> LogicalType.of(LogicalKind.TIME);
-        // timestamp (no tz) / timestamp_ns (nanosecond, no tz) → timezone-naive
-        case "timestamp", "timestamp_ns" -> LogicalType.of(LogicalKind.TIMESTAMP);
-        // timestamptz (UTC) / timestamptz_ns (nanosecond, UTC) → UTC-normalised
-        case "timestamptz", "timestamptz_ns" -> LogicalType.of(LogicalKind.TIMESTAMPTZ);
-        case "variant" -> LogicalType.of(LogicalKind.VARIANT);
-        default -> {
-          Matcher m = DECIMAL_TYPE_RE.matcher(lower);
-          if (m.matches()) {
-            yield LogicalType.decimal(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)));
-          }
-          // fixed(n) → BINARY
-          if (lower.startsWith("fixed(") || lower.startsWith("fixed ")) {
-            yield LogicalType.of(LogicalKind.BINARY);
-          }
-          throw new IllegalArgumentException("Unrecognized Iceberg primitive type: " + s);
-        }
-      };
-    }
-    if (typeValue instanceof Map<?, ?> map) {
-      Object kind = map.get("type");
-      if (kind instanceof String k) {
-        return switch (k.toLowerCase().trim()) {
-          case "list" ->
-              LogicalType.array(
-                  icebergTypeValueToLogical(map.get("element"), depth + 1),
-                  !Boolean.TRUE.equals(map.get("element-required")));
-          case "map" ->
-              LogicalType.map(
-                  icebergTypeValueToLogical(map.get("key"), depth + 1),
-                  icebergTypeValueToLogical(map.get("value"), depth + 1),
-                  !Boolean.TRUE.equals(map.get("value-required")));
-          case "struct" -> {
-            Object rawFields = map.get("fields");
-            if (!(rawFields instanceof List<?> fields)) {
-              // No field list at all: unknown shape, keep the legacy tag.
-              yield LogicalType.of(LogicalKind.STRUCT);
-            }
-            if (fields.isEmpty()) {
-              // An explicit empty field list is a known-empty struct.
-              yield LogicalType.struct(List.of());
-            }
-            List<LogicalField> structFields = new ArrayList<>();
-            for (Object rawField : fields) {
-              if (!(rawField instanceof Map<?, ?> fieldMap)) {
-                throw new IllegalArgumentException("Malformed struct field: " + rawField);
-              }
-              structFields.add(
-                  new LogicalField(
-                      String.valueOf(fieldMap.get("name")),
-                      !Boolean.TRUE.equals(fieldMap.get("required")),
-                      icebergTypeValueToLogical(fieldMap.get("type"), depth + 1)));
-            }
-            yield LogicalType.struct(structFields);
-          }
-          default -> throw new IllegalArgumentException("Unrecognized Iceberg complex type: " + k);
-        };
-      }
-    }
-    throw new IllegalArgumentException(
-        "Unexpected Iceberg type value: " + (typeValue == null ? "null" : typeValue.getClass()));
   }
 
   private void enforceRequirements(ViewMetadataView metadata, List<JsonNode> requirements) {

@@ -85,7 +85,8 @@ public final class IcebergSchemaMapper {
       return sb.build();
 
     } catch (Exception e) {
-      throw new IllegalArgumentException("Failed to parse Iceberg schema JSON", e);
+      throw new IllegalArgumentException(
+          "Failed to parse Iceberg schema JSON: " + e.getMessage(), e);
     }
   }
 }
