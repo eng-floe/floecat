@@ -112,7 +112,7 @@ public class RelationPurgeQueue {
         if (relation.isPresent()) {
           if (relations.deleteStranded(relation.get().id(), work.namespaceId())) {
             deleted++;
-          } else if (pointerStore.getConsistent(relationRow(relation.get().id())).isEmpty()) {
+          } else if (pointerStore.get(relationRow(relation.get().id())).isEmpty()) {
             // The row is already gone, so this is only an orphaned secondary. The namespace is
             // gone too, which makes deleting the exact observed name pointer safe.
             pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion());
