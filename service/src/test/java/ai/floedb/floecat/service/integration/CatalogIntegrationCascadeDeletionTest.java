@@ -73,7 +73,8 @@ class CatalogIntegrationCascadeDeletionTest {
     when(deletion.integrations.deleteWithPreconditionForCascadeDeletion(integrationId, 7L, 4L, 11L))
         .thenReturn(true);
 
-    assertEquals(integrationMeta, deletion.delete(integrationId, integrationMeta));
+    assertEquals(
+        integrationMeta, deletion.delete(integrationId, integrationMeta, "correlation", () -> {}));
 
     verify(deletion.overlayReconciler).retireMaterializedResources(overlay);
     verify(deletion.overlays).deleteWithFence(overlayId, 3L, 5L);

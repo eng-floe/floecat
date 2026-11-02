@@ -478,6 +478,26 @@ class CatalogOverlaysImplTest {
   @Test
   void automaticCatalogNameRaceDuringReplaceReturnsCatalogConflict() {
     var oldOverlayId = id("old-overlay", ResourceKind.RK_CATALOG_OVERLAY);
+
+    var error = replaceLosingAutomaticCatalogName(oldOverlayId, true);
+
+    assertEquals(Status.Code.ALREADY_EXISTS, error.getStatus().getCode());
+    // The conflict is terminal, so the fence this attempt installed must not outlive it.
+    verify(service.overlays).releaseDeletionFence(oldOverlayId, 1L);
+  }
+
+  @Test
+  void automaticCatalogNameRaceDuringReplaceKeepsAFenceAnEarlierAttemptInstalled() {
+    var oldOverlayId = id("old-overlay", ResourceKind.RK_CATALOG_OVERLAY);
+
+    var error = replaceLosingAutomaticCatalogName(oldOverlayId, false);
+
+    assertEquals(Status.Code.ALREADY_EXISTS, error.getStatus().getCode());
+    verify(service.overlays, never()).releaseDeletionFence(any(), anyLong());
+  }
+
+  private StatusRuntimeException replaceLosingAutomaticCatalogName(
+      ResourceId oldOverlayId, boolean fenceNewlyInstalled) {
     var oldCatalogId = id("old-catalog", ResourceKind.RK_CATALOG);
     var current = overlay(oldOverlayId, integrationId(), oldCatalogId, "sales");
     when(service.overlays.getByNameWithMeta("acct", "sales"))
@@ -497,28 +517,25 @@ class CatalogOverlaysImplTest {
                         .build(),
                     13L)));
     when(service.overlays.acquireDeletionFence(oldOverlayId, 9L))
-        .thenReturn(Optional.of(fence(1L, true)));
+        .thenReturn(Optional.of(fence(1L, fenceNewlyInstalled)));
     when(service.overlays.replaceIdentityAttachedWithMeta(
             any(), eq(9L), any(), any(), any(), any(), any(), any()))
         .thenThrow(new BaseResourceRepository.NameConflictException("catalog name claimed"));
 
-    var error =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .createCatalogOverlay(
-                        CreateCatalogOverlayRequest.newBuilder()
-                            .setCreateMode(CreateMode.CM_REPLACE)
-                            .setSpec(
-                                CatalogOverlaySpec.newBuilder()
-                                    .setDisplayName("sales")
-                                    .setIntegrationId(integrationId()))
-                            .build())
-                    .await()
-                    .indefinitely());
-
-    assertEquals(Status.Code.ALREADY_EXISTS, error.getStatus().getCode());
+    return assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .createCatalogOverlay(
+                    CreateCatalogOverlayRequest.newBuilder()
+                        .setCreateMode(CreateMode.CM_REPLACE)
+                        .setSpec(
+                            CatalogOverlaySpec.newBuilder()
+                                .setDisplayName("sales")
+                                .setIntegrationId(integrationId()))
+                        .build())
+                .await()
+                .indefinitely());
   }
 
   @Test

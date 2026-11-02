@@ -28,10 +28,6 @@ class CatalogIntegrationCascadeDeletion {
   @Inject CatalogOverlayLifecycle overlayLifecycle;
   @Inject MarkerStore markerStore;
 
-  MutationMeta delete(ResourceId integrationId, MutationMeta integrationMeta) {
-    return delete(integrationId, integrationMeta, "", () -> {});
-  }
-
   MutationMeta delete(
       ResourceId integrationId,
       MutationMeta integrationMeta,

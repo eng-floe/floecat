@@ -483,6 +483,13 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                     "overlay, integration, or catalog changed during replacement"));
       } catch (BaseResourceRepository.NameConflictException conflict) {
         if (target.createdCatalog() != null && catalogs.getByName(accountId, name).isPresent()) {
+          // Terminal, so no retry resumes this fence. Withdraw it unless an earlier attempt
+          // installed it: the old overlay stays bound to its catalog and its next reconcile
+          // restores the contributions retired above.
+          if (replacementFence.newlyInstalled()) {
+            overlays.releaseDeletionFence(
+                current.value().getResourceId(), replacementFence.version());
+          }
           throw GrpcErrors.alreadyExists(
               corr, CATALOG_ALREADY_EXISTS, Map.of("display_name", name));
         }

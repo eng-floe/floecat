@@ -197,16 +197,13 @@ public class CascadeDeletion {
   }
 
   /**
-   * Deletes every overlay of the catalog without retiring what it materialized.
+   * Deletes every overlay of the catalog, except {@code retainedOverlayId} when given, without
+   * retiring what it materialized.
    *
    * <p>Retiring would walk every relation in the catalog to find the overlay's own, and the
    * namespace cascade that follows deletes all of them anyway. The deletion fence still goes in
    * first, so the overlay reconciler stops materializing before the row goes.
    */
-  public void deleteCatalogOverlays(ResourceId catalogId) {
-    deleteCatalogOverlays(catalogId, null);
-  }
-
   private void deleteCatalogOverlays(ResourceId catalogId, ResourceId retainedOverlayId) {
     while (true) {
       var dependents =
