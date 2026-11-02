@@ -22,7 +22,7 @@ import ai.floedb.floecat.catalog.rpc.*;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
-import ai.floedb.floecat.service.gc.PointerGc;
+import ai.floedb.floecat.service.gc.RelationPurgeQueue;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.util.TestDataResetter;
@@ -51,7 +51,7 @@ class CascadeDeleteIT {
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
-  @Inject PointerGc pointerGc;
+  @Inject RelationPurgeQueue relationPurgeQueue;
   @Inject PointerStore pointerStore;
 
   @BeforeEach
@@ -106,8 +106,8 @@ class CascadeDeleteIT {
 
     String tableKey = Keys.tablePointerById(catId.getAccountId(), stranded.getResourceId().getId());
     assertTrue(pointerStore.get(tableKey).isPresent(), "row stays until GC");
-    pointerGc.runForAccount(catId.getAccountId(), System.currentTimeMillis() + 10_000L);
-    assertTrue(pointerStore.get(tableKey).isEmpty(), "GC reclaims the stranded table");
+    relationPurgeQueue.drain(System.currentTimeMillis() + 10_000L, 500);
+    assertTrue(pointerStore.get(tableKey).isEmpty(), "deletion queue reclaims the stranded table");
     assertTrue(
         pointerStore
             .get(Keys.tablePointerById(catId.getAccountId(), kept.getResourceId().getId()))
@@ -147,7 +147,7 @@ class CascadeDeleteIT {
             table.getTable(
                 GetTableRequest.newBuilder().setTableId(events.getResourceId()).build()));
 
-    pointerGc.runForAccount(catId.getAccountId(), System.currentTimeMillis() + 10_000L);
+    relationPurgeQueue.drain(System.currentTimeMillis() + 10_000L, 500);
     assertTrue(
         pointerStore
             .get(Keys.tablePointerById(catId.getAccountId(), events.getResourceId().getId()))

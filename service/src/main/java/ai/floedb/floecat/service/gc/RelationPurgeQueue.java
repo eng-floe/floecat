@@ -19,6 +19,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.catalog.impl.RelationPurge;
+import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -33,6 +34,7 @@ public class RelationPurgeQueue {
   private static final Logger LOG = Logger.getLogger(RelationPurgeQueue.class);
 
   @Inject PointerStore pointerStore;
+  @Inject DurablePointerReads durablePointers;
   @Inject RelationPurge relations;
   @Inject OwnedAccounts accounts;
 
@@ -112,7 +114,7 @@ public class RelationPurgeQueue {
         if (relation.isPresent()) {
           if (relations.deleteStranded(relation.get().id(), work.namespaceId())) {
             deleted++;
-          } else if (pointerStore.get(relationRow(relation.get().id())).isEmpty()) {
+          } else if (durablePointers.get(relationRow(relation.get().id())).isEmpty()) {
             // The row is already gone, so this is only an orphaned secondary. The namespace is
             // gone too, which makes deleting the exact observed name pointer safe.
             pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion());

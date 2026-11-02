@@ -27,6 +27,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.catalog.impl.RelationPurge;
+import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -41,6 +42,7 @@ class RelationPurgeQueueTest {
   void setUp() {
     queue = new RelationPurgeQueue();
     queue.pointerStore = pointers;
+    queue.durablePointers = new DurablePointerReads(pointers);
     queue.relations = mock(RelationPurge.class);
     queue.accounts = mock(OwnedAccounts.class);
   }
