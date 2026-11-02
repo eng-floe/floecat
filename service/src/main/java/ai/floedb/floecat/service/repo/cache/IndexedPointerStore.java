@@ -128,9 +128,14 @@ public class IndexedPointerStore implements PointerStore {
     if (TableWriteFence.isTableRow(key)) {
       // A table row leaves only together with its purge marker, which needs a versioned delete.
       while (true) {
-        Optional<Pointer> current = durable.getConsistent(key);
+        Optional<Pointer> current =
+            index.mutateKeys(
+                List.of(key),
+                () -> durable.getConsistent(key),
+                observed -> {
+                  if (observed.isEmpty()) index.refresh(key, observed);
+                });
         if (current.isEmpty()) {
-          index.refresh(key, current);
           return false;
         }
         if (compareAndSetBatch(List.of(new CasDelete(key, current.get().getVersion())))) {

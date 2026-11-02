@@ -46,8 +46,7 @@ public class RelationPurge {
    * this purge started from. While that marker survives, the table id cannot have been recreated,
    * so everything under it belongs to the deleted table. Once another purge has acknowledged it,
    * this one stops: the id may since have been recreated, and an unfenced delete would remove the
-   * new table's state. Without a marker (a table deleted before markers existed) the fence is the
-   * table row's absence instead.
+   * new table's state. Without a marker nothing is owed: every row delete leaves one.
    *
    * @return whether this purge finished and acknowledged its marker
    */
@@ -56,10 +55,10 @@ public class RelationPurge {
     String accountId = tableId.getAccountId();
     String marker = Keys.tablePurgePointer(accountId, tableId.getId());
     Optional<Pointer> started = pointerStore.get(marker);
-    PointerStore.CasOp fence =
-        started.isPresent()
-            ? new PointerStore.CasCheck(marker, started.get().getVersion())
-            : new PointerStore.CasCheckAbsent(Keys.tablePointerById(accountId, tableId.getId()));
+    if (started.isEmpty()) {
+      return false;
+    }
+    PointerStore.CasCheck fence = new PointerStore.CasCheck(marker, started.get().getVersion());
     for (String prefix :
         List.of(
             Keys.tablePrefix(accountId, tableId.getId()),
@@ -69,12 +68,36 @@ public class RelationPurge {
         return false;
       }
     }
+    // A pending root resync would otherwise re-drive against a table recreated under this id.
+    if (!deleteKeyWhileFenced(Keys.rootResyncPendingPointer(accountId, tableId.getId()), fence)) {
+      return false;
+    }
     hints.evictRelation(tableId);
-    return started.isEmpty() || pointerStore.compareAndDelete(marker, started.get().getVersion());
+    return pointerStore.compareAndDelete(marker, started.get().getVersion());
+  }
+
+  /** Deletes the single pointer {@code key}, if present, atomically with {@code fence}. */
+  private boolean deleteKeyWhileFenced(String key, PointerStore.CasCheck fence) {
+    for (int stalled = 0; ; stalled++) {
+      Optional<Pointer> current = pointerStore.get(key);
+      if (current.isEmpty()) {
+        return true;
+      }
+      if (pointerStore.compareAndSetBatch(
+          List.of(fence, new PointerStore.CasDelete(key, current.get().getVersion())))) {
+        return true;
+      }
+      if (!fenceHolds(fence)) {
+        return false;
+      }
+      if (stalled + 1 >= MAX_STALLED_BATCHES) {
+        throw new IllegalStateException("table purge made no progress under " + key);
+      }
+    }
   }
 
   /** Deletes {@code prefix} page by page, each page atomically with {@code fence}. */
-  private boolean deleteWhileFenced(String prefix, PointerStore.CasOp fence) {
+  private boolean deleteWhileFenced(String prefix, PointerStore.CasCheck fence) {
     int stalled = 0;
     while (true) {
       List<Pointer> page =
@@ -101,16 +124,11 @@ public class RelationPurge {
     }
   }
 
-  private boolean fenceHolds(PointerStore.CasOp fence) {
-    return switch (fence) {
-      case PointerStore.CasCheck check ->
-          pointerStore
-              .get(check.key())
-              .map(pointer -> pointer.getVersion() == check.expectedVersion())
-              .orElse(false);
-      case PointerStore.CasCheckAbsent absent -> pointerStore.get(absent.key()).isEmpty();
-      default -> throw new IllegalArgumentException("not a fence: " + fence);
-    };
+  private boolean fenceHolds(PointerStore.CasCheck fence) {
+    return pointerStore
+        .get(fence.key())
+        .map(pointer -> pointer.getVersion() == fence.expectedVersion())
+        .orElse(false);
   }
 
   private static void requireCanonicalTableId(ResourceId tableId) {

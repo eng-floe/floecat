@@ -464,7 +464,9 @@ class TransactionIntentApplierSupportTest {
   @Test
   void applyTransactionDeletesTablePointerAndOwnedNamePointerWhenDeleteSentinelIsUsed()
       throws Exception {
-    var pointers = new InMemoryPointerStore();
+    var durable = new InMemoryPointerStore();
+    // Through the production seam, so the table row delete leaves the purge marker it owes.
+    PointerStore pointers = new IndexedPointerStore(durable, new PlanningPointerIndex(durable));
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
@@ -533,7 +535,9 @@ class TransactionIntentApplierSupportTest {
 
   @Test
   void applyTransactionAtomicallyPurgesDeletedTableState() throws Exception {
-    var pointers = new InMemoryPointerStore();
+    var durable = new InMemoryPointerStore();
+    // Through the production seam, so the table row delete leaves the purge marker it owes.
+    PointerStore pointers = new IndexedPointerStore(durable, new PlanningPointerIndex(durable));
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
     var txRepo = new TransactionRepository(pointers, blobs);

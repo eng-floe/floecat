@@ -17,18 +17,22 @@
 package ai.floedb.floecat.service.repo.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Test;
 
 class PointerIndexGateAndBudgetTest {
@@ -326,6 +330,38 @@ class PointerIndexGateAndBudgetTest {
   }
 
   @Test
+  void anAbsentTableDeleteCannotRemoveAConcurrentCreateFromTheIndex() throws Exception {
+    String key = Keys.tablePointerById(ACCOUNT, "new-table");
+    BlockingAbsentReadStore durable = new BlockingAbsentReadStore(key);
+    PlanningPointerIndex index = index(durable, PlanningPointerIndex.Policy.UNLIMITED);
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+    assertThat(store.get(key)).isEmpty();
+    assertThat(index.completePartitionCount()).isEqualTo(1);
+
+    durable.blockNextAbsentRead();
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      Future<Boolean> delete = executor.submit(() -> store.delete(key));
+      assertThat(durable.absentReadStarted.await(1, TimeUnit.SECONDS)).isTrue();
+
+      Pointer created = pointer(key, "s3://new-table");
+      Future<Boolean> create = executor.submit(() -> store.compareAndSet(key, 0L, created));
+      assertThatThrownBy(() -> create.get(100, TimeUnit.MILLISECONDS))
+          .as("creation waits until the absent read and index refresh release the key lock")
+          .isInstanceOf(TimeoutException.class);
+
+      durable.releaseAbsentRead.countDown();
+      assertThat(delete.get(1, TimeUnit.SECONDS)).isFalse();
+      assertThat(create.get(1, TimeUnit.SECONDS)).isTrue();
+      assertThat(durable.getConsistent(key)).isPresent();
+      assertThat(store.get(key)).as("the complete index retains the created row").isPresent();
+    } finally {
+      durable.releaseAbsentRead.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
   void writingDurableOnlySnapshotRowsDoesNotWarmTheResidentIndex() {
     ScanCountingStore counting = new ScanCountingStore();
     String table = Keys.tablePointerById(ACCOUNT, "t0");
@@ -499,6 +535,31 @@ class PointerIndexGateAndBudgetTest {
         String prefix, int limit, String token, StringBuilder next) {
       prefixScans.add(prefix);
       return super.listPointersByPrefixConsistent(prefix, limit, token, next);
+    }
+  }
+
+  private static final class BlockingAbsentReadStore extends InMemoryPointerStore {
+    private final String blockedKey;
+    private volatile CountDownLatch absentReadStarted = new CountDownLatch(0);
+    private volatile CountDownLatch releaseAbsentRead = new CountDownLatch(0);
+
+    BlockingAbsentReadStore(String blockedKey) {
+      this.blockedKey = blockedKey;
+    }
+
+    void blockNextAbsentRead() {
+      absentReadStarted = new CountDownLatch(1);
+      releaseAbsentRead = new CountDownLatch(1);
+    }
+
+    @Override
+    public Optional<Pointer> getConsistent(String key) {
+      Optional<Pointer> observed = super.getConsistent(key);
+      if (blockedKey.equals(key) && observed.isEmpty() && absentReadStarted.getCount() > 0) {
+        absentReadStarted.countDown();
+        await(releaseAbsentRead);
+      }
+      return observed;
     }
   }
 
