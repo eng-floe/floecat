@@ -32,6 +32,8 @@ import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.ViewOutputColumns;
 import java.util.Map;
 import java.util.Objects;
 
@@ -99,22 +101,19 @@ public final class CatalogSurfaceViews {
   }
 
   /**
-   * External callers must see the same typed output columns the planner path sees: pre-migration
-   * views persisted the legacy logical_type string, which NodeLoader upgrades for graph reads but
-   * raw repository reads would leak untyped.
+   * {@code view} with its output columns typed and positioned, as every reader sees them: views
+   * stored before either was enforced keep the legacy logical_type string or no positions.
    */
   static View withUpgradedOutputColumns(View view) {
-    boolean anyUntyped = view.getOutputColumnsList().stream().anyMatch(c -> !c.hasType());
-    if (!anyUntyped) {
+    var upgraded =
+        ViewOutputColumns.positioned(
+            view.getOutputColumnsList().stream()
+                .map(LogicalTypeProtoAdapter::upgradeLegacyColumn)
+                .toList());
+    if (upgraded.equals(view.getOutputColumnsList())) {
       return view;
     }
-    return view.toBuilder()
-        .clearOutputColumns()
-        .addAllOutputColumns(
-            view.getOutputColumnsList().stream()
-                .map(ai.floedb.floecat.types.LogicalTypeProtoAdapter::upgradeLegacyColumn)
-                .toList())
-        .build();
+    return view.toBuilder().clearOutputColumns().addAllOutputColumns(upgraded).build();
   }
 
   /**

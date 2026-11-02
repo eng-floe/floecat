@@ -19,6 +19,7 @@ package ai.floedb.floecat.types;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import java.util.List;
+import java.util.stream.IntStream;
 
 /** A view's output columns: which rows of a mapped schema they are, and their positions. */
 public final class ViewOutputColumns {
@@ -34,6 +35,20 @@ public final class ViewOutputColumns {
     return schema.getColumnsList().stream()
         .filter(c -> c.getPhysicalPath().isEmpty() || c.getPhysicalPath().equals(c.getName()))
         .map(c -> c.toBuilder().clearId().build())
+        .toList();
+  }
+
+  /**
+   * {@code columns}, a view's output columns, at their 1-based positions: when none has one, as for
+   * a view a client created without them, each at its place in the list, the view's output order;
+   * otherwise {@code columns}, unchanged.
+   */
+  public static List<SchemaColumn> positioned(List<SchemaColumn> columns) {
+    if (!columns.stream().allMatch(c -> c.getOrdinal() == 0)) {
+      return columns;
+    }
+    return IntStream.range(0, columns.size())
+        .mapToObj(i -> columns.get(i).toBuilder().setOrdinal(i + 1).build())
         .toList();
   }
 }

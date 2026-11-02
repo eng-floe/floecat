@@ -41,6 +41,7 @@ import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.util.List;
+import java.util.function.BiFunction;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -428,7 +429,7 @@ class ViewMutationIT {
 
     // Keyed creates take the fingerprint-compare path on name conflict — the same route the
     // reconciler's ensureView uses (a fresh key per pass).
-    java.util.function.BiFunction<String, String, CreateViewRequest> request =
+    BiFunction<String, String, CreateViewRequest> request =
         (type, key) ->
             CreateViewRequest.newBuilder()
                 .setSpec(specWithColumnType.apply(type))
@@ -459,7 +460,7 @@ class ViewMutationIT {
             namespace, cat.getResourceId(), "nested_fp_ns", List.of("db_nested_fp"), "ns");
     var element = LogicalType.newBuilder().setKind(LogicalType.Kind.TK_INT).build();
 
-    java.util.function.BiFunction<Boolean, String, CreateViewRequest> request =
+    BiFunction<Boolean, String, CreateViewRequest> request =
         (elementRequired, key) ->
             CreateViewRequest.newBuilder()
                 .setSpec(
@@ -518,6 +519,46 @@ class ViewMutationIT {
         org.junit.jupiter.api.Assertions.assertThrows(
             io.grpc.StatusRuntimeException.class, () -> view.createView(request));
     assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
+  void createViewPositionsOutputColumnsAtTheirPlacesInTheList() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_pos", "vcat-pos");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "pos_ns", List.of("db_pos"), "ns");
+    BiFunction<String, List<Integer>, CreateViewRequest> request =
+        (name, positions) -> {
+          var spec =
+              ViewSpec.newBuilder()
+                  .setCatalogId(cat.getResourceId())
+                  .setNamespaceId(ns.getResourceId())
+                  .setDisplayName(name)
+                  .addSqlDefinitions(
+                      ViewSqlDefinition.newBuilder().setSql("SELECT 1, 2").setDialect("ansi"));
+          for (int i = 0; i < positions.size(); i++) {
+            spec.addOutputColumns(
+                SchemaColumn.newBuilder()
+                    .setName("c" + i)
+                    .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                    .setOrdinal(positions.get(i)));
+          }
+          return CreateViewRequest.newBuilder().setSpec(spec).build();
+        };
+
+    var created = view.createView(request.apply("unpositioned_view", List.of(0, 0))).getView();
+    assertEquals(
+        List.of(1, 2),
+        created.getOutputColumnsList().stream().map(SchemaColumn::getOrdinal).toList());
+
+    for (var positions : List.of(List.of(1, 1), List.of(2, 1), List.of(1, 0))) {
+      var ex =
+          assertThrows(
+              StatusRuntimeException.class,
+              () -> view.createView(request.apply("misplaced_view", positions)));
+      TestSupport.assertGrpcAndMc(
+          ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "position");
+    }
   }
 
   @Test

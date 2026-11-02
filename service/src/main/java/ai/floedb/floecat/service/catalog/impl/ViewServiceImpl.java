@@ -35,6 +35,7 @@ import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
@@ -56,11 +57,14 @@ import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerCond
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.ViewOutputColumns;
 import com.google.protobuf.FieldMask;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
@@ -182,10 +186,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   var tsNow = nowTs();
 
-                  if (spec.getOutputColumnsList().isEmpty()) {
-                    throw GrpcErrors.invalidArgument(corr, VIEW_OUTPUT_COLUMNS_REQUIRED, Map.of());
-                  }
-                  var outputColumns = requireTypedOutputColumns(spec.getOutputColumnsList(), corr);
+                  var outputColumns = outputColumns(spec.getOutputColumnsList(), corr);
 
                   var rawName = mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr);
                   var normName = normalizeName(rawName);
@@ -565,11 +566,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
     }
 
     if (maskTargets(mask, "output_columns")) {
-      if (spec.getOutputColumnsList().isEmpty()) {
-        throw GrpcErrors.invalidArgument(corr, VIEW_OUTPUT_COLUMNS_REQUIRED, Map.of());
-      }
-      b.clearOutputColumns()
-          .addAllOutputColumns(requireTypedOutputColumns(spec.getOutputColumnsList(), corr));
+      b.clearOutputColumns().addAllOutputColumns(outputColumns(spec.getOutputColumnsList(), corr));
     }
 
     if (maskTargets(mask, "base_relations")) {
@@ -634,30 +631,49 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   }
 
   /**
-   * Every persisted output column must carry a decodable type — the typed field is the sole
-   * authority, and an untyped column is unrecoverable once written (it fails Arrow mapping, engine
-   * decoration, and information_schema rendering). Columns from older clients that still send the
-   * legacy logical_type string are upgraded transparently before validation, so the persisted form
-   * is always typed.
+   * A view spec's output columns as stored: at least one, each typed, each at its 1-based position.
+   * The typed field is the sole authority, and an untyped column is unrecoverable once written (it
+   * fails Arrow mapping, engine decoration, and information_schema rendering); columns from older
+   * clients that still send the legacy logical_type string are upgraded first. A client that gives
+   * no positions gets them in list order, the view's output order; one that gives some must give
+   * each column its place in the list.
    */
-  private static java.util.List<ai.floedb.floecat.query.rpc.SchemaColumn> requireTypedOutputColumns(
-      java.util.List<ai.floedb.floecat.query.rpc.SchemaColumn> columns, String corr) {
-    var typed = new java.util.ArrayList<ai.floedb.floecat.query.rpc.SchemaColumn>(columns.size());
+  private static List<SchemaColumn> outputColumns(List<SchemaColumn> columns, String corr) {
+    if (columns.isEmpty()) {
+      throw GrpcErrors.invalidArgument(corr, VIEW_OUTPUT_COLUMNS_REQUIRED, Map.of());
+    }
+    var typed = new ArrayList<SchemaColumn>(columns.size());
     for (var column : columns) {
-      var upgraded = ai.floedb.floecat.types.LogicalTypeProtoAdapter.upgradeLegacyColumn(column);
+      var upgraded = LogicalTypeProtoAdapter.upgradeLegacyColumn(column);
       if (!upgraded.hasType()) {
         throw GrpcErrors.invalidArgument(
             corr, VIEW_OUTPUT_COLUMN_TYPE_REQUIRED, Map.of("column", column.getName()));
       }
       try {
-        ai.floedb.floecat.types.LogicalTypeProtoAdapter.fromProto(upgraded.getType());
+        LogicalTypeProtoAdapter.fromProto(upgraded.getType());
       } catch (IllegalArgumentException e) {
         throw GrpcErrors.invalidArgument(
             corr, VIEW_OUTPUT_COLUMN_TYPE_REQUIRED, Map.of("column", column.getName()));
       }
       typed.add(upgraded);
     }
-    return typed;
+    var positioned = ViewOutputColumns.positioned(typed);
+    for (int i = 0; i < positioned.size(); i++) {
+      var column = positioned.get(i);
+      if (column.getOrdinal() != i + 1) {
+        throw GrpcErrors.invalidArgument(
+            corr,
+            VIEW_OUTPUT_COLUMN_POSITION_INVALID,
+            Map.of(
+                "column",
+                column.getName(),
+                "position",
+                String.valueOf(column.getOrdinal()),
+                "expected",
+                String.valueOf(i + 1)));
+      }
+    }
+    return positioned;
   }
 
   private static byte[] canonicalFingerprint(ViewSpec s) {
@@ -677,7 +693,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
         .list(
             "output_columns",
             s.getOutputColumnsList().stream()
-                .map(ai.floedb.floecat.types.LogicalTypeProtoAdapter::upgradeLegacyColumn)
+                .map(LogicalTypeProtoAdapter::upgradeLegacyColumn)
                 .map(
                     c ->
                         c.getName()

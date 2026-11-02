@@ -41,10 +41,12 @@ import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.ViewOutputColumns;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Metrics;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -281,12 +283,12 @@ public class NodeLoader {
 
   /**
    * Views created directly via gRPC have no upstream to re-reconcile from; recover the typed field
-   * of pre-migration output columns from the legacy logical_type string. Recovery outcomes are
-   * logged and counted so a failed migration surfaces here, not as an opaque missing-logical-type
-   * planning error at query time.
+   * of pre-migration output columns from the legacy logical_type string, and give columns stored
+   * without positions theirs. Recovery outcomes are logged and counted so a failed migration
+   * surfaces here, not as an opaque missing-logical-type planning error at query time.
    */
   private List<SchemaColumn> upgradeLegacyOutputColumns(View view) {
-    List<SchemaColumn> out = new java.util.ArrayList<>(view.getOutputColumnsCount());
+    List<SchemaColumn> out = new ArrayList<>(view.getOutputColumnsCount());
     for (SchemaColumn column : view.getOutputColumnsList()) {
       if (column.hasType()) {
         out.add(column);
@@ -307,7 +309,7 @@ public class NodeLoader {
       }
       out.add(upgraded);
     }
-    return out;
+    return ViewOutputColumns.positioned(out);
   }
 
   private ViewNode toViewNode(View view, MutationMeta meta) {
