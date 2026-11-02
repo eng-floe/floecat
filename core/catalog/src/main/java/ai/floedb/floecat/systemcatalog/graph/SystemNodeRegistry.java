@@ -373,7 +373,8 @@ public class SystemNodeRegistry {
               view.dialect(),
               viewColumns,
               List.of(),
-              List.of(),
+              // A system view's SQL names relations of its own namespace.
+              view.name().getPathList(),
               GraphNodeOrigin.SYSTEM,
               Map.of(),
               Optional.empty(),

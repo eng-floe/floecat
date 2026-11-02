@@ -122,15 +122,16 @@ public final class CatalogSurfaceViews {
    * {@code catalog_id} afterward; {@code GetView} does not, as a by-id lookup has no such context.
    */
   static View viewFromSystemNode(ViewNode node) {
-    View.Builder builder =
-        View.newBuilder()
-            .setResourceId(node.id())
-            .setCatalogId(node.catalogId())
-            .setNamespaceId(node.namespaceId())
-            .setDisplayName(node.displayName())
-            .putAllProperties(node.properties());
-    builder.addAllSqlDefinitions(node.sqlDefinitions());
-    return builder.build();
+    return View.newBuilder()
+        .setResourceId(node.id())
+        .setCatalogId(node.catalogId())
+        .setNamespaceId(node.namespaceId())
+        .setDisplayName(node.displayName())
+        .putAllProperties(node.properties())
+        .addAllSqlDefinitions(node.sqlDefinitions())
+        .addAllOutputColumns(node.outputColumns())
+        .addAllCreationSearchPath(node.creationSearchPath())
+        .build();
   }
 
   private static boolean isSystemViewNode(ViewNode node) {

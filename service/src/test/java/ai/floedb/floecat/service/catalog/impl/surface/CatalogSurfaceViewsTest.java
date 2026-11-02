@@ -235,6 +235,8 @@ class CatalogSurfaceViewsTest {
 
     assertEquals(systemView.id(), response.getView().getResourceId());
     assertEquals("engine_views", response.getView().getDisplayName());
+    assertEquals(systemView.outputColumns(), response.getView().getOutputColumnsList());
+    assertEquals(systemView.creationSearchPath(), response.getView().getCreationSearchPathList());
     verifyNoInteractions(viewRepo);
   }
 
@@ -265,9 +267,14 @@ class CatalogSurfaceViewsTest {
         displayName,
         "select 1",
         "sql",
-        List.<SchemaColumn>of(),
+        List.of(
+            SchemaColumn.newBuilder()
+                .setName("one")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setOrdinal(1)
+                .build()),
         List.of(),
-        List.of(),
+        List.of("sys"),
         origin,
         Map.of(),
         Optional.empty(),
