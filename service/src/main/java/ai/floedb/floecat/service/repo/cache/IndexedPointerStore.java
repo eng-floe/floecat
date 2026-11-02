@@ -117,13 +117,14 @@ public class IndexedPointerStore implements PointerStore {
       TableWriteFence.requireTableRowsPresent(durable, operation);
       return false;
     }
-    boolean won = index.mutateKeys(
-        List.of(key),
-        () -> durable.compareAndSetBatch(fenced.operations()),
-        committed -> {
-          if (committed) publish(key, next, expectedVersion + 1L);
-          else index.refresh(key, durable.getConsistent(key));
-        });
+    boolean won =
+        index.mutateKeys(
+            List.of(key),
+            () -> durable.compareAndSetBatch(fenced.operations()),
+            committed -> {
+              if (committed) publish(key, next, expectedVersion + 1L);
+              else index.refresh(key, durable.getConsistent(key));
+            });
     if (!won) TableWriteFence.requireTableRowsPresent(durable, operation);
     return won;
   }
@@ -180,54 +181,55 @@ public class IndexedPointerStore implements PointerStore {
       return false;
     }
     List<String> keys = fenced.operations().stream().map(CasOp::key).distinct().toList();
-    boolean won = index.mutateKeys(
-        keys,
-        () -> durable.compareAndSetBatch(fenced.operations()),
-        committed -> {
-          if (!committed) {
-            // Same ordering rule as the winning path: refresh is publish-if-present and
-            // remove-if-absent, so resyncing in key order could remove a name before
-            // republishing the other one.
-            Map<String, Optional<Pointer>> fresh = new LinkedHashMap<>();
-            for (String key : keys) fresh.put(key, durable.getConsistent(key));
-            fresh.forEach(
-                (key, pointer) -> {
-                  if (pointer.isPresent()) index.refresh(key, pointer);
-                });
-            fresh.forEach(
-                (key, pointer) -> {
-                  if (pointer.isEmpty()) index.refresh(key, pointer);
-                });
-            return;
-          }
-          // Every insertion before any removal, whatever order the batch arrived in. Listing
-          // paths hold the partition write lock and never see a partial batch, but a caller
-          // doing two point lookups can land between them, and absence in the index is
-          // authoritative. A rename may show both names to such a caller; it must never show
-          // neither. Both switches stay exhaustive so a new CasOp cannot be silently dropped.
-          for (CasOp op : ops) {
-            switch (op) {
-              case CasUpsert upsert ->
-                  publish(upsert.key(), upsert.next(), upsert.expectedVersion() + 1L);
-              case UnconditionalUpsert upsert ->
-                  publish(upsert.key(), upsert.next(), upsert.next().getVersion());
-              case CasDelete ignored -> {}
-              case CasCheckAbsent ignored -> {}
-              case CasCheck ignored -> {}
-            }
-          }
-          // Splitting the passes cannot reorder two ops against each other: only planner-key
-          // batches reach the index, and the assemblers that build those reject duplicate keys.
-          for (CasOp op : ops) {
-            switch (op) {
-              case CasDelete delete -> index.remove(delete.key());
-              case CasCheckAbsent absent -> index.remove(absent.key());
-              case CasUpsert ignored -> {}
-              case UnconditionalUpsert ignored -> {}
-              case CasCheck ignored -> {}
-            }
-          }
-        });
+    boolean won =
+        index.mutateKeys(
+            keys,
+            () -> durable.compareAndSetBatch(fenced.operations()),
+            committed -> {
+              if (!committed) {
+                // Same ordering rule as the winning path: refresh is publish-if-present and
+                // remove-if-absent, so resyncing in key order could remove a name before
+                // republishing the other one.
+                Map<String, Optional<Pointer>> fresh = new LinkedHashMap<>();
+                for (String key : keys) fresh.put(key, durable.getConsistent(key));
+                fresh.forEach(
+                    (key, pointer) -> {
+                      if (pointer.isPresent()) index.refresh(key, pointer);
+                    });
+                fresh.forEach(
+                    (key, pointer) -> {
+                      if (pointer.isEmpty()) index.refresh(key, pointer);
+                    });
+                return;
+              }
+              // Every insertion before any removal, whatever order the batch arrived in. Listing
+              // paths hold the partition write lock and never see a partial batch, but a caller
+              // doing two point lookups can land between them, and absence in the index is
+              // authoritative. A rename may show both names to such a caller; it must never show
+              // neither. Both switches stay exhaustive so a new CasOp cannot be silently dropped.
+              for (CasOp op : ops) {
+                switch (op) {
+                  case CasUpsert upsert ->
+                      publish(upsert.key(), upsert.next(), upsert.expectedVersion() + 1L);
+                  case UnconditionalUpsert upsert ->
+                      publish(upsert.key(), upsert.next(), upsert.next().getVersion());
+                  case CasDelete ignored -> {}
+                  case CasCheckAbsent ignored -> {}
+                  case CasCheck ignored -> {}
+                }
+              }
+              // Splitting the passes cannot reorder two ops against each other: only planner-key
+              // batches reach the index, and the assemblers that build those reject duplicate keys.
+              for (CasOp op : ops) {
+                switch (op) {
+                  case CasDelete delete -> index.remove(delete.key());
+                  case CasCheckAbsent absent -> index.remove(absent.key());
+                  case CasUpsert ignored -> {}
+                  case UnconditionalUpsert ignored -> {}
+                  case CasCheck ignored -> {}
+                }
+              }
+            });
     if (!won) TableWriteFence.requireTableRowsPresent(durable, ops);
     return won;
   }

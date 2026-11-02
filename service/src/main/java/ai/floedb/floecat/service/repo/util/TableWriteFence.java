@@ -39,7 +39,7 @@ public final class TableWriteFence {
   public static void requireTableRowsPresent(
       PointerStore pointerStore, List<? extends PointerStore.CasOp> operations) {
     for (String row : tableRowsRequiringChecks(operations)) {
-      if (pointerStore.getConsistent(row).isEmpty()) {
+      if (pointerStore.get(row).isEmpty()) {
         throw new TableDeletedException(row);
       }
     }
