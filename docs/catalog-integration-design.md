@@ -193,8 +193,10 @@ immutable resource identity rather than display name.
 
 An explicitly selected target Catalog remains directly manageable. Clients may create local
 namespaces and relations in it, and other overlays may contribute non-conflicting resources. An
-owned Catalog must be unshared before its Overlay can be deleted; deleting the Overlay recursively
-deletes every namespace and relation in that Catalog. Materialized Tables and Views carry
+owned Catalog must be unshared before its Overlay can be deleted. It accepts direct writes like any
+other Catalog, and that content is not preserved: deleting the Overlay, or replacing it with one
+bound to another Catalog, recursively deletes every namespace and relation in the owned Catalog,
+local or materialized, which is why both require catalog cascade permission. Materialized Tables and Views carry
 typed Integration and Overlay provenance and reject direct mutation while managed by the Overlay.
 During a cascading Integration delete, overlays of that same Integration do not count as external
 sharing because the operation removes them all; an Overlay belonging to another Integration still
@@ -223,7 +225,9 @@ Deleting an Overlay installs a deletion fence. For an independently managed targ
 Tables, Views, snapshot state, and namespace claims managed by that Overlay, then removes its
 dependencies and resource record. For an owned target, it uses the catalog cascade driver to fence
 and recursively delete the unshared Catalog and all of its contents, then atomically removes the
-Overlay, Catalog, and their deletion fences.
+Overlay, Catalog, and their deletion fences. If the Catalog proves shared before anything has been removed,
+the delete is rejected and withdraws the deletion fence it installed, so the Overlay stays
+updatable and reconcilable.
 
 ## Namespace selection
 

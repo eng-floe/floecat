@@ -104,7 +104,8 @@ class CatalogIntegrationCascadeDeletionTest {
             List.of());
     when(deletion.overlays.acquireDeletionFence(overlayId, 3L))
         .thenReturn(Optional.of(new DurableDeletionFence.Fence(5L, true)));
-    when(deletion.overlayLifecycle.deleteFenced(overlay, 3L, 5L, "correlation", integrationId))
+    when(deletion.overlayLifecycle.deleteFenced(
+            overlay, 3L, new DurableDeletionFence.Fence(5L, true), "correlation", integrationId))
         .thenReturn(true);
     when(deletion.overlays.countByIntegration("acct", "integration")).thenReturn(0);
     when(deletion.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId))
@@ -120,7 +121,9 @@ class CatalogIntegrationCascadeDeletionTest {
     verify(requireOwnedCatalogDelete, org.mockito.Mockito.times(2)).run();
     verify(deletion.overlayLifecycle, org.mockito.Mockito.times(2))
         .preflightOwnedCatalogRemoval(overlay, "correlation", integrationId);
-    verify(deletion.overlayLifecycle).deleteFenced(overlay, 3L, 5L, "correlation", integrationId);
+    verify(deletion.overlayLifecycle)
+        .deleteFenced(
+            overlay, 3L, new DurableDeletionFence.Fence(5L, true), "correlation", integrationId);
     verify(deletion.overlayReconciler, never()).retireMaterializedResources(any());
   }
 
@@ -181,7 +184,8 @@ class CatalogIntegrationCascadeDeletionTest {
         .thenReturn(Optional.of(new DurableDeletionFence.Fence(5L, true)));
     doThrow(io.grpc.Status.ABORTED.withDescription("catalog became shared").asRuntimeException())
         .when(deletion.overlayLifecycle)
-        .deleteFenced(overlay, 3L, 5L, "correlation", integrationId);
+        .deleteFenced(
+            overlay, 3L, new DurableDeletionFence.Fence(5L, true), "correlation", integrationId);
 
     org.junit.jupiter.api.Assertions.assertThrows(
         io.grpc.StatusRuntimeException.class,

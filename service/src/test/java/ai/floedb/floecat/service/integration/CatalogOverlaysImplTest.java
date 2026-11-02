@@ -92,7 +92,7 @@ class CatalogOverlaysImplTest {
     when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId()))
         .thenReturn(2L);
     when(service.markerStore.catalogOverlaysMarkerVersion(catalogId())).thenReturn(3L);
-    when(service.lifecycle.deleteFenced(any(), anyLong(), anyLong(), any())).thenReturn(true);
+    when(service.lifecycle.deleteFenced(any(), anyLong(), any(), any())).thenReturn(true);
     when(service.overlays.createAttachedWithMetaAndCompanions(any(), any(), any(), any(), any()))
         .thenAnswer(
             invocation -> {
@@ -690,7 +690,7 @@ class CatalogOverlaysImplTest {
 
     verify(service.overlays).acquireDeletionFence(overlayId, 7L);
     verify(service.reconciler).retireMaterializedResources(current);
-    verify(service.lifecycle).deleteFenced(current, 7L, 1L, "corr");
+    verify(service.lifecycle).deleteFenced(current, 7L, fence(1L, true), "corr");
     verify(service.catalogs, never()).delete(any());
   }
 
@@ -724,7 +724,7 @@ class CatalogOverlaysImplTest {
         .indefinitely();
 
     verify(service.lifecycle).preflightOwnedCatalogRemoval(current, "corr");
-    verify(service.lifecycle).deleteFenced(current, 7L, 1L, "corr");
+    verify(service.lifecycle).deleteFenced(current, 7L, fence(1L, true), "corr");
     verify(service.reconciler, never()).retireMaterializedResources(current);
   }
 
@@ -895,7 +895,7 @@ class CatalogOverlaysImplTest {
             eq(overlayId), eq(7L), eq(1L), any(), any(), any()))
         .thenReturn(false);
 
-    assertFalse(service.lifecycle.deleteFenced(current, 7L, 1L, "corr"));
+    assertFalse(service.lifecycle.deleteFenced(current, 7L, fence(1L, true), "corr"));
   }
 
   @Test
@@ -919,7 +919,164 @@ class CatalogOverlaysImplTest {
 
     assertThrows(
         BaseResourceRepository.AbortRetryableException.class,
-        () -> service.lifecycle.deleteFenced(current, 7L, 1L, "corr"));
+        () -> service.lifecycle.deleteFenced(current, 7L, fence(1L, true), "corr"));
+    verify(service.overlays, never()).releaseDeletionFence(any(), anyLong());
+  }
+
+  @Test
+  void ownedDeleteReleasesItsNewFenceWhenSharingAppearsBeforeTheCatalogFence() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+    when(service.overlays.acquireDeletionFence(overlayId, 7L))
+        .thenReturn(Optional.of(fence(1L, true)));
+    stubCatalog(catalogId(), 5L);
+    // Unshared at preflight; another overlay attaches before the cascade fences the catalog.
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1, 2);
+    runsSharingCheckBeforeRemovingAnything(catalogId(), overlayId);
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .deleteCatalogOverlay(
+                        DeleteCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.ABORTED, error.getStatus().getCode());
+    verify(service.overlays).releaseDeletionFence(overlayId, 1L);
+    verify(service.overlays, never())
+        .deleteWithFenceAndCompanions(any(), anyLong(), anyLong(), any(), any(), any());
+  }
+
+  @Test
+  void ownedReplacementReleasesItsNewFenceWhenSharingAppearsBeforeTheCatalogFence() {
+    installRealLifecycle();
+    var oldOverlayId = id("old-overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var oldCatalogId = id("old-catalog", ResourceKind.RK_CATALOG);
+    var current =
+        overlay(oldOverlayId, integrationId(), oldCatalogId, "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByNameWithMeta("acct", "sales"))
+        .thenReturn(Optional.of(row(current, 9L)));
+    when(service.catalogs.getByIdWithMeta(oldCatalogId))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder()
+                        .setResourceId(oldCatalogId)
+                        .setDisplayName("sales")
+                        .build(),
+                    13L)));
+    when(service.overlays.countByCatalog("acct", "old-catalog")).thenReturn(1, 2);
+    when(service.overlays.acquireDeletionFence(oldOverlayId, 9L))
+        .thenReturn(Optional.of(fence(1L, true)));
+    runsSharingCheckBeforeRemovingAnything(oldCatalogId, oldOverlayId);
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .createCatalogOverlay(
+                    CreateCatalogOverlayRequest.newBuilder()
+                        .setCreateMode(CreateMode.CM_REPLACE)
+                        .setSpec(baseSpec())
+                        .build())
+                .await()
+                .indefinitely());
+
+    verify(service.overlays).releaseDeletionFence(oldOverlayId, 1L);
+    verify(service.overlays, never())
+        .replaceIdentityAttachedWithMeta(
+            any(), anyLong(), any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void integrationCascadeReleasesTheOwnersNewFenceWhenAnotherIntegrationAttaches() {
+    installRealLifecycle();
+    var overlayId = id("owner", ResourceKind.RK_CATALOG_OVERLAY);
+    var owner =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    var external =
+        overlay(
+            id("external", ResourceKind.RK_CATALOG_OVERLAY),
+            id("other-integration", ResourceKind.RK_CATALOG_INTEGRATION),
+            catalogId(),
+            "external");
+    stubCatalog(catalogId(), 5L);
+    when(service.overlays.listByCatalogWithMetaConsistent(
+            eq("acct"), eq("catalog"), eq(100), eq(""), any()))
+        .thenReturn(List.of(row(owner, 7L), row(external, 8L)));
+    runsSharingCheckBeforeRemovingAnything(catalogId(), overlayId);
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> service.lifecycle.deleteFenced(owner, 7L, fence(1L, true), "corr", integrationId()));
+
+    verify(service.overlays).releaseDeletionFence(overlayId, 1L);
+  }
+
+  @Test
+  void sharingRejectionKeepsAFenceAnEarlierAttemptInstalled() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    stubCatalog(catalogId(), 5L);
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(2);
+    runsSharingCheckBeforeRemovingAnything(catalogId(), overlayId);
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> service.lifecycle.deleteFenced(current, 7L, fence(1L, false), "corr"));
+
+    verify(service.overlays, never()).releaseDeletionFence(any(), anyLong());
+  }
+
+  @Test
+  void ownedCatalogRemovalSupersedesTheCallersConditionsOnKeysItRemoves() {
+    String catalogPointer = Keys.catalogPointerById("acct", "old-catalog");
+    String overlaysMarker = Keys.catalogOverlaysMarker("acct", "old-catalog");
+    String childrenMarker = Keys.catalogChildrenMarker("acct", "old-catalog");
+    String integration = Keys.catalogIntegrationPointerById("acct", "integration");
+    var removal =
+        new CatalogOverlayLifecycle.OwnedCatalogRemoval(
+            new PointerConditions(Map.of(), Set.of(overlaysMarker), Map.of()),
+            Map.of(childrenMarker, 4L),
+            List.of(new PointerStore.CasDelete(catalogPointer, 13L)));
+
+    var merged =
+        removal.alongside(
+            new PointerConditions(
+                Map.of(catalogPointer, 13L, integration, 5L),
+                Set.of(),
+                Map.of(overlaysMarker, 6L, childrenMarker, 4L)));
+
+    assertEquals(Map.of(integration, 5L), merged.requiredVersions());
+    assertEquals(Set.of(overlaysMarker), merged.requiredAbsent());
+    assertEquals(Map.of(), merged.markerVersions());
+  }
+
+  /** Has the mocked cascade run the overlay's sharing check where the real one does. */
+  private void runsSharingCheckBeforeRemovingAnything(ResourceId catalogId, ResourceId overlayId) {
+    when(cascadeDeletion.prepareCatalogDeletion(
+            eq(catalogId), any(), any(Runnable.class), eq(overlayId)))
+        .thenAnswer(
+            invocation -> {
+              invocation.<Runnable>getArgument(2).run();
+              throw new AssertionError("the sharing check should have rejected the delete");
+            });
   }
 
   private void installRealLifecycle() {

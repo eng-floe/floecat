@@ -114,6 +114,13 @@ public class CatalogOverlayRepository {
         expectedPointerVersion);
   }
 
+  /** Withdraws a deletion fence whose delete was rejected before it removed anything. */
+  public boolean releaseDeletionFence(ResourceId overlayId, long expectedFenceVersion) {
+    return pointerStore.compareAndDelete(
+        Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId()),
+        expectedFenceVersion);
+  }
+
   public boolean deletionInProgress(ResourceId overlayId) {
     return deletionFenceVersion(overlayId) != 0L;
   }

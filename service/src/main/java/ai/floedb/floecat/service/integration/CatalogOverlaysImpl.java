@@ -52,6 +52,7 @@ import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.RolePermissions;
@@ -436,9 +437,6 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
               .setCreatedAt(now)
               .setUpdatedAt(now)
               .build();
-      Map<String, Long> replacementParents = Map.copyOf(parentVersions);
-      Set<String> replacementRequiredAbsent = Set.copyOf(requiredAbsent);
-      Map<String, Long> replacementMarkers = Map.copyOf(markerVersions);
       boolean deletesOwnedCatalog =
           current.value().getOwnsCatalog() && !oldCatalogId.equals(catalogId);
       if (deletesOwnedCatalog) {
@@ -454,23 +452,19 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                       new BaseResourceRepository.AbortRetryableException(
                           "overlay changed while replacement fenced its old identity"));
       if (!deletesOwnedCatalog) reconciler.retireMaterializedResources(current.value());
-      var replacementDeletePointers = new java.util.HashMap<String, Long>();
+      var replacementConditions =
+          new PointerConditions(parentVersions, requiredAbsent, markerVersions);
+      var replacementDeletePointers = Map.<String, Long>of();
       var replacementCompanions = new ArrayList<PointerStore.CasOp>();
       if (target.createdCatalog() != null)
         replacementCompanions.addAll(catalogs.prepareCreateOps(target.createdCatalog()));
       if (deletesOwnedCatalog) {
-        lifecycle.prepareOwnedCatalogRemoval(
-            current.value(),
-            oldCatalog,
-            parentVersions,
-            requiredAbsent,
-            markerVersions,
-            replacementDeletePointers,
-            replacementCompanions,
-            corr);
-        replacementParents = Map.copyOf(parentVersions);
-        replacementRequiredAbsent = Set.copyOf(requiredAbsent);
-        replacementMarkers = Map.copyOf(markerVersions);
+        var removal =
+            lifecycle.prepareOwnedCatalogRemoval(
+                current.value(), oldCatalog, replacementFence, corr);
+        replacementConditions = removal.alongside(replacementConditions);
+        replacementDeletePointers = removal.deletes();
+        replacementCompanions.addAll(removal.companions());
       }
       try {
         var replaced =
@@ -478,10 +472,10 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                 current.value(),
                 current.meta().getPointerVersion(),
                 replacement,
-                replacementParents,
-                replacementRequiredAbsent,
-                replacementMarkers,
-                Map.copyOf(replacementDeletePointers),
+                replacementConditions.requiredVersions(),
+                replacementConditions.requiredAbsent(),
+                replacementConditions.markerVersions(),
+                replacementDeletePointers,
                 List.copyOf(replacementCompanions));
         return replaced.orElseThrow(
             () ->
@@ -725,10 +719,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                     reconciler.retireMaterializedResources(current.get().value());
                   boolean deleted =
                       lifecycle.deleteFenced(
-                          current.get().value(),
-                          meta.getPointerVersion(),
-                          deletionFence.version(),
-                          corr);
+                          current.get().value(), meta.getPointerVersion(), deletionFence, corr);
                   if (!deleted)
                     throw new BaseResourceRepository.AbortRetryableException(
                         "overlay changed during deletion");

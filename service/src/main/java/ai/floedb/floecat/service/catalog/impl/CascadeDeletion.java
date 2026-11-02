@@ -75,6 +75,9 @@ public class CascadeDeletion {
    * <p>An owning overlay uses this form so its own row can remain as the transactional driver: the
    * final batch removes that overlay, the emptied catalog, both fences and the catalog markers
    * together. All other callers pass no retained overlay and use {@link #deleteCatalog}.
+   *
+   * <p>{@code requireOverlayDelete} runs before anything is removed, so a caller may treat a
+   * rejection from it as leaving the catalog and its overlays intact.
    */
   public PreparedCatalogDeletion prepareCatalogDeletion(
       ResourceId catalogId,

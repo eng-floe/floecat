@@ -84,7 +84,7 @@ class CatalogIntegrationCascadeDeletion {
                 overlayLifecycle.deleteFenced(
                     dependent.value(),
                     dependent.meta().getPointerVersion(),
-                    overlayFence.version(),
+                    overlayFence,
                     correlationId,
                     integrationId);
           } catch (StatusRuntimeException rejected) {
