@@ -157,6 +157,19 @@
 
   <dependencyManagement>
     <dependencies>
+      <!-- Brotli HTTP compression is unused; drop brotli4j (and its native decoder) entirely.
+           Re-add it before setting quarkus.http.compressors=br or startup will fail. -->
+      <dependency>
+        <groupId>io.quarkus</groupId>
+        <artifactId>quarkus-vertx-http</artifactId>
+        <version>${version.quarkus}</version>
+        <exclusions>
+          <exclusion>
+            <groupId>com.aayushatharva.brotli4j</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
+        </exclusions>
+      </dependency>
       <dependency>
         <groupId>io.quarkus.platform</groupId>
         <artifactId>quarkus-bom</artifactId>
