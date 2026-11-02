@@ -9,6 +9,7 @@ package ai.floedb.floecat.service.repo.util;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -38,7 +39,9 @@ public final class TableWriteFence {
     }
     List<PointerStore.CasOp> fenced = new ArrayList<>(source.size() + rows.size());
     for (String row : rows) {
-      Optional<Pointer> current = pointerStore.getConsistent(row);
+      // Callers pass the authoritative store view; consistency is selected by composition rather
+      // than by choosing a stronger read method at this call site.
+      Optional<Pointer> current = pointerStore.get(row);
       if (current.isEmpty()) {
         return new FencedBatch(false, List.of());
       }
@@ -107,7 +110,10 @@ public final class TableWriteFence {
     String[] parts = normalized.substring(1).split("/", -1);
     if (parts.length < 4 || !"accounts".equals(parts[0])) return null;
     String account = parts[1];
-    if (account.isBlank() || "by-id".equals(account) || "by-name".equals(account)) return null;
+    if (account.isBlank()
+        || "by-id".equals(account)
+        || "by-name".equals(account)
+        || SystemNodeRegistry.SYSTEM_ACCOUNT.equals(account)) return null;
 
     String table = null;
     if ("tables".equals(parts[2]) && parts.length >= 5) {

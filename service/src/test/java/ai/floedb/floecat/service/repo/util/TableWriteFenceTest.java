@@ -94,6 +94,16 @@ class TableWriteFenceTest {
                     Keys.rootResyncPendingPointer("account", "table"), 0L, pointer("resync")))));
   }
 
+  @Test
+  void systemTableStateDoesNotRequireAPersistedUserTableRow() {
+    String stats = Keys.snapshotTargetStatsManifestPointer("_system", "system-table", 7L);
+
+    assertTrue(
+        TableWriteFence.tableRowsRequiringChecks(
+                List.of(new PointerStore.CasUpsert(stats, 0L, pointer(stats))))
+            .isEmpty());
+  }
+
   private static Pointer pointer(String key) {
     return Pointer.newBuilder().setKey(key).setBlobUri("blob://value").build();
   }

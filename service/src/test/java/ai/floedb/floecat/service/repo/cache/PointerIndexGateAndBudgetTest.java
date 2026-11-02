@@ -328,6 +328,8 @@ class PointerIndexGateAndBudgetTest {
   @Test
   void writingDurableOnlySnapshotRowsDoesNotWarmTheResidentIndex() {
     ScanCountingStore counting = new ScanCountingStore();
+    String table = Keys.tablePointerById(ACCOUNT, "t0");
+    counting.compareAndSet(table, 0, pointer(table, "s3://table"));
     PlanningPointerIndex index = index(counting, PlanningPointerIndex.Policy.UNLIMITED);
     IndexedPointerStore store = new IndexedPointerStore(counting, index);
     String stats = Keys.snapshotTargetStatsGenerationPointer(ACCOUNT, "t0", 7L, "gen", "target");
