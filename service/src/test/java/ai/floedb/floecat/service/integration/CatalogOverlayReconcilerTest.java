@@ -170,6 +170,36 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void reconcilesOnlyAViewsTopLevelOutputColumns() {
+    NamespacePath sales = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.views.put(
+        new CatalogObjectName(sales, "nested"),
+        new CatalogView(
+            new CatalogObjectName(sales, "nested"),
+            ExternalObjectIdentity.stable("nested-view-uuid"),
+            "{\"type\":\"struct\",\"schema-id\":0,\"fields\":["
+                + "{\"id\":1,\"name\":\"id\",\"required\":false,\"type\":\"long\"},"
+                + "{\"id\":2,\"name\":\"point\",\"required\":false,\"type\":{\"type\":\"struct\","
+                + "\"fields\":[{\"id\":3,\"name\":\"x\",\"required\":false,\"type\":\"long\"}]}}]}",
+            List.of(new CatalogViewDefinition("select id, point from points", "ansi")),
+            sales,
+            Map.of()));
+
+    reconcile();
+
+    var salesNamespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    var view =
+        views
+            .getByName("acct", "catalog", salesNamespace.getResourceId().getId(), "nested")
+            .orElseThrow();
+    assertEquals(
+        List.of("id:1", "point:2"),
+        view.getOutputColumnsList().stream().map(c -> c.getName() + ":" + c.getOrdinal()).toList());
+  }
+
+  @Test
   void materializesSelectedInventoryAndRetiresWhatDisappears() {
     NamespacePath sales = NamespacePath.of("sales");
     NamespacePath europe = NamespacePath.of("sales", "eu");
