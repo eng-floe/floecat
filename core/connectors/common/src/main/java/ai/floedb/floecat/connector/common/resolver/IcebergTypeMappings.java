@@ -63,7 +63,10 @@ public final class IcebergTypeMappings {
       case STRUCT -> {
         List<LogicalField> fields =
             t.asStructType().fields().stream()
-                .map(f -> new LogicalField(f.name(), f.isOptional(), toLogical(f.type())))
+                .map(
+                    f ->
+                        new LogicalField(
+                            f.name(), f.isOptional(), toLogical(f.type()), f.fieldId()))
                 .toList();
         // An explicitly empty source struct is a known-empty shape, not the legacy tag.
         yield LogicalType.struct(fields);
