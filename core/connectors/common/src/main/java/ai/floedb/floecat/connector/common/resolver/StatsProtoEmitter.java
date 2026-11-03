@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.common.resolver;
 
+import ai.floedb.floecat.catalog.rpc.AppliedDeletes;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
@@ -339,6 +340,9 @@ public final class StatsProtoEmitter {
       if (fv.sequenceNumber() != null && fv.sequenceNumber() > 0) {
         file.setSequenceNumber(fv.sequenceNumber());
       }
+      if (fv.appliedDeletes() != null) {
+        file.setAppliedDeletes(AppliedDeletes.newBuilder().addAllFilePaths(fv.appliedDeletes()));
+      }
       FileTargetStats fileStats = file.build();
 
       out.add(
@@ -455,6 +459,10 @@ public final class StatsProtoEmitter {
       }
       if (fileView.sequenceNumber() != null && fileView.sequenceNumber() > 0) {
         file.setSequenceNumber(fileView.sequenceNumber());
+      }
+      if (fileView.appliedDeletes() != null) {
+        file.setAppliedDeletes(
+            AppliedDeletes.newBuilder().addAllFilePaths(fileView.appliedDeletes()));
       }
 
       out.add(

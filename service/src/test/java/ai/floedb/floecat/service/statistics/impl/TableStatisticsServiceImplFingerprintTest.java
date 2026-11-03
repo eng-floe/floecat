@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.statistics.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.catalog.rpc.AppliedDeletes;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
@@ -78,5 +79,21 @@ class TableStatisticsServiceImplFingerprintTest {
 
     assertThat(StatsCanonicalizer.canonicalFingerprint(first))
         .isEqualTo(StatsCanonicalizer.canonicalFingerprint(second));
+  }
+
+  @Test
+  void fileFingerprintTellsKnownDeletesFromUnknown() {
+    FileTargetStats unknown = FileTargetStats.newBuilder().setFilePath("/data/f.parquet").build();
+    FileTargetStats none =
+        unknown.toBuilder().setAppliedDeletes(AppliedDeletes.getDefaultInstance()).build();
+    FileTargetStats one =
+        unknown.toBuilder()
+            .setAppliedDeletes(AppliedDeletes.newBuilder().addFilePaths("/data/d.parquet"))
+            .build();
+
+    assertThat(StatsCanonicalizer.canonicalFingerprint(unknown))
+        .isNotEqualTo(StatsCanonicalizer.canonicalFingerprint(none));
+    assertThat(StatsCanonicalizer.canonicalFingerprint(none))
+        .isNotEqualTo(StatsCanonicalizer.canonicalFingerprint(one));
   }
 }

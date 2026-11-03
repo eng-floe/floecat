@@ -152,6 +152,13 @@ final class StatsCanonicalizer {
     var eqIds = new ArrayList<Integer>(stats.getEqualityFieldIdsList());
     eqIds.sort(Comparator.naturalOrder());
     c.list("equality_field_ids", eqIds);
+    if (stats.hasAppliedDeletes()) {
+      var deletes = new ArrayList<String>(stats.getAppliedDeletes().getFilePathsList());
+      deletes.sort(Comparator.naturalOrder());
+      // The count tells a record naming no deletes from one that does not say.
+      c.scalar("applied_delete_count", deletes.size());
+      c.list("applied_deletes", deletes);
+    }
 
     var cols = new ArrayList<>(stats.getColumnsList());
     cols.sort(

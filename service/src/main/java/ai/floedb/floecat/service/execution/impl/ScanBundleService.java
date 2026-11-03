@@ -33,6 +33,7 @@ import ai.floedb.floecat.query.rpc.DataFile;
 import ai.floedb.floecat.query.rpc.DataFileBatch;
 import ai.floedb.floecat.query.rpc.DeleteFile;
 import ai.floedb.floecat.query.rpc.DeleteFileBatch;
+import ai.floedb.floecat.query.rpc.DeleteIdList;
 import ai.floedb.floecat.query.rpc.DeleteRef;
 import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.query.rpc.TablePin;
@@ -68,6 +69,7 @@ import java.util.concurrent.CompletableFuture;
 /** Builds and streams ScanFile batches by pulling target stats directly from the stats store. */
 @ApplicationScoped
 public class ScanBundleService {
+  private static final DeleteRef ALL_DELETES = DeleteRef.newBuilder().setAllDeletes(true).build();
 
   private static final int FILE_STATS_PAGE_SIZE = 1000;
 
@@ -395,7 +397,6 @@ public class ScanBundleService {
       return null;
     }
     int deleteId = session.nextDeleteId();
-    // Reserved for future delete-to-data mapping; currently data files emit all_deletes=true.
     session.deleteIdByPath().put(scanFile.getFilePath(), deleteId);
     session.recordDeleteId(deleteId);
     return DeleteFile.newBuilder().setDeleteId(deleteId).setFile(scanFile).build();
@@ -410,10 +411,26 @@ public class ScanBundleService {
     if (session.recordedDeleteIds().isEmpty()) {
       return DataFile.newBuilder().setFile(scanFile).build();
     }
-    // TODO(mrouvroy): switch to DeleteIdList when we know per-file applicability
-    // (equality/partition filters).
-    DeleteRef deletes = DeleteRef.newBuilder().setAllDeletes(true).build();
-    return DataFile.newBuilder().setFile(scanFile).setDeletes(deletes).build();
+    return DataFile.newBuilder().setFile(scanFile).setDeletes(deletesOf(session, stats)).build();
+  }
+
+  /**
+   * The deletes that apply to data file {@code stats}: the ones its record names, or all of them
+   * when its record does not say or names one the scan did not stream.
+   */
+  private DeleteRef deletesOf(ScanSession session, FileTargetStats stats) {
+    if (!stats.hasAppliedDeletes()) {
+      return ALL_DELETES;
+    }
+    DeleteIdList.Builder ids = DeleteIdList.newBuilder();
+    for (String path : stats.getAppliedDeletes().getFilePathsList()) {
+      Integer id = session.deleteIdByPath().get(path);
+      if (id == null) {
+        return ALL_DELETES;
+      }
+      ids.addIds(id);
+    }
+    return DeleteRef.newBuilder().setDeleteIds(ids).build();
   }
 
   /** Reconstructs delete batches from cached metadata for retries. */

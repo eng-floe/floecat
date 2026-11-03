@@ -737,6 +737,10 @@ public interface FloecatConnector extends Closeable {
       Long avgWidthBytes,
       Map<String, String> properties) {}
 
+  /**
+   * A file's statistics. For a data file, {@code appliedDeletes} names the delete files, by path,
+   * that apply to it, or is null when unknown, so every delete file of the snapshot may apply.
+   */
   record FileColumnStatsView(
       String filePath,
       String fileFormat,
@@ -747,7 +751,55 @@ public interface FloecatConnector extends Closeable {
       int partitionSpecId,
       List<Integer> equalityFieldIds,
       Long sequenceNumber,
-      List<ColumnStatsView> columns) {}
+      List<ColumnStatsView> columns,
+      List<String> appliedDeletes) {
+
+    public FileColumnStatsView {
+      appliedDeletes = appliedDeletes == null ? null : List.copyOf(appliedDeletes);
+    }
+
+    /** A file whose applicable delete files are unknown. */
+    public FileColumnStatsView(
+        String filePath,
+        String fileFormat,
+        long rowCount,
+        long sizeBytes,
+        FileContent fileContent,
+        String partitionDataJson,
+        int partitionSpecId,
+        List<Integer> equalityFieldIds,
+        Long sequenceNumber,
+        List<ColumnStatsView> columns) {
+      this(
+          filePath,
+          fileFormat,
+          rowCount,
+          sizeBytes,
+          fileContent,
+          partitionDataJson,
+          partitionSpecId,
+          equalityFieldIds,
+          sequenceNumber,
+          columns,
+          null);
+    }
+
+    /** This file, with {@code appliedDeletes} as the delete files that apply to it. */
+    public FileColumnStatsView withAppliedDeletes(List<String> appliedDeletes) {
+      return new FileColumnStatsView(
+          filePath,
+          fileFormat,
+          rowCount,
+          sizeBytes,
+          fileContent,
+          partitionDataJson,
+          partitionSpecId,
+          equalityFieldIds,
+          sequenceNumber,
+          columns,
+          appliedDeletes);
+    }
+  }
 
   record SnapshotBundle(
       long snapshotId,

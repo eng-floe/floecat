@@ -307,6 +307,7 @@ message FileTargetStats {
   int64 snapshot_id = 2;
   string file_path = 3;
   string file_format = 4;
+  // The rows the file holds, before any delete applies to it; each column counts its own values.
   int64 row_count = 5;
   int64 size_bytes = 6;
   repeated FileColumnStats columns = 7;
@@ -315,6 +316,14 @@ message FileTargetStats {
   int32 partition_spec_id = 10;
   repeated int32 equality_field_ids = 11;
   optional int64 sequence_number = 12;
+  // For a data file: the delete files that apply to it, when its producer knows them; empty when
+  // none do. Absent when unknown, so every delete file of the snapshot may apply.
+  AppliedDeletes applied_deletes = 13;
+}
+
+// Delete files, by the file_path of their FileTargetStats.
+message AppliedDeletes {
+  repeated string file_paths = 1;
 }
 
 enum FileContent {
