@@ -142,6 +142,64 @@ class TableServiceImplSystemTableTest {
     verifyNoInteractions(tableRepo);
   }
 
+  /** A real system table lives in the system account, outside the caller's account scope. */
+  @Test
+  void deleteTable_systemTableInSystemAccount_isPermissionDenied() {
+    ResourceId sysTableId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("00000000-0000-0000-0000-000000000004")
+            .build();
+    ResourceId nsId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys_ns_4")
+            .build();
+    graphView.addNode(
+        new SystemTableNode.EngineSystemTableNode(
+            sysTableId, 1L, "engine-v", "engine_sys_4", nsId, List.of(), null, null));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.deleteTable(DeleteTableRequest.newBuilder().setTableId(sysTableId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    verifyNoInteractions(tableRepo, svc.relationPurge);
+  }
+
+  /** Another account's table id is rejected by scoping before anything resolves it. */
+  @Test
+  void deleteTable_otherAccountTable_isRejectedBeforeLookup() {
+    ResourceId foreignTableId =
+        ResourceId.newBuilder()
+            .setAccountId("other-acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("00000000-0000-0000-0000-000000000005")
+            .build();
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.deleteTable(
+                        DeleteTableRequest.newBuilder()
+                            .setTableId(foreignTableId)
+                            .setPrecondition(Precondition.newBuilder().setExpectedVersion(1L))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    // A lookup of the unscoped id would answer NOT_FOUND here, revealing whether it exists.
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verifyNoInteractions(tableRepo);
+  }
+
   @Test
   void deleteTableReturnsCommittedResultWhenInlinePurgeFails() {
     ResourceId tableId =

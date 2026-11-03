@@ -37,6 +37,7 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
@@ -69,8 +70,8 @@ import java.util.function.Supplier;
 
 @ApplicationScoped
 public class IndexArtifactRepository {
-  // Leave one DynamoDB transaction slot for the account-deletion fence check.
-  private static final int MAX_POINTER_BATCH_SIZE = 99;
+  // The account-deletion fence check AccountDeletionFence adds to every batch.
+  private static final int ACCOUNT_FENCE_OPERATIONS = 1;
   private static final int MAX_PARALLEL_SIDECAR_CHECKS = 50;
   private static final String DIRECT_GENERATION = Keys.INDEX_ARTIFACT_DIRECT_GENERATION;
   private static final String LIST_TOKEN_PREFIX = "v1.";
@@ -1025,9 +1026,11 @@ public class IndexArtifactRepository {
   }
 
   private void registerWrites(ResourceId tableId, List<PrewrittenIndexWrite> writes) {
-    for (int from = 0; from < writes.size(); from += MAX_POINTER_BATCH_SIZE) {
-      registerChunk(
-          tableId, writes.subList(from, Math.min(from + MAX_POINTER_BATCH_SIZE, writes.size())));
+    for (int from = 0, to; from < writes.size(); from = to) {
+      to =
+          TableWriteFence.atomicChunkEnd(
+              writes, from, PrewrittenIndexWrite::pointerKey, ACCOUNT_FENCE_OPERATIONS);
+      registerChunk(tableId, writes.subList(from, to));
     }
   }
 

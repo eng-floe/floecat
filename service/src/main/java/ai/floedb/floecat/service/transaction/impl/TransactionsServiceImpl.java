@@ -111,7 +111,7 @@ import org.jboss.logging.Logger;
 public class TransactionsServiceImpl extends BaseServiceImpl implements Transactions {
 
   private static final Logger LOG = Logger.getLogger(TransactionsServiceImpl.class);
-  private static final int MAX_POINTER_TXN_OPS = 100;
+  private static final int MAX_POINTER_TXN_OPS = PointerStore.MAX_ATOMIC_BATCH_OPERATIONS;
   private static final int APPLY_OPS_PER_PLAIN_INTENT = 3;
 
   // Every intent pays two index-cleanup deletes (its by-target and by-tx intent pointers), which
@@ -121,20 +121,17 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   // pointer and claim when a rename moves it -- five, plus two cleanup. Deliberately the worst case
   // and deliberately not narrowed further: whether an upsert renames is only decidable by comparing
   // the staged table against the row it replaces, which Prepare does not read. A create also gets
-  // the purge-marker check TableWriteFence adds, which still fits: a create moves no old name.
+  // the retired-marker check TableWriteFence adds, which still fits: a create moves no old name.
   /** The applier's reason code for a lost pointer CAS -- the one apply failure worth retrying. */
   private static final String POINTER_TXN_CAS_FAILED = "POINTER_TXN_CAS_FAILED";
 
   private static final int APPLY_OPS_PER_TABLE_UPSERT_INTENT = 7;
 
   // A table DELETE sentinel: the canonical delete, the owned name delete, the relation claim
-  // delete,
-  // and the purge marker TableWriteFence adds for the deleted row -- four, plus two cleanup. It
-  // never joins a namespace, because planTableDeleteIntentOps
-  // does not read one: nothing is orphaned by a namespace that became emptier than the caller
-  // checked. Charging it the upsert's estimate cost a client roughly half the batch size it had
-  // before this fence existed, which is a regression rather than a conservative estimate.
-  private static final int APPLY_OPS_PER_TABLE_DELETE_INTENT = 6;
+  // delete, and the purge and retired markers TableWriteFence adds for the deleted row -- five,
+  // plus two cleanup. It never joins a namespace, because planTableDeleteIntentOps does not read
+  // one: nothing is orphaned by a namespace that became emptier than the caller checked.
+  private static final int APPLY_OPS_PER_TABLE_DELETE_INTENT = 7;
 
   // A connector: canonical pointer, new name pointer, and the old name delete when a rename moves
   // it -- three, plus two cleanup. Connectors hold no relations, so they never join a namespace.

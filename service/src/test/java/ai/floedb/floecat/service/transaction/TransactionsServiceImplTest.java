@@ -581,6 +581,54 @@ class TransactionsServiceImplTest {
     assertTrue(committed.hasUpdatedAt());
   }
 
+  /**
+   * A table dropped before apply ends the transaction in a terminal conflict state, which releases
+   * its intent targets, rather than leaving it in TS_APPLYING or a retryable failure.
+   */
+  @Test
+  void commitTableDroppedBeforeApplyTransitionsToTerminalConflictState() throws Exception {
+    var service = newService();
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+    injectPointerStore(service, pointerStore);
+
+    Transaction txn = preparedTxn();
+    Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
+    TransactionIntent intent = defaultIntent();
+
+    when(txRepo.getById("acct", "tx-1"))
+        .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplying));
+    when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
+    when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
+        .thenReturn(Optional.of(intent));
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
+        .thenReturn(
+            TransactionIntentApplierSupport.ApplyOutcome.conflict(
+                "TABLE_NOT_FOUND", "table deleted during scoped publication", null, null, null));
+    when(pointerStore.getConsistent("/accounts/acct/custom/key-1")).thenReturn(Optional.empty());
+    when(intentRepo.update(any(TransactionIntent.class))).thenReturn(true);
+    when(txRepo.metaFor("acct", "tx-1"))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(14L).build(),
+            MutationMeta.newBuilder().setPointerVersion(15L).build());
+    when(txRepo.update(any(Transaction.class), anyLong())).thenReturn(true);
+
+    Transaction committed =
+        invokeCommitPrivate(
+            service,
+            "acct",
+            CommitTransactionRequest.newBuilder().setTxId("tx-1").build(),
+            Timestamps.fromMillis(10));
+
+    assertEquals(TransactionState.TS_APPLY_FAILED_CONFLICT, committed.getState());
+    assertEquals(
+        "TABLE_NOT_FOUND",
+        committed.getPropertiesMap().get("floecat.transaction.apply-failure-code"));
+    assertEquals(
+        "false", committed.getPropertiesMap().get("floecat.transaction.apply-failure-retryable"));
+    verify(applier, times(1))
+        .applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any());
+  }
+
   @Test
   void commitApplyingConflictFinalizesAppliedWhenIntentsAlreadyApplied() throws Exception {
     var service = newService();
@@ -1519,21 +1567,21 @@ class TransactionsServiceImplTest {
   /**
    * A batch of table deletes is charged for what a delete emits, not for what an upsert would.
    *
-   * <p>A delete sentinel's planner emits three plan ops, the table fence adds the purge marker, and
-   * it never reads a namespace, so it costs six with cleanup where an upsert costs nine. Charging
-   * every table intent the upsert estimate roughly halved the batch a client could prepare -- a
-   * regression against the behaviour before any fence existed, not a conservative estimate. Nothing
-   * covered the op ceiling at all, which is how the estimate drifted three times.
+   * <p>A delete sentinel's planner emits three plan ops, the table fence adds the purge and retired
+   * markers, and it never reads a namespace, so it costs seven with cleanup where an upsert costs
+   * nine. Charging every table intent the upsert estimate roughly halved the batch a client could
+   * prepare -- a regression against the behaviour before any fence existed, not a conservative
+   * estimate. Nothing covered the op ceiling at all, which is how the estimate drifted three times.
    */
   @Test
   void prepareChargesATableDeleteForWhatItEmitsRatherThanForAnUpsert() throws Exception {
-    // 16 deletes: 1 account fence + 16*6 + 1 finalize = 98, inside the 100-op ceiling.
-    assertEquals(TransactionState.TS_PREPARED, prepareTableDeletes(16).getState());
+    // 14 deletes: 1 account fence + 14*7 + 1 finalize = 100, exactly the 100-op ceiling.
+    assertEquals(TransactionState.TS_PREPARED, prepareTableDeletes(14).getState());
 
-    // 17 would be 104. The ceiling still holds -- this is not a widened limit.
+    // 15 would be 107. The ceiling still holds -- this is not a widened limit.
     var tooMany =
         assertThrows(
-            java.lang.reflect.InvocationTargetException.class, () -> prepareTableDeletes(17));
+            java.lang.reflect.InvocationTargetException.class, () -> prepareTableDeletes(15));
     assertInstanceOf(IllegalArgumentException.class, tooMany.getCause());
     assertTrue(
         tooMany.getCause().getMessage().contains("more than 100 pointer operations"),

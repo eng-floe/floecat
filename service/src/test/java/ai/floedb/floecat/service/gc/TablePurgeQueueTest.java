@@ -63,9 +63,7 @@ class TablePurgeQueueTest {
     var failed = queue.drainAccount(ACCOUNT, System.currentTimeMillis() + 10_000L, 10);
     assertEquals(new TablePurgeQueue.Result(1, 0), failed);
     assertTrue(pointers.get(marker).isPresent(), "a failed purge must stay queued");
-    assertFalse(
-        pointers.compareAndSet(row, 0L, pointer(row)),
-        "the table id must not be reused while its purge is pending");
+    assertFalse(pointers.compareAndSet(row, 0L, pointer(row)), "the table id must never be reused");
 
     reset(hints);
     var completed = queue.drainAccount(ACCOUNT, System.currentTimeMillis() + 10_000L, 10);
@@ -73,7 +71,7 @@ class TablePurgeQueueTest {
     assertEquals(new TablePurgeQueue.Result(1, 1), completed);
     assertTrue(pointers.get(state).isEmpty());
     assertTrue(pointers.get(marker).isEmpty());
-    assertTrue(pointers.compareAndSet(row, 0L, pointer(row)));
+    assertFalse(pointers.compareAndSet(row, 0L, pointer(row)), "nor once its purge has completed");
   }
 
   @Test

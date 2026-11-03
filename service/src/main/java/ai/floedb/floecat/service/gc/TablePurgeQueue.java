@@ -36,8 +36,8 @@ import org.jboss.logging.Logger;
  * it once the table's state is gone. A marker this pass finds therefore names a purge that failed,
  * was interrupted, outgrew its inline batch budget, or is still running inline. This pass advances
  * each one a batch at a time so it stops at its deadline. Overlapping with an inline purge is safe:
- * both fence their deletes on the marker, so whichever finishes second stops instead of deleting
- * state a recreated table may own by then (see {@link RelationPurge#purgeTableState}).
+ * both fence their deletes on the marker, so whichever finishes second stops after the first
+ * acknowledges completed cleanup (see {@link RelationPurge#purgeTableState}).
  */
 @ApplicationScoped
 public class TablePurgeQueue {

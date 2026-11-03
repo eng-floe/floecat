@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Function;
 
 /** Keeps table-scoped writes atomic with the continued existence of their table row. */
 public final class TableWriteFence {
@@ -47,24 +47,25 @@ public final class TableWriteFence {
 
   /**
    * Adds a version check for every table row named by an upsert in {@code operations}, and the
-   * purge-marker operations owed by every table row the batch creates or deletes.
+   * lifecycle-marker operations owed by every table row the batch creates or deletes.
    *
    * <p>A batch that creates or updates the table row already fences itself. Deletes do not need a
    * liveness check. This makes a table-row delete serialize against every write below that table: a
    * write that wins first is removed by the following purge, and a write that loses cannot recreate
-   * state after the row is gone. The purge marker closes the remaining gap, a recreation of the
-   * same table id while that purge is still pending (see {@link #purgeMarkerOps}).
+   * state after the row is gone. The retired marker closes the remaining gap: a table id is never
+   * recreated, so a stale writer that still holds it can never land in a later table (see {@link
+   * #lifecycleMarkerOps}).
    */
   public static FencedBatch fence(
       PointerStore pointerStore, List<? extends PointerStore.CasOp> operations) {
     List<PointerStore.CasOp> source = operations == null ? List.of() : List.copyOf(operations);
     Set<String> rows = tableRowsRequiringChecks(source);
-    List<PointerStore.CasOp> purgeMarkers = purgeMarkerOps(source);
-    if (rows.isEmpty() && purgeMarkers.isEmpty()) {
+    List<PointerStore.CasOp> lifecycleMarkers = lifecycleMarkerOps(source);
+    if (rows.isEmpty() && lifecycleMarkers.isEmpty()) {
       return new FencedBatch(true, source);
     }
     List<PointerStore.CasOp> fenced =
-        new ArrayList<>(source.size() + rows.size() + purgeMarkers.size());
+        new ArrayList<>(source.size() + rows.size() + lifecycleMarkers.size());
     for (String row : rows) {
       // A strong read: a stale miss would refuse a write to a live table as if it were deleted.
       Optional<Pointer> current = pointerStore.getConsistent(row);
@@ -74,13 +75,14 @@ public final class TableWriteFence {
       fenced.add(new PointerStore.CasCheck(row, current.orElseThrow().getVersion()));
     }
     fenced.addAll(source);
-    fenced.addAll(purgeMarkers);
+    fenced.addAll(lifecycleMarkers);
     return new FencedBatch(true, List.copyOf(fenced));
   }
 
   /** Whether {@link #fence} would change {@code operations}, so a single-key write may skip it. */
   public static boolean requiresFence(List<? extends PointerStore.CasOp> operations) {
-    return !tableRowsRequiringChecks(operations).isEmpty() || !purgeMarkerOps(operations).isEmpty();
+    return !tableRowsRequiringChecks(operations).isEmpty()
+        || !lifecycleMarkerOps(operations).isEmpty();
   }
 
   /**
@@ -93,7 +95,36 @@ public final class TableWriteFence {
    * @throws IllegalArgumentException if the batch deletes a table row and writes that table's state
    */
   public static int addedOperationCount(List<? extends PointerStore.CasOp> operations) {
-    return tableRowsRequiringChecks(operations).size() + purgeMarkerOps(operations).size();
+    return tableRowsRequiringChecks(operations).size() + lifecycleMarkerOps(operations).size();
+  }
+
+  /**
+   * The exclusive end of the longest run of {@code writes} from {@code from} that fits one atomic
+   * batch once the fence adds its table-row checks and the caller adds {@code reservedOperations}.
+   *
+   * <p>For callers that chunk table-scoped writes (not table rows themselves) without building the
+   * operations first. Each distinct table a chunk touches costs one check on top of its writes.
+   */
+  public static <T> int atomicChunkEnd(
+      List<T> writes, int from, Function<? super T, String> pointerKey, int reservedOperations) {
+    int budget = PointerStore.MAX_ATOMIC_BATCH_OPERATIONS - reservedOperations;
+    if (budget < 2) {
+      throw new IllegalArgumentException("no room for a fenced write");
+    }
+    Set<String> rows = new HashSet<>();
+    int end = from;
+    while (end < writes.size()) {
+      String row = canonicalTableRow(pointerKey.apply(writes.get(end)));
+      boolean newRow = row != null && !rows.contains(row);
+      if (end - from + 1 + rows.size() + (newRow ? 1 : 0) > budget) {
+        break;
+      }
+      if (newRow) {
+        rows.add(row);
+      }
+      end++;
+    }
+    return end;
   }
 
   /** Whether {@code pointerKey} is a user table's canonical row. */
@@ -103,18 +134,22 @@ public final class TableWriteFence {
   }
 
   /**
-   * The purge-marker operations owed by the table rows {@code operations} creates or deletes.
+   * The marker operations owed by the table rows {@code operations} creates or deletes.
    *
    * <p>A row delete writes {@link Keys#tablePurgePointer} in the same batch, so the cleanup that
    * follows it is durable work: the purge removes the marker only once the table-scoped state is
-   * gone, and pointer GC retries any marker a failed or interrupted purge left behind. A row create
-   * requires the marker absent, so a table id cannot be reused while the state of its previous
-   * incarnation is still being purged; that purge would otherwise delete the new table's state.
+   * gone, and pointer GC retries any marker a failed or interrupted purge left behind.
    *
-   * <p>Each delete gives its marker a random version. A purge fences its deletes on the version it
-   * started from, so a stalled purge of one deletion can never match the marker of a later one.
+   * <p>A row delete also writes {@link Keys#tableRetiredPointer}, which is never removed, and a row
+   * create requires it absent. A table id therefore names one table for its whole life. A job,
+   * transaction, or purge that captured the id before a drop can only find the row missing, never a
+   * later table under the same id that it would publish into or purge.
+   *
+   * <p>The purge marker is created once, together with the row deletion. A purge fences its deletes
+   * on that marker, so overlapping purges stop when another purge acknowledges it.
    */
-  static List<PointerStore.CasOp> purgeMarkerOps(List<? extends PointerStore.CasOp> operations) {
+  static List<PointerStore.CasOp> lifecycleMarkerOps(
+      List<? extends PointerStore.CasOp> operations) {
     if (operations == null) {
       return List.of();
     }
@@ -128,20 +163,26 @@ public final class TableWriteFence {
         continue;
       }
       TableRef table = tableOf(operation.key());
-      String marker = table.purgeMarker();
-      if (batchKeys.contains(marker)) {
-        continue;
-      }
+      String purge = table.purgeMarker();
+      String retired = table.retiredMarker();
       if (operation instanceof PointerStore.CasDelete) {
-        long version = ThreadLocalRandom.current().nextLong(1L, Long.MAX_VALUE);
-        markers.put(
-            marker,
-            new PointerStore.UnconditionalUpsert(
-                marker, PointerReferences.opaqueMarkerPointer(marker, table.row(), version)));
-      } else if ((operation instanceof PointerStore.CasUpsert upsert
-              && upsert.expectedVersion() == 0L)
-          || operation instanceof PointerStore.UnconditionalUpsert) {
-        markers.putIfAbsent(marker, new PointerStore.CasCheckAbsent(marker));
+        if (!batchKeys.contains(purge)) {
+          markers.put(
+              purge,
+              new PointerStore.CasUpsert(
+                  purge, 0L, PointerReferences.opaqueMarkerPointer(purge, table.row(), 1L)));
+        }
+        if (!batchKeys.contains(retired)) {
+          markers.put(
+              retired,
+              new PointerStore.UnconditionalUpsert(
+                  retired, PointerReferences.opaqueMarkerPointer(retired, table.row(), 1L)));
+        }
+      } else if (((operation instanceof PointerStore.CasUpsert upsert
+                  && upsert.expectedVersion() == 0L)
+              || operation instanceof PointerStore.UnconditionalUpsert)
+          && !batchKeys.contains(retired)) {
+        markers.putIfAbsent(retired, new PointerStore.CasCheckAbsent(retired));
       }
     }
     return List.copyOf(markers.values());
@@ -217,6 +258,10 @@ public final class TableWriteFence {
     String purgeMarker() {
       return Keys.tablePurgePointer(accountId, tableId);
     }
+
+    String retiredMarker() {
+      return Keys.tableRetiredPointer(accountId, tableId);
+    }
   }
 
   private static TableRef tableOf(String pointerKey) {
@@ -233,7 +278,10 @@ public final class TableWriteFence {
     String table = null;
     if ("tables".equals(parts[2]) && parts.length >= 5) {
       table = parts[3];
-      if ("by-id".equals(table) || "by-name".equals(table) || "purging".equals(table)) {
+      if ("by-id".equals(table)
+          || "by-name".equals(table)
+          || "purging".equals(table)
+          || "retired".equals(table)) {
         if ("by-id".equals(table) && parts.length == 5 && !parts[4].isBlank()) {
           table = parts[4];
         } else {

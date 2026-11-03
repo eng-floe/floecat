@@ -169,11 +169,11 @@ public class SnapshotFinalizePublicationScheduler {
               intent.jobId(),
               intent.leaseEpoch(),
               System.currentTimeMillis(),
-              "Accepted snapshot finalizer cannot publish because its parent or connector is no longer active")) {
+              "Accepted snapshot finalizer cannot publish because its parent, connector, or table is no longer active")) {
             retries.remove(intent.jobId());
             LOG.warnf(
                 e,
-                "Permanently failed snapshot finalizer whose parent or connector is no longer active jobId=%s",
+                "Permanently failed snapshot finalizer whose parent, connector, or table is no longer active jobId=%s",
                 intent.jobId());
             return;
           }

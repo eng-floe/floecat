@@ -15,6 +15,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -83,7 +84,7 @@ class TableWriteFenceTest {
         List.of(
             operations.get(0),
             operations.get(1),
-            new PointerStore.CasCheckAbsent(Keys.tablePurgePointer("account", "table"))),
+            new PointerStore.CasCheckAbsent(Keys.tableRetiredPointer("account", "table"))),
         fenced.operations());
     assertTrue(pointers.compareAndSetBatch(fenced.operations()));
   }
@@ -96,8 +97,8 @@ class TableWriteFenceTest {
     String rowC = Keys.tablePointerById("account", "c");
     assertTrue(pointers.compareAndSet(rowA, 0L, pointer(rowA)));
     assertTrue(pointers.compareAndSet(rowB, 0L, pointer(rowB)));
-    // Two writes below table a share one row check; deleting b adds its marker; creating c adds
-    // the marker-absence check and fences its own state.
+    // Two writes below table a share one row check; deleting b adds its purge and retired markers;
+    // creating c adds the retired-marker absence check and fences its own state.
     String snapshotA1 = Keys.snapshotPointerById("account", "a", 1L);
     String snapshotA2 = Keys.snapshotPointerById("account", "a", 2L);
     String snapshotC = Keys.snapshotPointerById("account", "c", 1L);
@@ -112,7 +113,7 @@ class TableWriteFenceTest {
     var fenced = TableWriteFence.fence(pointers, operations);
 
     assertTrue(fenced.writable());
-    assertEquals(3, TableWriteFence.addedOperationCount(operations));
+    assertEquals(4, TableWriteFence.addedOperationCount(operations));
     assertEquals(
         operations.size() + TableWriteFence.addedOperationCount(operations),
         fenced.operations().size());
@@ -120,10 +121,37 @@ class TableWriteFenceTest {
   }
 
   @Test
-  void tableRowDeleteRecordsItsPurgeMarker() {
+  void atomicChunkEndLeavesRoomForTableRowChecksAndReservedOperations() {
+    List<String> oneTable = new ArrayList<>();
+    for (long i = 0; i < 150; i++) {
+      oneTable.add(Keys.snapshotPointerById("account", "a", i));
+    }
+    // 98 writes + 1 table-row check + 1 reserved = 100.
+    assertEquals(98, TableWriteFence.atomicChunkEnd(oneTable, 0, key -> key, 1));
+    assertEquals(150, TableWriteFence.atomicChunkEnd(oneTable, 98, key -> key, 1));
+
+    List<String> twoTables =
+        List.of(
+            Keys.snapshotPointerById("account", "a", 1L),
+            Keys.snapshotPointerById("account", "b", 1L));
+    assertEquals(
+        1,
+        TableWriteFence.atomicChunkEnd(
+            twoTables, 0, key -> key, PointerStore.MAX_ATOMIC_BATCH_OPERATIONS - 3));
+
+    List<String> untracked = new ArrayList<>();
+    for (int i = 0; i < 150; i++) {
+      untracked.add("/accounts/account/other/" + i);
+    }
+    assertEquals(99, TableWriteFence.atomicChunkEnd(untracked, 0, key -> key, 1));
+  }
+
+  @Test
+  void tableRowDeleteRecordsItsPurgeAndRetiredMarkers() {
     var pointers = new InMemoryPointerStore();
     String row = Keys.tablePointerById("account", "table");
     String marker = Keys.tablePurgePointer("account", "table");
+    String retired = Keys.tableRetiredPointer("account", "table");
     assertTrue(pointers.compareAndSet(row, 0L, pointer(row)));
 
     var fenced = TableWriteFence.fence(pointers, List.of(new PointerStore.CasDelete(row, 1L)));
@@ -132,10 +160,15 @@ class TableWriteFenceTest {
     assertTrue(pointers.compareAndSetBatch(fenced.operations()));
     assertTrue(pointers.get(row).isEmpty());
     assertTrue(pointers.get(marker).isPresent());
+    assertTrue(pointers.get(retired).isPresent());
   }
 
+  /**
+   * A table id is never reused, even after its purge completes: a writer that captured the id
+   * before the drop must never land in a later table.
+   */
   @Test
-  void tableRowCannotBeRecreatedWhileItsPurgeIsPending() {
+  void tableIdIsNeverReusedOnceItsRowIsDeleted() {
     var pointers = new InMemoryPointerStore();
     String row = Keys.tablePointerById("account", "table");
     String marker = Keys.tablePurgePointer("account", "table");
@@ -152,12 +185,13 @@ class TableWriteFenceTest {
     assertFalse(pointers.compareAndSetBatch(recreate.operations()));
     assertTrue(pointers.get(row).isEmpty());
 
-    assertTrue(pointers.delete(marker));
-    assertTrue(pointers.compareAndSetBatch(recreate.operations()));
+    assertTrue(pointers.delete(marker), "the purge completes");
+    assertFalse(pointers.compareAndSetBatch(recreate.operations()));
+    assertTrue(pointers.get(row).isEmpty());
   }
 
   @Test
-  void tableRowUpdateDoesNotConsultThePurgeMarker() {
+  void tableRowUpdateDoesNotConsultTheLifecycleMarkers() {
     String row = Keys.tablePointerById("account", "table");
 
     assertFalse(
@@ -165,17 +199,20 @@ class TableWriteFenceTest {
   }
 
   @Test
-  void purgeMarkerIsNotTableScopedState() {
-    String marker = Keys.tablePurgePointer("account", "table");
-
-    assertFalse(TableWriteFence.isTableRow(marker));
-    assertTrue(
-        TableWriteFence.tableRowsRequiringChecks(
-                List.of(new PointerStore.CasUpsert(marker, 0L, pointer(marker))))
-            .isEmpty());
-    assertFalse(
-        TableWriteFence.requiresFence(
-            List.of(new PointerStore.CasUpsert(marker, 0L, pointer(marker)))));
+  void lifecycleMarkersAreNotTableScopedState() {
+    for (String marker :
+        List.of(
+            Keys.tablePurgePointer("account", "table"),
+            Keys.tableRetiredPointer("account", "table"))) {
+      assertFalse(TableWriteFence.isTableRow(marker));
+      assertTrue(
+          TableWriteFence.tableRowsRequiringChecks(
+                  List.of(new PointerStore.CasUpsert(marker, 0L, pointer(marker))))
+              .isEmpty());
+      assertFalse(
+          TableWriteFence.requiresFence(
+              List.of(new PointerStore.CasUpsert(marker, 0L, pointer(marker)))));
+    }
   }
 
   @Test

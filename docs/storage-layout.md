@@ -113,6 +113,7 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/{account_id}/gc/cas/generation-cursor
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
 /accounts/{account_id}/tables/purging/{table_id}
+/accounts/{account_id}/tables/retired/{table_id}
 /accounts/{account_id}/tables/{table_id}/owner-reuse-leases/{publication_id}
 /accounts/{account_id}/tables/{table_id}/owner-publication-progress/{publication_id}
 ```
@@ -127,9 +128,14 @@ what makes the writer that adds the first child of that kind lose to this delete
 
 A table's state outside its row is purged after the row delete commits, so the delete leaves a
 `tables/purging/{table_id}` marker in the same batch. `TableWriteFence` adds it to every batch that
-deletes a table row, and requires it absent in every batch that creates one, so a table id cannot be
-reused while the purge of its previous state could still delete the new table's state. The purge
-removes the marker last; pointer GC retries any purge that failed or was interrupted before then.
+deletes a table row. The purge removes the marker last; pointer GC retries any purge that failed or
+was interrupted before then.
+
+The same batch also writes a permanent `tables/retired/{table_id}` marker, and `TableWriteFence`
+requires it absent in every batch that creates a table row, so a table id is never reused. A
+reconcile job, transaction, or purge that captured the id before the drop can only find the row
+missing; it can never publish into, or purge, a later table under the same id. Only account deletion
+removes retired markers.
 
 Two operations assert nothing here, and for the same reason: deleting a relation, and deleting a
 child namespace. Both are the removal direction — a namespace delete racing either can only find the

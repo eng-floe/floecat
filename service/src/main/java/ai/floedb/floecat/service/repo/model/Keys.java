@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.model;
 
+import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.storage.spi.PointerStoreKeys;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -27,14 +28,13 @@ import java.util.Optional;
 
 public final class Keys {
   public static final int ACCOUNT_DELETION_FENCE_SHARDS = 64;
-  private static final int DYNAMODB_TRANSACTION_ITEM_LIMIT = 100;
 
   static {
     if (ACCOUNT_DELETION_FENCE_SHARDS < 2
-        || ACCOUNT_DELETION_FENCE_SHARDS + 1 > DYNAMODB_TRANSACTION_ITEM_LIMIT) {
+        || ACCOUNT_DELETION_FENCE_SHARDS + 1 > PointerStore.MAX_ATOMIC_BATCH_OPERATIONS) {
       throw new ExceptionInInitializerError(
           "account deletion fence must have at least two shards and fit with its marker in one "
-              + "DynamoDB transaction");
+              + "atomic pointer batch");
     }
   }
 
@@ -2215,8 +2215,8 @@ public final class Keys {
 
   /**
    * Durable marker: this table's row is deleted and its table-scoped state still awaits purge.
-   * {@code TableWriteFence} writes it in the batch that deletes the row and refuses to recreate the
-   * row while it exists; the purge removes it last, so a failed purge is retried by pointer GC.
+   * {@code TableWriteFence} writes it in the batch that deletes the row; the purge removes it last,
+   * so a failed purge is retried by pointer GC.
    */
   public static String tablePurgePointer(String accountId, String tableId) {
     return tablePurgePrefix(accountId) + encode(req("table_id", tableId));
@@ -2224,6 +2224,18 @@ public final class Keys {
 
   public static String tablePurgePrefix(String accountId) {
     return "/accounts/" + encode(req("account_id", accountId)) + "/tables/purging/";
+  }
+
+  /**
+   * Permanent marker: this table id belonged to a table that has been deleted. {@code
+   * TableWriteFence} writes it in the batch that deletes the row and refuses to create a row while
+   * it exists, so a table id is never reused. Only account deletion removes it.
+   */
+  public static String tableRetiredPointer(String accountId, String tableId) {
+    return "/accounts/"
+        + encode(req("account_id", accountId))
+        + "/tables/retired/"
+        + encode(req("table_id", tableId));
   }
 
   // ===== Markers =====

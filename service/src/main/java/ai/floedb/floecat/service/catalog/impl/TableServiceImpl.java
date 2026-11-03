@@ -497,6 +497,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var correlationId = principalContext.getCorrelationId();
                   authz.require(principalContext, "table.write");
 
+                  CatalogSurfaceWritePolicy.rejectSystemTable(request.getTableId(), correlationId);
                   var tableId =
                       scopedTableId(
                           principalContext.getAccountId(), request.getTableId(), correlationId);

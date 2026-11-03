@@ -82,6 +82,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsStore.UnpublishedGenerationDeleteResult;
@@ -2688,6 +2689,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && !canonicalConnectorExists(finalizer.record.accountId, finalizer.record.connectorId)) {
       return SnapshotFinalizePublicationDisposition.ABANDON;
     }
+    // A dropped table refuses every table-scoped write the publication makes, so retrying it can
+    // never succeed. Decided from the row itself, not from which exception publication surfaced,
+    // through the injected authoritative store view: a stale miss would permanently abandon a
+    // live table's publication.
+    if (!blankToEmpty(finalizer.record.snapshotTaskTableId).isBlank()
+        && pointerStore
+            .get(
+                Keys.tablePointerById(
+                    finalizer.record.accountId, finalizer.record.snapshotTaskTableId))
+            .isEmpty()) {
+      return SnapshotFinalizePublicationDisposition.ABANDON;
+    }
     return SnapshotFinalizePublicationDisposition.RETRYABLE;
   }
 
@@ -4643,8 +4656,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String blobUri = encodeInlineFinalizedSnapshotEvent(next);
       Pointer pointer =
           PointerReferences.inlineJsonPointer(identityKey, blobUri, expectedVersion + 1L);
-      if (AccountDeletionFence.compareAndSet(
-          pointerStore, event.accountId, identityKey, expectedVersion, pointer)) {
+      try {
+        if (AccountDeletionFence.compareAndSet(
+            pointerStore, event.accountId, identityKey, expectedVersion, pointer)) {
+          return;
+        }
+      } catch (TableWriteFence.TableDeletedException deleted) {
+        // The job has already succeeded; a table dropped since has no finalized state to record,
+        // and its purge owns this key.
         return;
       }
     }

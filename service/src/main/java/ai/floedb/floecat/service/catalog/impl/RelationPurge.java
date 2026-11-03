@@ -31,8 +31,8 @@ import java.util.Optional;
 /** Removes a relation's state outside its resource row. */
 @ApplicationScoped
 public class RelationPurge {
-  // One slot of DynamoDB's 100-item transaction goes to the fence check.
-  static final int DELETE_BATCH = 99;
+  // One slot of the atomic batch goes to the fence check.
+  static final int DELETE_BATCH = PointerStore.MAX_ATOMIC_BATCH_OPERATIONS - 1;
   // Enough for a table without per-file stats to finish inline; larger subtrees go to GC.
   static final int INLINE_BATCH_BUDGET = 8;
   private static final int MAX_STALLED_BATCHES = 3;
@@ -56,10 +56,8 @@ public class RelationPurge {
    * budget. Blobs are left to {@code CasBlobGc}, which reclaims them once nothing references them.
    *
    * <p>Inline and recovery purges of one table may overlap, so every delete is fenced on the marker
-   * this purge started from. While that marker survives, the table id cannot have been recreated,
-   * so everything under it belongs to the deleted table. Once another purge has acknowledged it,
-   * this one stops: the id may since have been recreated, and an unfenced delete would remove the
-   * new table's state. Without a marker nothing is owed: every row delete leaves one.
+   * this purge started from. Once another purge has acknowledged it, this one stops because the
+   * cleanup is already complete. Without a marker nothing is owed: every row delete leaves one.
    *
    * <p>The bounded work keeps DROP and overlay requests from draining arbitrarily large statistics
    * subtrees inline. {@code TablePurgeQueue} repeatedly invokes this method within the GC deadline
@@ -103,7 +101,7 @@ public class RelationPurge {
         batches++;
       }
     }
-    // A pending root resync would otherwise re-drive against a table recreated under this id.
+    // Remove pending work that would otherwise keep re-driving against the retired table id.
     String rootResync = Keys.rootResyncPendingPointer(accountId, tableId.getId());
     if (batches >= maxBatches && pointerStore.get(rootResync).isPresent()) {
       return false;

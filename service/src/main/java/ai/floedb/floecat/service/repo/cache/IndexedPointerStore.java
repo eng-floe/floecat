@@ -135,7 +135,7 @@ public class IndexedPointerStore implements PointerStore {
   @Override
   public boolean delete(String key) {
     if (TableWriteFence.isTableRow(key)) {
-      // A table row leaves only together with its purge marker, which needs a versioned delete.
+      // A table row leaves only together with its lifecycle markers, which need a versioned delete.
       for (int attempt = 0; attempt < MAX_TABLE_DELETE_ATTEMPTS; attempt++) {
         Optional<Pointer> current =
             index.mutateKeys(

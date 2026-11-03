@@ -190,28 +190,6 @@ class RelationPurgeTest {
     verifyNoInteractions(purge.hints);
   }
 
-  /** A stalled purge must not clear a root resync the recreated table queued for itself. */
-  @Test
-  void stalledPurgeLeavesARecreatedTablesRootResyncAlone() {
-    var pointers = new StallingPointerStore();
-    String row = Keys.tablePointerById(ACCOUNT, TABLE);
-    String resync = Keys.rootResyncPendingPointer(ACCOUNT, TABLE);
-    put(pointers, row);
-    deleteRow(pointers, row);
-    var stalled = purge(pointers);
-    var recovery = purge(pointers);
-    pointers.stallOnce(
-        () -> {
-          completePurge(recovery, tableId());
-          assertTrue(write(pointers, row, 0L));
-          assertTrue(write(pointers, resync, 0L));
-        });
-
-    assertFalse(stalled.purgeTableState(tableId()));
-
-    assertTrue(pointers.get(resync).isPresent(), "the recreated table's resync must survive");
-  }
-
   @Test
   void purgeTableStateKeepsItsMarkerWhenCleanupFails() {
     String accountId = "account";
@@ -260,11 +238,12 @@ class RelationPurgeTest {
   }
 
   /**
-   * A purge that stalls after reading its marker must not touch the state of a table recreated
-   * under the same id while it was stalled, after another purge finished and acknowledged.
+   * A purge that stalls after reading its marker can never meet a table recreated under the same
+   * id: the id is retired by the delete, so the create is refused even after another purge has
+   * finished and acknowledged the marker.
    */
   @Test
-  void stalledPurgeLeavesARecreatedTableAlone() {
+  void stalledPurgeCannotMeetARecreatedTable() {
     var pointers = new StallingPointerStore();
     String row = Keys.tablePointerById(ACCOUNT, TABLE);
     String state = Keys.snapshotPointerById(ACCOUNT, TABLE, 7L);
@@ -276,41 +255,14 @@ class RelationPurgeTest {
     pointers.stallOnce(
         () -> {
           completePurge(recovery, tableId());
-          assertTrue(write(pointers, row, 0L));
-          assertTrue(write(pointers, state, 0L));
+          assertFalse(write(pointers, row, 0L), "a dropped table id must never be recreated");
         });
 
     assertFalse(stalled.purgeTableState(tableId()));
 
-    assertTrue(pointers.get(row).isPresent());
-    assertTrue(pointers.get(state).isPresent(), "the recreated table's state must survive");
-  }
-
-  /** Nor may it acknowledge the marker of a later delete of that recreated table. */
-  @Test
-  void stalledPurgeDoesNotAcknowledgeALaterDeletesMarker() {
-    var pointers = new StallingPointerStore();
-    String row = Keys.tablePointerById(ACCOUNT, TABLE);
-    String state = Keys.snapshotPointerById(ACCOUNT, TABLE, 7L);
-    String marker = Keys.tablePurgePointer(ACCOUNT, TABLE);
-    put(pointers, row);
-    deleteRow(pointers, row);
-    var stalled = purge(pointers);
-    var recovery = purge(pointers);
-    pointers.stallOnce(
-        () -> {
-          completePurge(recovery, tableId());
-          assertTrue(write(pointers, row, 0L));
-          assertTrue(write(pointers, state, 0L));
-          deleteRow(pointers, row);
-        });
-
-    assertFalse(stalled.purgeTableState(tableId()));
-
-    assertTrue(pointers.get(marker).isPresent(), "the later delete's purge must stay queued");
-    completePurge(purge(pointers), tableId());
+    assertTrue(pointers.get(row).isEmpty());
     assertTrue(pointers.get(state).isEmpty());
-    assertTrue(pointers.get(marker).isEmpty());
+    assertTrue(pointers.get(Keys.tablePurgePointer(ACCOUNT, TABLE)).isEmpty());
   }
 
   private static final String ACCOUNT = "account";

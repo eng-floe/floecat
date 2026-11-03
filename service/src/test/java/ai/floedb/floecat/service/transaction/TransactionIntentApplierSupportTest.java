@@ -741,6 +741,96 @@ class TransactionIntentApplierSupportTest {
     assertTrue(pointers.get(marker).isEmpty(), "the purge marker should be acknowledged");
   }
 
+  /**
+   * A table dropped after Prepare makes the store's table fence throw. The applier must report a
+   * terminal conflict so commit can leave TS_APPLYING, rather than letting the exception escape.
+   */
+  @Test
+  void applyTransactionReportsTableNotFoundWhenTableWasDroppedBeforeApply() throws Exception {
+    var durable = new InMemoryPointerStore();
+    PointerStore pointers = new IndexedPointerStore(durable, new PlanningPointerIndex(durable));
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var txRepo = new TransactionRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    String accountId = "acct";
+    String txId = "tx-1";
+    // No table row: the table these snapshot writes belong to is already gone.
+    List<TransactionIntent> intents = snapshotIntents(accountId, txId, 1);
+    for (TransactionIntent intent : intents) {
+      intentRepo.create(intent);
+    }
+
+    var bestEffort = support.applyTransactionBestEffort(intents, intentRepo);
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, bestEffort.status());
+    assertEquals("TABLE_NOT_FOUND", bestEffort.errorCode());
+
+    Transaction currentTxn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_APPLYING)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    txRepo.create(currentTxn);
+    long txPointerVersion = txRepo.metaFor(accountId, txId).getPointerVersion();
+    Transaction appliedTxn =
+        currentTxn.toBuilder()
+            .setState(TransactionState.TS_APPLIED)
+            .setUpdatedAt(Timestamps.fromMillis(2))
+            .build();
+
+    var atomic =
+        support.applyTransactionAtomically(appliedTxn, txPointerVersion, intents, intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, atomic.status());
+    assertEquals("TABLE_NOT_FOUND", atomic.errorCode());
+    assertTrue(pointers.get(intents.get(0).getTargetPointerKey()).isEmpty());
+    assertEquals(
+        TransactionState.TS_APPLYING,
+        readTransaction(
+                blobs,
+                pointers
+                    .get(Keys.transactionPointerById(accountId, txId))
+                    .orElseThrow()
+                    .getBlobUri())
+            .getState(),
+        "the applier leaves the terminal transition to commit");
+  }
+
+  @Test
+  void applyTransactionRejectsRecreatingARetiredTableIdAsATerminalConflict() throws Exception {
+    var durable = new InMemoryPointerStore();
+    PointerStore pointers = new IndexedPointerStore(durable, new PlanningPointerIndex(durable));
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    String accountId = "acct";
+    String namespaceId = "ns-1";
+    String tableId = "table-1";
+    seedNamespace(pointers, accountId, namespaceId);
+    String retired = Keys.tableRetiredPointer(accountId, tableId);
+    assertTrue(
+        durable.compareAndSet(
+            retired,
+            0L,
+            PointerReferences.opaqueMarkerPointer(
+                retired, Keys.tablePointerById(accountId, tableId), 1L)));
+    String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
+    blobs.put(
+        blobUri,
+        table(accountId, "cat-1", namespaceId, tableId, "orders").toByteArray(),
+        "application/x-protobuf");
+    TransactionIntent intent = tableCreateIntent(accountId, "tx-1", tableId, blobUri, 1L);
+    intentRepo.create(intent);
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("TABLE_ID_RETIRED", outcome.errorCode());
+    assertTrue(pointers.get(Keys.tablePointerById(accountId, tableId)).isEmpty());
+  }
+
   @Test
   void applyTransactionReportsNamePointerConflictWithoutPartialApply() throws Exception {
     var pointers = new InMemoryPointerStore();

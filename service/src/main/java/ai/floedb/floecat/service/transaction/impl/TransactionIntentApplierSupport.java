@@ -56,7 +56,7 @@ import org.jboss.logging.Logger;
 public class TransactionIntentApplierSupport {
 
   private static final Logger LOG = Logger.getLogger(TransactionIntentApplierSupport.class);
-  private static final int MAX_POINTER_TXN_OPS = 100;
+  private static final int MAX_POINTER_TXN_OPS = PointerStore.MAX_ATOMIC_BATCH_OPERATIONS;
 
   /** Owns ordered, key-unique assembly of one pointer-store transaction. */
   private static final class PointerBatch {
@@ -319,7 +319,8 @@ public class TransactionIntentApplierSupport {
       }
     }
 
-    if (!batch.isEmpty() && !pointerStore.compareAndSetBatch(batch.operations())) {
+    ApplyOutcome submitted = batch.isEmpty() ? ApplyOutcome.applied() : submitBatch(batch);
+    if (submitted.status == ApplyStatus.RETRYABLE) {
       ApplyOutcome fenceOutcomeAfterFailure = findAccountDeletionConflict(intents);
       if (fenceOutcomeAfterFailure != null) {
         return fenceOutcomeAfterFailure;
@@ -328,7 +329,10 @@ public class TransactionIntentApplierSupport {
       if (conflictOutcome != null) {
         return conflictOutcome;
       }
-      return ApplyOutcome.retryable("POINTER_TXN_CAS_FAILED", "pointer transaction conflict");
+      return submitted;
+    }
+    if (submitted.status != ApplyStatus.APPLIED) {
+      return submitted;
     }
 
     purgeAppliedTableDeletes(intents);
@@ -397,9 +401,13 @@ public class TransactionIntentApplierSupport {
       return sizeOutcome;
     }
 
-    if (pointerStore.compareAndSetBatch(batch.operations())) {
+    ApplyOutcome submitted = submitBatch(batch);
+    if (submitted.status == ApplyStatus.APPLIED) {
       purgeAppliedTableDeletes(intents);
-      return ApplyOutcome.applied();
+      return submitted;
+    }
+    if (submitted.status != ApplyStatus.RETRYABLE) {
+      return submitted;
     }
     ApplyOutcome fenceOutcomeAfterFailure = findAccountDeletionConflict(intents);
     if (fenceOutcomeAfterFailure != null) {
@@ -414,9 +422,9 @@ public class TransactionIntentApplierSupport {
    * exceed the pointer-transaction limit with {@code reserved} operations still to be added.
    *
    * <p>The fence runs inside the pointer store, below this check, adding a row check per table
-   * whose state the batch writes and a purge-marker op per table row it creates or deletes.
-   * Counting only the planned operations let a batch pass here and then fail in the backend after
-   * its intents were staged.
+   * whose state the batch writes, a retired-marker absence check for a table create, and purge and
+   * retired markers for a table delete. Counting only the planned operations let a batch pass here
+   * and then fail in the backend after its intents were staged.
    */
   private static ApplyOutcome checkFencedBatchSize(PointerBatch batch, int reserved) {
     int fenceOps;
@@ -435,6 +443,26 @@ public class TransactionIntentApplierSupport {
           null);
     }
     return ApplyOutcome.applied();
+  }
+
+  /**
+   * Submits {@code batch}: APPLIED when it commits, a retryable POINTER_TXN_CAS_FAILED when it
+   * loses a CAS, and a TABLE_NOT_FOUND conflict when a table it writes under was dropped. Every
+   * apply path submits through here, so none can let the store's table fence escape as an
+   * exception.
+   *
+   * <p>A dropped table is terminal, not a lost CAS: no retry can succeed, and reporting it lets
+   * commit leave TS_APPLYING and release the transaction's intents instead of rethrowing on every
+   * subsequent commit attempt.
+   */
+  private ApplyOutcome submitBatch(PointerBatch batch) {
+    try {
+      return pointerStore.compareAndSetBatch(batch.operations())
+          ? ApplyOutcome.applied()
+          : ApplyOutcome.retryable("POINTER_TXN_CAS_FAILED", "pointer transaction conflict");
+    } catch (TableWriteFence.TableDeletedException deleted) {
+      return ApplyOutcome.conflict("TABLE_NOT_FOUND", deleted.getMessage(), null, null, null);
+    }
   }
 
   private void purgeAppliedTableDeletes(List<TransactionIntent> intents) {
@@ -459,7 +487,7 @@ public class TransactionIntentApplierSupport {
       } catch (RuntimeException purgeFailure) {
         // The pointer batch has already committed, and the atomic path has also made the
         // transaction terminal. Report the committed outcome: the row delete left a purge marker,
-        // so pointer GC finishes this cleanup and the table id stays unusable until it does.
+        // so pointer GC finishes this cleanup. The retired marker keeps the table id unusable.
         LOG.errorf(
             purgeFailure,
             "transaction_table_purge_failed account_id=%s table_id=%s tx_id=%s",
@@ -587,6 +615,21 @@ public class TransactionIntentApplierSupport {
     ApplyOutcome targetValidation = validateTableIntentTarget(pointerKey, nextTable);
     if (targetValidation.status != ApplyStatus.APPLIED) {
       return targetValidation;
+    }
+    // The fence refuses to create a dropped table's id; without this the refusal reads as an
+    // ordinary CAS loss and the transaction retries a write that can never land.
+    if (current == null
+        && pointerStore
+            .get(
+                Keys.tableRetiredPointer(
+                    nextTable.getResourceId().getAccountId(), nextTable.getResourceId().getId()))
+            .isPresent()) {
+      return ApplyOutcome.conflict(
+          "TABLE_ID_RETIRED",
+          "table id belongs to a dropped table",
+          null,
+          null,
+          nextTable.getResourceId().getId());
     }
     // The row being replaced, read before the fence because the fence depends on it: a relation
     // that stays in the container it is already counted in changes no namespace's relation set.
