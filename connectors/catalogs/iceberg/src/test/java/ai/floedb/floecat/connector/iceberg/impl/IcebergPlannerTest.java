@@ -23,11 +23,20 @@ import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DataFiles;
+import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.FileMetadata;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.inmemory.InMemoryCatalog;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
 
@@ -216,5 +225,87 @@ class IcebergPlannerTest {
                   case "spec" -> null;
                   default -> throw new UnsupportedOperationException(method.getName());
                 });
+  }
+
+  @Test
+  void eachDataFileGetsOnlyTheDeletesIcebergAppliesToIt() throws Exception {
+    var catalog = new InMemoryCatalog();
+    catalog.initialize("mem", Map.of());
+    catalog.createNamespace(Namespace.of("ns"));
+    var spec = PartitionSpec.unpartitioned();
+    Table table =
+        catalog.createTable(
+            TableIdentifier.of("ns", "t"),
+            new Schema(Types.NestedField.required(1, "id", Types.LongType.get())),
+            spec,
+            Map.of("format-version", "2"));
+    table
+        .newAppend()
+        .appendFile(dataFile(spec, "mem://a.parquet"))
+        .appendFile(dataFile(spec, "mem://b.parquet"))
+        .commit();
+    table
+        .newRowDelta()
+        .addDeletes(
+            FileMetadata.deleteFileBuilder(spec)
+                .ofPositionDeletes()
+                .withPath("mem://d.parquet")
+                .withFileSizeInBytes(10)
+                .withRecordCount(1)
+                .withFormat(FileFormat.PARQUET)
+                .withReferencedDataFile("mem://a.parquet")
+                .build())
+        .commit();
+
+    try (var planner =
+        new IcebergPlanner(
+            table, table.currentSnapshot().snapshotId(), Set.of(), Set.of(), null, true)) {
+      assertThat(planner.deleteLocationsByDataFile())
+          .containsEntry("mem://a.parquet", List.of("mem://d.parquet"))
+          .containsEntry("mem://b.parquet", List.of());
+    }
+
+    // A deletion vector's Puffin file holds other data files' vectors too, so its path does not
+    // name this one's deletes.
+    Table withVectors =
+        catalog.createTable(
+            TableIdentifier.of("ns", "v"),
+            new Schema(Types.NestedField.required(1, "id", Types.LongType.get())),
+            spec,
+            Map.of("format-version", "3"));
+    withVectors.newAppend().appendFile(dataFile(spec, "mem://c.parquet")).commit();
+    withVectors
+        .newRowDelta()
+        .addDeletes(
+            FileMetadata.deleteFileBuilder(spec)
+                .ofPositionDeletes()
+                .withPath("mem://v.puffin")
+                .withFileSizeInBytes(100)
+                .withRecordCount(1)
+                .withFormat(FileFormat.PUFFIN)
+                .withReferencedDataFile("mem://c.parquet")
+                .withContentOffset(4)
+                .withContentSizeInBytes(40)
+                .build())
+        .commit();
+    try (var planner =
+        new IcebergPlanner(
+            withVectors,
+            withVectors.currentSnapshot().snapshotId(),
+            Set.of(),
+            Set.of(),
+            null,
+            true)) {
+      assertThat(planner.deleteLocationsByDataFile()).doesNotContainKey("mem://c.parquet");
+    }
+  }
+
+  private static DataFile dataFile(PartitionSpec spec, String path) {
+    return DataFiles.builder(spec)
+        .withPath(path)
+        .withFileSizeInBytes(10)
+        .withRecordCount(2)
+        .withFormat(FileFormat.PARQUET)
+        .build();
   }
 }

@@ -1027,7 +1027,11 @@ public abstract class IcebergConnector implements FloecatConnector {
                 ));
       }
 
-      List<FileColumnStatsView> mutableFiles = new ArrayList<>(baseFiles);
+      List<FileColumnStatsView> mutableFiles = new ArrayList<>();
+      for (FileColumnStatsView file : baseFiles) {
+        mutableFiles.add(
+            file.withAppliedDeletes(engineOutput.deletesByDataFile().get(file.filePath())));
+      }
       mutableFiles.addAll(deleteStats);
       allFiles = List.copyOf(mutableFiles);
     }
@@ -1534,7 +1538,8 @@ public abstract class IcebergConnector implements FloecatConnector {
       StatsEngine.Result<Integer> result,
       Map<Integer, String> columnNames,
       Map<Integer, LogicalType> logicalTypes,
-      List<IcebergPlanner.DeleteFileStat> deleteFiles) {}
+      List<IcebergPlanner.DeleteFileStat> deleteFiles,
+      Map<String, List<String>> deletesByDataFile) {}
 
   private static SnapshotFileEntry toDataScanFile(
       PlannedFile<Integer> planned, List<IcebergPlanner.DeleteFileStat> deleteFiles) {
@@ -1589,7 +1594,12 @@ public abstract class IcebergConnector implements FloecatConnector {
         StatsEngine<Integer> engine =
             new GenericStatsEngine<>(planner, none, null, avgWidth, colNames, logicalTypes);
         var result = engine.compute();
-        return new EngineOut(result, colNames, logicalTypes, planner.deleteFiles());
+        return new EngineOut(
+            result,
+            colNames,
+            logicalTypes,
+            planner.deleteFiles(),
+            planner.deleteLocationsByDataFile());
       }
 
       Map<String, ColumnNdv> puffinMap = null;
@@ -1640,7 +1650,12 @@ public abstract class IcebergConnector implements FloecatConnector {
               planner, perFileNdv, bootstrap, avgWidth, colNames, logicalTypes, thetaK);
 
       var result = engine.compute();
-      return new EngineOut(result, colNames, logicalTypes, planner.deleteFiles());
+      return new EngineOut(
+          result,
+          colNames,
+          logicalTypes,
+          planner.deleteFiles(),
+          planner.deleteLocationsByDataFile());
     } catch (Exception e) {
       throw new RuntimeException("Stats compute failed for snapshot " + snapshotId, e);
     }

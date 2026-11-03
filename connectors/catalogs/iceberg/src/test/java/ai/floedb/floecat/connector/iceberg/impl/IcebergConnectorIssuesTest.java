@@ -532,6 +532,69 @@ class IcebergConnectorIssuesTest {
 
   @Test
   void simpleFixtureFileGroupCaptureRetainsColumnMetadata() {
+    FixtureCapture fixture = captureSimpleFixture();
+    FileGroupCaptureResult captured = fixture.captured();
+
+    assertTrue(
+        captured.statsRecords().stream()
+            .filter(TargetStatsRecord::hasScalar)
+            .allMatch(
+                record ->
+                    !record.getScalar().getDisplayName().isBlank()
+                        && !record.getScalar().getLogicalType().isBlank()),
+        () -> "scalar target stats should preserve name/type: " + captured.statsRecords());
+
+    assertTrue(
+        captured.statsRecords().stream()
+            .filter(TargetStatsRecord::hasFile)
+            .flatMap(record -> record.getFile().getColumnsList().stream())
+            .allMatch(
+                fileColumn ->
+                    !fileColumn.getScalar().getDisplayName().isBlank()
+                        && !fileColumn.getScalar().getLogicalType().isBlank()),
+        () -> "file-column stats should preserve name/type: " + captured.statsRecords());
+    assertTrue(
+        captured.statsRecords().stream()
+            .filter(TargetStatsRecord::hasFile)
+            .anyMatch(
+                record -> record.getFile().getFileContent() == FileContent.FC_POSITION_DELETES),
+        () -> "capture should emit attached position-delete stats: " + captured.statsRecords());
+  }
+
+  @Test
+  void aCapturedDataFileNamesTheDeleteFilesIcebergAppliesToIt() {
+    FixtureCapture fixture = captureSimpleFixture();
+    Map<String, List<String>> planned = new HashMap<>();
+    for (var file : fixture.plan().dataFiles()) {
+      planned.put(
+          file.filePath(),
+          file.icebergDeleteFiles().stream().map(d -> d.filePath()).sorted().toList());
+    }
+
+    var dataFiles =
+        fixture.captured().statsRecords().stream()
+            .filter(TargetStatsRecord::hasFile)
+            .map(TargetStatsRecord::getFile)
+            .filter(file -> file.getFileContent() == FileContent.FC_DATA)
+            .toList();
+
+    assertFalse(dataFiles.isEmpty());
+    assertTrue(
+        planned.values().stream().anyMatch(deletes -> !deletes.isEmpty()),
+        "the fixture's data files must have deletes for the test to mean anything");
+    for (var file : dataFiles) {
+      assertTrue(file.hasAppliedDeletes(), file.getFilePath());
+      assertEquals(
+          planned.get(file.getFilePath()),
+          file.getAppliedDeletes().getFilePathsList().stream().sorted().toList());
+    }
+  }
+
+  private record FixtureCapture(
+      FloecatConnector.SnapshotFilePlan plan, FileGroupCaptureResult captured) {}
+
+  /** Captures every planned file of the simple fixture's latest snapshot, which has deletes. */
+  private static FixtureCapture captureSimpleFixture() {
     TestS3Fixtures.seedFixturesOnce();
 
     var props = new HashMap<String, String>();
@@ -597,30 +660,7 @@ class IcebergConnectorIssuesTest {
               FloecatConnector.ColumnSelectorPolicy.defaults(),
               ColumnIdentityMap.getDefaultInstance());
 
-      assertTrue(
-          captured.statsRecords().stream()
-              .filter(TargetStatsRecord::hasScalar)
-              .allMatch(
-                  record ->
-                      !record.getScalar().getDisplayName().isBlank()
-                          && !record.getScalar().getLogicalType().isBlank()),
-          () -> "scalar target stats should preserve name/type: " + captured.statsRecords());
-
-      assertTrue(
-          captured.statsRecords().stream()
-              .filter(TargetStatsRecord::hasFile)
-              .flatMap(record -> record.getFile().getColumnsList().stream())
-              .allMatch(
-                  fileColumn ->
-                      !fileColumn.getScalar().getDisplayName().isBlank()
-                          && !fileColumn.getScalar().getLogicalType().isBlank()),
-          () -> "file-column stats should preserve name/type: " + captured.statsRecords());
-      assertTrue(
-          captured.statsRecords().stream()
-              .filter(TargetStatsRecord::hasFile)
-              .anyMatch(
-                  record -> record.getFile().getFileContent() == FileContent.FC_POSITION_DELETES),
-          () -> "capture should emit attached position-delete stats: " + captured.statsRecords());
+      return new FixtureCapture(plan, captured);
     }
   }
 

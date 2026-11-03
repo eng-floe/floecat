@@ -156,6 +156,29 @@ final class IcebergPlanner implements Planner<Integer> {
     return deleteFilesByDataFile.getOrDefault(dataFilePath, List.of());
   }
 
+  /** The locations of the delete files Iceberg applies to each planned data file, by its path. */
+  Map<String, List<String>> deleteLocationsByDataFile() {
+    Map<String, List<String>> out = new HashMap<>();
+    deleteFilesByDataFile.forEach(
+        (path, deletes) -> {
+          List<String> locations = appliedDeleteLocations(deletes);
+          if (locations != null) {
+            out.put(path, locations);
+          }
+        });
+    return out;
+  }
+
+  /**
+   * The locations of a data file's {@code deletes}, or null when one is a deletion vector: a Puffin
+   * file holds the vectors of many data files, so its location alone does not name this file's.
+   */
+  private static List<String> appliedDeleteLocations(List<DeleteFileStat> deletes) {
+    return deletes.stream().anyMatch(DeleteFileStat::deletionVector)
+        ? null
+        : deletes.stream().map(DeleteFileStat::location).toList();
+  }
+
   Schema schema() {
     return schema;
   }
@@ -190,7 +213,8 @@ final class IcebergPlanner implements Planner<Integer> {
       org.apache.iceberg.FileContent content,
       int partitionSpecId,
       Long fileSequenceNumber,
-      List<Integer> equalityFieldIds) {}
+      List<Integer> equalityFieldIds,
+      boolean deletionVector) {}
 
   private static DeleteFileStat toDeleteFileStat(org.apache.iceberg.DeleteFile deleteFile) {
     List<Integer> equalityFieldIds =
@@ -204,7 +228,8 @@ final class IcebergPlanner implements Planner<Integer> {
         deleteFile.content(),
         deleteFile.specId(),
         deleteFile.fileSequenceNumber(),
-        equalityFieldIds);
+        equalityFieldIds,
+        deleteFile.format() == org.apache.iceberg.FileFormat.PUFFIN);
   }
 
   private void collectFieldMetadata(Types.NestedField field) {
