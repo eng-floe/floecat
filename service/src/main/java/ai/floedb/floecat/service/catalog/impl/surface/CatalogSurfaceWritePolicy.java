@@ -29,6 +29,7 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
@@ -158,6 +159,21 @@ public final class CatalogSurfaceWritePolicy {
     TableNode node = requireVisibleTable(tableId, corr);
     enforceWritableTableNode(node, tableId, corr);
     return node;
+  }
+
+  /**
+   * Refuses a system table by its id alone, with no graph read.
+   *
+   * <p>System tables live outside the caller's account, so this runs before account scoping, which
+   * would otherwise report them as a malformed id. Resolving the unscoped id instead would load
+   * another account's table on the caller's behalf.
+   */
+  public static void rejectSystemTable(ResourceId tableId, String corr) {
+    if (tableId != null
+        && (SystemNodeRegistry.SYSTEM_ACCOUNT.equals(tableId.getAccountId())
+            || SystemResourceIdGenerator.isSystemId(tableId))) {
+      throw systemObjectImmutable(corr, tableId, "table");
+    }
   }
 
   public void requireWritableTableForDelete(ResourceId tableId, String corr, boolean callerCares) {

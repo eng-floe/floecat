@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -167,6 +168,19 @@ public class TableRootCommitter {
             attemptBackoffNanos,
             retryable);
         lastRetryable = retryable;
+      } catch (TableWriteFence.TableDeletedException deleted) {
+        // The table-row fence proved that this root belongs to a deleted table incarnation.
+        // Retrying cannot make that publication valid, and wrapping it would turn an expected
+        // concurrent DROP into INTERNAL at the RPC boundary.
+        logFailedAttempt(
+            tableId,
+            operation,
+            attemptNumber,
+            attemptStartedNanos,
+            lockWaitNanos,
+            attemptBackoffNanos,
+            deleted);
+        throw deleted;
       } catch (BaseResourceRepository.NotFoundException gone) {
         // The root pointer was deleted between our read and the CAS (a racing DROP / account
         // cascade). Honor the retry-merge contract instead of failing terminally: re-read so the

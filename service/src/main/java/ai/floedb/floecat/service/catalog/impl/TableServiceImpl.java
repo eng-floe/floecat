@@ -37,7 +37,6 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceTables;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
@@ -48,18 +47,16 @@ import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
+import ai.floedb.floecat.service.common.ResourceIds;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
-import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.ManagedTableProperties;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
@@ -80,11 +77,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject MarkerStore markerStore;
-  @Inject PointerStore pointerStore;
   @Inject TableRootWriter rootWriter;
-  @Inject TableRootRepository tableRoots;
   @Inject EngineHintSchemaCleaner hintCleaner;
-  @Inject HintCache hints;
+  @Inject RelationPurge relationPurge;
   @Inject CatalogGraphView graphView;
 
   private static final Set<String> TABLE_MUTABLE_PATHS =
@@ -502,7 +497,10 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var correlationId = principalContext.getCorrelationId();
                   authz.require(principalContext, "table.write");
 
-                  var tableId = request.getTableId();
+                  CatalogSurfaceWritePolicy.rejectSystemTable(request.getTableId(), correlationId);
+                  var tableId =
+                      scopedTableId(
+                          principalContext.getAccountId(), request.getTableId(), correlationId);
                   boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
                   catalogSurfaceWritePolicy()
                       .requireWritableTableForDelete(tableId, correlationId, callerCares);
@@ -526,7 +524,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    purgeSnapshotsAndStats(tableId);
+                    advanceCommittedTablePurge(tableId, correlationId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   } catch (BaseResourceRepository.CorruptionException corrupt) {
                     var safe = tableRepo.metaForSafe(tableId);
@@ -548,7 +546,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           safe.getPointerVersion(),
                           tableRepo.pointerMetaForSafe(tableId).getPointerVersion());
                     }
-                    purgeSnapshotsAndStats(tableId);
+                    advanceCommittedTablePurge(tableId, correlationId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -564,7 +562,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           "table",
                           Map.of("id", tableId.getId()));
 
-                  purgeSnapshotsAndStats(tableId);
+                  advanceCommittedTablePurge(tableId, correlationId);
                   return DeleteTableResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
@@ -572,6 +570,21 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private void advanceCommittedTablePurge(ResourceId tableId, String correlationId) {
+    try {
+      relationPurge.purgeTableState(tableId);
+    } catch (RuntimeException purgeFailure) {
+      // The table-row delete already committed and left a durable purge marker. Preserve the
+      // successful DROP result; pointer GC will resume the bounded cleanup from that marker.
+      LOG.errorf(
+          purgeFailure,
+          "table_purge_failed correlation_id=%s account_id=%s table_id=%s",
+          correlationId,
+          tableId.getAccountId(),
+          tableId.getId());
+    }
   }
 
   private static void validateTableMaskOrThrow(FieldMask mask, String corr) {
@@ -593,6 +606,19 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
           UPDATE_MASK_UPSTREAM_MIX_FORBIDDEN,
           Map.of("hint", "use either 'upstream' or 'upstream.*' but not both"));
     }
+  }
+
+  private ResourceId scopedTableId(String accountId, ResourceId tableId, String corr) {
+    ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+    mustNonEmpty(tableId.getAccountId(), "table_id.account_id", corr);
+    mustNonEmpty(tableId.getId(), "table_id.id", corr);
+    if (!ResourceIds.isCanonicalUuid(tableId.getId())) {
+      throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "table_id.id"));
+    }
+    if (!accountId.equals(tableId.getAccountId())) {
+      throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "table_id.account_id"));
+    }
+    return tableId.toBuilder().setAccountId(accountId).build();
   }
 
   private Table applyTableSpecPatch(Table current, TableSpec spec, FieldMask mask, String corr) {
@@ -891,17 +917,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   .scalar("column_id_algorithm", up.getColumnIdAlgorithm()));
     }
     return c.bytes();
-  }
-
-  private void purgeSnapshotsAndStats(ResourceId tableId) {
-    String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
-    pointerStore.deleteByPrefix(prefix);
-    // The table-root pointer lives outside the snapshot prefix; left behind it would shadow the
-    // initial state of a table later recreated with the same id. Its blobs are reclaimed by
-    // CasBlobGc once the table drops out of the live set. Routed through the repository so the
-    // root-pointer cache drops its entry with the pointer (same-process read-your-writes).
-    tableRoots.purgeRoot(tableId);
-    hints.deleteRelation(tableId);
   }
 
   /**

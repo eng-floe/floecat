@@ -95,7 +95,8 @@ class SnapshotRepositoryTest {
         java.util.List.of(
             Keys.snapshotTargetStatsManifestPointer("acct", "tbl", 7L),
             Keys.snapshotIndexArtifactCaptureManifestPointer("acct", "tbl", 7L),
-            Keys.snapshotConstraintsPointer("acct", "tbl", 7L));
+            Keys.snapshotConstraintsPointer("acct", "tbl", 7L),
+            Keys.reconcileFinalizedSnapshotIdentityPointer("acct", "tbl", 7L));
     for (String key : artifacts) {
       ptr.compareAndSet(
           key,

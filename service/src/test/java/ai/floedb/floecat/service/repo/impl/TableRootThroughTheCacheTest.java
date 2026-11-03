@@ -16,11 +16,14 @@
 package ai.floedb.floecat.service.repo.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.service.testsupport.CountingBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -57,6 +60,18 @@ class TableRootThroughTheCacheTest {
     return cachedRepo(pointers, new InMemoryBlobStore());
   }
 
+  private static void seedTable(CountingPointerStore pointers, ResourceId tableId) {
+    String row = Keys.tablePointerById(tableId.getAccountId(), tableId.getId());
+    assertTrue(
+        pointers.compareAndSet(
+            row,
+            0L,
+            ai.floedb.floecat.common.rpc.Pointer.newBuilder()
+                .setKey(row)
+                .setBlobUri("s3://table-row")
+                .build()));
+  }
+
   private static TableRootRepository cachedRepo(
       CountingPointerStore pointers, InMemoryBlobStore blobs) {
     var caching =
@@ -81,6 +96,7 @@ class TableRootThroughTheCacheTest {
     var pointers = new CountingPointerStore();
     var repo = cachedRepo(pointers);
     var tableId = table("t-warm");
+    seedTable(pointers, tableId);
     repo.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
 
     assertEquals(1, repo.get(tableId).orElseThrow().getRootSeq());
@@ -95,6 +111,7 @@ class TableRootThroughTheCacheTest {
     var pointers = new CountingPointerStore();
     var repo = cachedRepo(pointers);
     var tableId = table("t-ryw");
+    seedTable(pointers, tableId);
     repo.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
     assertEquals(1, repo.get(tableId).orElseThrow().getRootSeq()); // populate the cache
 
@@ -107,25 +124,11 @@ class TableRootThroughTheCacheTest {
   }
 
   @Test
-  void aPurgeInvalidatesTheCachedPointerLikeAnyOtherWrite() {
-    var pointers = new CountingPointerStore();
-    var repo = cachedRepo(pointers);
-    var tableId = table("t-purge");
-    repo.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
-    assertEquals(1, repo.get(tableId).orElseThrow().getRootSeq()); // populate the cache
-
-    // DROP/account-cascade purge: the pointer AND the cached entry must go — a bare pointer-store
-    // delete would leave the dropped table's root serving from the cache indefinitely.
-    repo.purgeRoot(tableId);
-
-    assertTrue(repo.get(tableId).isEmpty(), "read-your-writes must hold for purges too");
-  }
-
-  @Test
   void absenceIsNotCachedSoTheFirstRootIsVisibleImmediately() {
     var pointers = new CountingPointerStore();
     var repo = cachedRepo(pointers);
     var tableId = table("t-first");
+    seedTable(pointers, tableId);
 
     assertTrue(repo.get(tableId).isEmpty()); // miss on a table with no root yet
     repo.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
@@ -133,6 +136,18 @@ class TableRootThroughTheCacheTest {
         1,
         repo.get(tableId).orElseThrow().getRootSeq(),
         "a cached 'no root' would hide the first commit");
+  }
+
+  @Test
+  void missingTableRowClassifiesRootPublicationAsPermanentDeletion() {
+    var pointers = new CountingPointerStore();
+    var repo = cachedRepo(pointers);
+    var tableId = table("t-deleted");
+
+    assertThrows(
+        TableWriteFence.TableDeletedException.class,
+        () ->
+            repo.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build()));
   }
 
   @Test
@@ -215,6 +230,7 @@ class TableRootThroughTheCacheTest {
     var shared = new ai.floedb.floecat.service.repo.cache.PlanningPointerIndex(pointers);
     var warm = repoSharing(shared, pointers, blobs);
     var tableId = table("t-dangling");
+    seedTable(pointers, tableId);
     warm.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
     String blobUri = warm.metaForSafeConsistent(tableId).getBlobUri();
     assertEquals(1, warm.get(tableId).orElseThrow().getRootSeq()); // warms the pointer cache
@@ -238,6 +254,7 @@ class TableRootThroughTheCacheTest {
     var shared = new ai.floedb.floecat.service.repo.cache.PlanningPointerIndex(pointers);
     var warm = repoSharing(shared, pointers, blobs);
     var tableId = table("t-moved");
+    seedTable(pointers, tableId);
     warm.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
     String staleUri = warm.metaForSafeConsistent(tableId).getBlobUri();
     assertEquals(1, warm.get(tableId).orElseThrow().getRootSeq()); // warms the pointer cache

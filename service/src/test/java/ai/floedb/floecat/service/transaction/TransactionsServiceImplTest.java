@@ -74,6 +74,7 @@ import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
@@ -580,6 +581,54 @@ class TransactionsServiceImplTest {
     assertTrue(committed.hasUpdatedAt());
   }
 
+  /**
+   * A table dropped before apply ends the transaction in a terminal conflict state, which releases
+   * its intent targets, rather than leaving it in TS_APPLYING or a retryable failure.
+   */
+  @Test
+  void commitTableDroppedBeforeApplyTransitionsToTerminalConflictState() throws Exception {
+    var service = newService();
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+    injectPointerStore(service, pointerStore);
+
+    Transaction txn = preparedTxn();
+    Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
+    TransactionIntent intent = defaultIntent();
+
+    when(txRepo.getById("acct", "tx-1"))
+        .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplying));
+    when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
+    when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
+        .thenReturn(Optional.of(intent));
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
+        .thenReturn(
+            TransactionIntentApplierSupport.ApplyOutcome.conflict(
+                "TABLE_NOT_FOUND", "table deleted during scoped publication", null, null, null));
+    when(pointerStore.getConsistent("/accounts/acct/custom/key-1")).thenReturn(Optional.empty());
+    when(intentRepo.update(any(TransactionIntent.class))).thenReturn(true);
+    when(txRepo.metaFor("acct", "tx-1"))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(14L).build(),
+            MutationMeta.newBuilder().setPointerVersion(15L).build());
+    when(txRepo.update(any(Transaction.class), anyLong())).thenReturn(true);
+
+    Transaction committed =
+        invokeCommitPrivate(
+            service,
+            "acct",
+            CommitTransactionRequest.newBuilder().setTxId("tx-1").build(),
+            Timestamps.fromMillis(10));
+
+    assertEquals(TransactionState.TS_APPLY_FAILED_CONFLICT, committed.getState());
+    assertEquals(
+        "TABLE_NOT_FOUND",
+        committed.getPropertiesMap().get("floecat.transaction.apply-failure-code"));
+    assertEquals(
+        "false", committed.getPropertiesMap().get("floecat.transaction.apply-failure-retryable"));
+    verify(applier, times(1))
+        .applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any());
+  }
+
   @Test
   void commitApplyingConflictFinalizesAppliedWhenIntentsAlreadyApplied() throws Exception {
     var service = newService();
@@ -688,7 +737,7 @@ class TransactionsServiceImplTest {
 
     String accountId = "acct";
     String txId = "tx-1";
-    String tableId = "table-1";
+    String tableId = "123e4567-e89b-12d3-a456-426614174000";
     String pointerKey = Keys.tablePointerById(accountId, tableId);
     Transaction txn =
         Transaction.newBuilder()
@@ -792,6 +841,51 @@ class TransactionsServiceImplTest {
   }
 
   @Test
+  void prepareRejectsNonUuidTableTargetBeforeCreatingIntent() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    injectPointerStore(service, pointerStore);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    Transaction txn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_OPEN)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
+
+    var request =
+        PrepareTransactionRequest.newBuilder()
+            .setTxId(txId)
+            .addChanges(
+                TxChange.newBuilder()
+                    .setTableId(
+                        ResourceId.newBuilder()
+                            .setAccountId(accountId)
+                            .setId("by-id")
+                            .setKind(ResourceKind.RK_TABLE))
+                    .setIntendedBlobUri(Keys.accountRootPrefix(accountId) + "/tables/intended-1"))
+            .build();
+
+    InvocationTargetException reflected =
+        assertThrows(
+            InvocationTargetException.class,
+            () -> invokePreparePrivate(service, accountId, request, Timestamps.fromMillis(10)));
+
+    assertInstanceOf(IllegalArgumentException.class, reflected.getCause());
+    verify(intentRepo, never()).create(any());
+    Mockito.verifyNoInteractions(pointerStore);
+  }
+
+  @Test
   void prepareAlreadyPreparedMatchesWithoutRecheckingLivePointerVersion() throws Exception {
     var service = new TransactionsServiceImpl();
     var txRepo = Mockito.mock(TransactionRepository.class);
@@ -865,7 +959,7 @@ class TransactionsServiceImplTest {
 
     String accountId = "acct";
     String txId = "tx-1";
-    String tableId = "table-1";
+    String tableId = "123e4567-e89b-12d3-a456-426614174000";
     String targetKey = Keys.tablePointerById(accountId, tableId);
     String tableBlobUri = Keys.tableBlobUri(accountId, tableId, "sha");
     Transaction txn =
@@ -1473,28 +1567,110 @@ class TransactionsServiceImplTest {
   /**
    * A batch of table deletes is charged for what a delete emits, not for what an upsert would.
    *
-   * <p>A delete sentinel's planner emits three plan ops and never reads a namespace, so it costs
-   * five with cleanup where an upsert costs nine. Charging every table intent the upsert estimate
-   * roughly halved the batch a client could prepare -- a regression against the behaviour before
-   * any fence existed, not a conservative estimate. Nothing covered the op ceiling at all, which is
-   * how the estimate drifted three times.
+   * <p>A delete sentinel's planner emits three plan ops, the table fence adds the purge and retired
+   * markers, and it never reads a namespace, so it costs seven with cleanup where an upsert costs
+   * nine. Charging every table intent the upsert estimate roughly halved the batch a client could
+   * prepare -- a regression against the behaviour before any fence existed, not a conservative
+   * estimate. Nothing covered the op ceiling at all, which is how the estimate drifted three times.
    */
   @Test
   void prepareChargesATableDeleteForWhatItEmitsRatherThanForAnUpsert() throws Exception {
-    // 19 deletes: 1 account fence + 19*5 + 1 finalize = 97, inside the 100-op ceiling.
-    assertEquals(TransactionState.TS_PREPARED, prepareTableDeletes(19).getState());
+    // 14 deletes: 1 account fence + 14*7 + 1 finalize = 100, exactly the 100-op ceiling.
+    assertEquals(TransactionState.TS_PREPARED, prepareTableDeletes(14).getState());
 
-    // 20 would be 102. The ceiling still holds -- this is not a widened limit.
+    // 15 would be 107. The ceiling still holds -- this is not a widened limit.
     var tooMany =
         assertThrows(
-            java.lang.reflect.InvocationTargetException.class, () -> prepareTableDeletes(20));
+            java.lang.reflect.InvocationTargetException.class, () -> prepareTableDeletes(15));
     assertInstanceOf(IllegalArgumentException.class, tooMany.getCause());
     assertTrue(
         tooMany.getCause().getMessage().contains("more than 100 pointer operations"),
         "refused for the op ceiling, not something else: " + tooMany.getCause().getMessage());
   }
 
+  /**
+   * The reviewer's case at prepare: 32 snapshot changes across 32 tables were charged 98 ops, but
+   * the applier's table fence adds a row check per table, so the batch is really 130.
+   */
+  @Test
+  void prepareChargesTheTableFenceOncePerDistinctTable() throws Exception {
+    List<TxChange> acrossTables = new ArrayList<>();
+    for (int i = 0; i < 32; i++) {
+      acrossTables.add(snapshotChange(tableId(i), 1L));
+    }
+    var tooMany =
+        assertThrows(
+            java.lang.reflect.InvocationTargetException.class, () -> prepareChanges(acrossTables));
+    assertInstanceOf(IllegalArgumentException.class, tooMany.getCause());
+    assertTrue(
+        tooMany.getCause().getMessage().contains("more than 100 pointer operations"),
+        "refused for the op ceiling, not something else: " + tooMany.getCause().getMessage());
+
+    // The same 32 changes against one table pay one fence: 1 + 32*3 + 1 + 1 finalize = 99.
+    List<TxChange> oneTable = new ArrayList<>();
+    for (int i = 0; i < 32; i++) {
+      oneTable.add(snapshotChange(tableId(0), i + 1L));
+    }
+    assertEquals(TransactionState.TS_PREPARED, prepareChanges(oneTable).getState());
+  }
+
+  /** TableWriteFence refuses this batch at apply, so prepare must not stage it. */
+  @Test
+  void prepareRejectsDeletingATableAndWritingItsState() throws Exception {
+    String pointerKey = Keys.tablePointerById("acct", tableId(0));
+    var rejected =
+        assertThrows(
+            java.lang.reflect.InvocationTargetException.class,
+            () ->
+                prepareChanges(
+                    List.of(
+                        TxChange.newBuilder()
+                            .setTableId(
+                                ResourceId.newBuilder()
+                                    .setAccountId("acct")
+                                    .setId(tableId(0))
+                                    .setKind(ResourceKind.RK_TABLE))
+                            .setIntendedBlobUri(
+                                Keys.transactionDeleteSentinelUri("acct", "tx-1", pointerKey))
+                            .build(),
+                        snapshotChange(tableId(0), 1L))));
+    assertInstanceOf(IllegalArgumentException.class, rejected.getCause());
+    assertTrue(
+        rejected.getCause().getMessage().contains("cannot delete a table and write its state"),
+        rejected.getCause().getMessage());
+  }
+
+  private static String tableId(int i) {
+    return String.format("00000000-0000-0000-0000-%012d", i);
+  }
+
+  private static TxChange snapshotChange(String tableId, long snapshotId) {
+    return TxChange.newBuilder()
+        .setTargetPointerKey(Keys.snapshotPointerById("acct", tableId, snapshotId))
+        .setIntendedBlobUri(
+            Keys.accountRootPrefix("acct") + "snapshots/" + tableId + "/" + snapshotId + ".pb")
+        .build();
+  }
+
   private static Transaction prepareTableDeletes(int count) throws Exception {
+    List<TxChange> changes = new ArrayList<>();
+    for (int i = 0; i < count; i++) {
+      String tableId = tableId(i);
+      String pointerKey = Keys.tablePointerById("acct", tableId);
+      changes.add(
+          TxChange.newBuilder()
+              .setTableId(
+                  ResourceId.newBuilder()
+                      .setAccountId("acct")
+                      .setId(tableId)
+                      .setKind(ResourceKind.RK_TABLE))
+              .setIntendedBlobUri(Keys.transactionDeleteSentinelUri("acct", "tx-1", pointerKey))
+              .build());
+    }
+    return prepareChanges(changes);
+  }
+
+  private static Transaction prepareChanges(List<TxChange> changes) throws Exception {
     var service = new TransactionsServiceImpl();
     var txRepo = Mockito.mock(TransactionRepository.class);
     var intentRepo = Mockito.mock(TransactionIntentRepository.class);
@@ -1532,19 +1708,7 @@ class TransactionsServiceImplTest {
         .thenReturn(Optional.of(Mockito.mock(UserTableNode.class)));
     when(intentRepo.getByTarget(anyString(), anyString())).thenReturn(Optional.empty());
 
-    var request = PrepareTransactionRequest.newBuilder().setTxId(txId);
-    for (int i = 0; i < count; i++) {
-      String tableId = "table-" + i;
-      String pointerKey = Keys.tablePointerById(accountId, tableId);
-      request.addChanges(
-          TxChange.newBuilder()
-              .setTableId(
-                  ResourceId.newBuilder()
-                      .setAccountId(accountId)
-                      .setId(tableId)
-                      .setKind(ResourceKind.RK_TABLE))
-              .setIntendedBlobUri(Keys.transactionDeleteSentinelUri(accountId, txId, pointerKey)));
-    }
+    var request = PrepareTransactionRequest.newBuilder().setTxId(txId).addAllChanges(changes);
     return invokePreparePrivate(service, accountId, request.build(), Timestamps.fromMillis(10));
   }
 }

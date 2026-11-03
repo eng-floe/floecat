@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
@@ -33,6 +34,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -247,6 +249,28 @@ class TableRootCommitterTest {
                 TABLE,
                 "test_setup",
                 current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(1L).build()));
+  }
+
+  @Test
+  void tableDeletionDuringRootPublicationIsNotRetriedOrWrapped() {
+    var deleted = mock(TableRootRepository.class);
+    when(deleted.metaForSafeConsistent(TABLE))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(3L).setBlobUri("s3://t/root.pb").build());
+    when(deleted.getByBlobUriLive("s3://t/root.pb"))
+        .thenReturn(Optional.of(TableRoot.newBuilder().setTableId(TABLE).build()));
+    when(deleted.update(any(), anyLong()))
+        .thenThrow(new TableWriteFence.TableDeletedException(Keys.tablePointerById("acct", "tbl")));
+    var deletedCommitter = new TableRootCommitter(deleted, new TableBlobReachabilityGuard());
+
+    assertThrows(
+        TableWriteFence.TableDeletedException.class,
+        () ->
+            deletedCommitter.commit(
+                TABLE,
+                "test_setup",
+                current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(1L).build()));
+    verify(deleted).update(any(), anyLong());
   }
 
   @Test

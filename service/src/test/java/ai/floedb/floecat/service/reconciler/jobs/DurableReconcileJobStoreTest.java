@@ -71,6 +71,8 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndex
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
+import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
+import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -7419,6 +7421,102 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void noLongerPublishableSnapshotFinalizeIntentIsFailedAndClearedDurably() {
+    seedTableRow("table-1");
+    var finalize = beginEmptyPlanFinalizeCommit();
+    String snapshotJobId = finalize.parentJobId();
+    String finalizerJobId = finalize.finalizerJobId();
+    var finalizerLease = finalize.lease();
+    assertEquals(
+        ReconcileJobStore.SnapshotFinalizePublicationDisposition.RETRYABLE,
+        store.snapshotFinalizePublicationDisposition(finalizerJobId, finalizerLease.leaseEpoch));
+
+    store.cancel(ACCOUNT_ID, snapshotJobId, "connector deleted: " + CONNECTOR_ID);
+
+    assertEquals(
+        ReconcileJobStore.SnapshotFinalizePublicationDisposition.ABANDON,
+        store.snapshotFinalizePublicationDisposition(finalizerJobId, finalizerLease.leaseEpoch));
+
+    assertTrue(
+        store.abandonSnapshotFinalizeCommit(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            120L,
+            "Accepted snapshot finalizer cannot publish because its parent is cancelled"));
+
+    assertEquals("JS_FAILED", store.get(ACCOUNT_ID, finalizerJobId).orElseThrow().state);
+    assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
+    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
+  }
+
+  /**
+   * A DROP after the finalizer's result was accepted makes every table-scoped publication write
+   * fail permanently. With an active parent and connector, only the table check stops the
+   * publication scheduler from retrying it forever.
+   */
+  @Test
+  void acceptedSnapshotFinalizeIsAbandonedOnceItsTableIsDropped() {
+    seedTableRow("table-1");
+    var finalize = beginEmptyPlanFinalizeCommit();
+    String finalizerJobId = finalize.finalizerJobId();
+    String leaseEpoch = finalize.lease().leaseEpoch;
+    assertEquals(
+        ReconcileJobStore.SnapshotFinalizePublicationDisposition.RETRYABLE,
+        store.snapshotFinalizePublicationDisposition(finalizerJobId, leaseEpoch));
+
+    assertTrue(store.pointerStore.delete(Keys.tablePointerById(ACCOUNT_ID, "table-1")));
+
+    assertEquals(
+        ReconcileJobStore.SnapshotFinalizePublicationDisposition.ABANDON,
+        store.snapshotFinalizePublicationDisposition(finalizerJobId, leaseEpoch));
+    assertTrue(
+        store.abandonSnapshotFinalizeCommit(
+            finalizerJobId, leaseEpoch, 120L, "Accepted snapshot finalizer table dropped"));
+    assertEquals("JS_FAILED", store.get(ACCOUNT_ID, finalizerJobId).orElseThrow().state);
+    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
+  }
+
+  /**
+   * DROP, purge, then a create under the same table id. The disposition only checks that the row
+   * exists, so a recreated row would let the old finalizer publish into the new table; the table
+   * fence must refuse to recreate the id, keeping the finalizer abandonable.
+   */
+  @Test
+  void acceptedSnapshotFinalizeStaysAbandonedWhenItsTableIdIsRecreated() {
+    PointerStore durable = store.pointerStore;
+    store.pointerStore = new IndexedPointerStore(durable, new PlanningPointerIndex(durable));
+    seedTableRow("table-1");
+    var finalize = beginEmptyPlanFinalizeCommit();
+    String finalizerJobId = finalize.finalizerJobId();
+    String leaseEpoch = finalize.lease().leaseEpoch;
+    String row = Keys.tablePointerById(ACCOUNT_ID, "table-1");
+
+    assertTrue(store.pointerStore.compareAndDelete(row, 1L));
+    assertTrue(
+        store.pointerStore.delete(Keys.tablePurgePointer(ACCOUNT_ID, "table-1")),
+        "the purge completes");
+
+    assertFalse(
+        store.pointerStore.compareAndSet(
+            row, 0L, PointerReferences.blobPointer(row, "/accounts/acct/table-2.pb", 1L)),
+        "a dropped table id must never be recreated");
+    assertTrue(store.pointerStore.getConsistent(row).isEmpty());
+    assertEquals(
+        ReconcileJobStore.SnapshotFinalizePublicationDisposition.ABANDON,
+        store.snapshotFinalizePublicationDisposition(finalizerJobId, leaseEpoch));
+  }
+
+  private void seedTableRow(String tableId) {
+    String key = Keys.tablePointerById(ACCOUNT_ID, tableId);
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            key, 0L, PointerReferences.blobPointer(key, "/accounts/acct/table.pb", 1L)));
+  }
+
+  private record BegunFinalizeCommit(
+      String parentJobId, String finalizerJobId, ReconcileJobStore.LeasedJob lease) {}
+
+  /** A running finalizer under a waiting snapshot parent, with its commit intent accepted. */
+  private BegunFinalizeCommit beginEmptyPlanFinalizeCommit() {
     ReconcileSnapshotTask emptyPlan =
         ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
     String snapshotJobId =
@@ -7473,26 +7571,7 @@ class DurableReconcileJobStoreTest {
             2L);
     assertTrue(
         store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch, intent));
-    assertEquals(
-        ReconcileJobStore.SnapshotFinalizePublicationDisposition.RETRYABLE,
-        store.snapshotFinalizePublicationDisposition(finalizerJobId, finalizerLease.leaseEpoch));
-
-    store.cancel(ACCOUNT_ID, snapshotJobId, "connector deleted: " + CONNECTOR_ID);
-
-    assertEquals(
-        ReconcileJobStore.SnapshotFinalizePublicationDisposition.ABANDON,
-        store.snapshotFinalizePublicationDisposition(finalizerJobId, finalizerLease.leaseEpoch));
-
-    assertTrue(
-        store.abandonSnapshotFinalizeCommit(
-            finalizerJobId,
-            finalizerLease.leaseEpoch,
-            120L,
-            "Accepted snapshot finalizer cannot publish because its parent is cancelled"));
-
-    assertEquals("JS_FAILED", store.get(ACCOUNT_ID, finalizerJobId).orElseThrow().state);
-    assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
-    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
+    return new BegunFinalizeCommit(snapshotJobId, finalizerJobId, finalizerLease);
   }
 
   @Test
@@ -7715,6 +7794,52 @@ class DurableReconcileJobStoreTest {
     var completedJob = store.get(ACCOUNT_ID, jobId).orElseThrow();
     assertEquals(4L, completedJob.statsProcessed);
     assertEquals(2L, completedJob.indexesProcessed);
+  }
+
+  /**
+   * The finalized-snapshot event is recorded after the job has already succeeded. When the table
+   * was dropped meanwhile, the store's table fence refuses that table-scoped write; success must
+   * still be reported rather than thrown for a job that is already JS_SUCCEEDED.
+   */
+  @Test
+  void atomicSnapshotFinalizeSuccessSkipsFinalizedSnapshotForADroppedTable() {
+    PointerStore durable = store.pointerStore;
+    store.pointerStore = new IndexedPointerStore(durable, new PlanningPointerIndex(durable));
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+    String jobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var lease = leaseJob(jobId);
+    store.markRunning(jobId, lease.leaseEpoch, 100L, "executor-finalizer");
+
+    // No table row for table-1: the table was dropped before the finalizer succeeded.
+    assertTrue(
+        store.completeSnapshotFinalizeSuccess(
+            jobId,
+            lease.leaseEpoch,
+            "result-1",
+            "s3://bucket/capture-manifest.pb",
+            123L,
+            "manifest-sha256",
+            1,
+            3,
+            4L,
+            2L,
+            List.of("materialized-index-coverage"),
+            200L,
+            "Finalized snapshot capture 55"));
+
+    assertEquals("JS_SUCCEEDED", store.get(ACCOUNT_ID, jobId).orElseThrow().state);
+    assertFalse(store.getFinalizedSnapshot(ACCOUNT_ID, "table-1", 55L).isPresent());
   }
 
   @Test

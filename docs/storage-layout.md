@@ -112,6 +112,8 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/{account_id}/namespaces/{namespace_id}/markers/relations
 /accounts/{account_id}/gc/cas/generation-cursor
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
+/accounts/{account_id}/tables/purging/{table_id}
+/accounts/{account_id}/tables/retired/{table_id}
 /accounts/{account_id}/tables/{table_id}/owner-reuse-leases/{publication_id}
 /accounts/{account_id}/tables/{table_id}/owner-publication-progress/{publication_id}
 ```
@@ -123,6 +125,17 @@ marker, removing each with the catalog rather than advancing markers that would 
 A marker that has never been written is required **absent** instead: it reads as version zero, so
 advancing it would create a row for a resource the same batch is deleting, and requiring it absent is
 what makes the writer that adds the first child of that kind lose to this delete. A namespace delete asserts nothing about it: removal is the direction that orphans nothing.
+
+A table's state outside its row is purged after the row delete commits, so the delete leaves a
+`tables/purging/{table_id}` marker in the same batch. `TableWriteFence` adds it to every batch that
+deletes a table row. The purge removes the marker last; pointer GC retries any purge that failed or
+was interrupted before then.
+
+The same batch also writes a permanent `tables/retired/{table_id}` marker, and `TableWriteFence`
+requires it absent in every batch that creates a table row, so a table id is never reused. A
+reconcile job, transaction, or purge that captured the id before the drop can only find the row
+missing; it can never publish into, or purge, a later table under the same id. Only account deletion
+removes retired markers.
 
 Two operations assert nothing here, and for the same reason: deleting a relation, and deleting a
 child namespace. Both are the removal direction — a namespace delete racing either can only find the
@@ -211,6 +224,11 @@ Snapshot, stats-generation, constraint, compatibility, and index pointers:
 /accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/stats/constraints
 /accounts/{account_id}/tables/{table_id}/constraints/by-snapshot/{snapshot_id:019d}
 ```
+
+Deleting a table removes the complete `/accounts/{account_id}/tables/{table_id}/` pointer
+subtree. The table's by-id and by-name resource pointers live outside that subtree and are removed
+by the resource repository. Content-addressed blobs under the corresponding object-store prefix
+remain until blob GC can prove that they are no longer referenced.
 
 Stats are generation-scoped. There is no standalone `file-stats` blob or pointer family: logical
 table, column, expression, and file target identities all enter through `{target_id}` in the active

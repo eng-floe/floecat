@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -95,6 +96,9 @@ public class RootResyncQueue {
           return;
         }
         // Lost the touch to another enqueue or a delete: retry from the top.
+      } catch (TableWriteFence.TableDeletedException deleted) {
+        // The table was dropped: its purge owns this marker's key, and there is no root to resync.
+        return;
       } catch (RuntimeException e) {
         // A transient store fault mid-attempt must not lose the marker any more than a lost CAS:
         // retry within the bound before surfacing the failure.

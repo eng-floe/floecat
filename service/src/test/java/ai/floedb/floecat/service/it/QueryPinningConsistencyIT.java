@@ -64,10 +64,11 @@ import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.grpc.Channel;
 import io.grpc.stub.StreamObserver;
@@ -132,7 +133,7 @@ class QueryPinningConsistencyIT {
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
-  @Inject TableRootRepository tableRoots;
+  @Inject PointerStore pointerStore;
 
   private final String prefix = getClass().getSimpleName() + "_";
 
@@ -543,7 +544,7 @@ class QueryPinningConsistencyIT {
   @Test
   void currentReadRejectsAMissingTableRoot() {
     Fixture f = createTableWithSnapshot("missing-root");
-    tableRoots.purgeRoot(f.tableId());
+    pointerStore.delete(Keys.tableRootByTable(f.tableId().getAccountId(), f.tableId().getId()));
 
     String queryId = beginQuery(f);
     io.grpc.StatusRuntimeException failure =

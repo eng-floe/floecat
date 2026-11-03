@@ -392,7 +392,8 @@ public class SnapshotRepository {
         Keys.snapshotIndexArtifactActiveGenerationPointer(account, table, snapshotId),
         Keys.snapshotIndexArtifactCaptureManifestPointer(account, table, snapshotId),
         Keys.snapshotConstraintsPointer(account, table, snapshotId),
-        Keys.snapshotConstraintsStatsPointer(account, table, snapshotId));
+        Keys.snapshotConstraintsStatsPointer(account, table, snapshotId),
+        Keys.reconcileFinalizedSnapshotIdentityPointer(account, table, snapshotId));
   }
 
   public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {

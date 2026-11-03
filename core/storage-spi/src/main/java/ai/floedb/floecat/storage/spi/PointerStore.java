@@ -24,6 +24,13 @@ import java.util.Map;
 import java.util.Optional;
 
 public interface PointerStore {
+  /**
+   * Portable ceiling on the operations in one {@link #compareAndSetBatch} call, set by DynamoDB's
+   * transaction item limit. Every caller sizes its batches against this so the same plan commits on
+   * every backend.
+   */
+  int MAX_ATOMIC_BATCH_OPERATIONS = 100;
+
   sealed interface CasOp
       permits CasUpsert, UnconditionalUpsert, CasDelete, CasCheck, CasCheckAbsent {
     /**
@@ -138,6 +145,10 @@ public interface PointerStore {
 
   boolean compareAndDelete(String key, long expectedVersion);
 
+  /**
+   * Applies {@code ops} atomically: all succeed or none do. A batch must not exceed {@link
+   * #MAX_ATOMIC_BATCH_OPERATIONS} operations.
+   */
   boolean compareAndSetBatch(List<CasOp> ops);
 
   List<Pointer> listPointersByPrefix(

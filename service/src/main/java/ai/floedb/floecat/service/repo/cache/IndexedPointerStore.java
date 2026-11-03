@@ -17,6 +17,8 @@
 package ai.floedb.floecat.service.repo.cache;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,6 +40,8 @@ import java.util.Optional;
  * replicas.
  */
 public class IndexedPointerStore implements PointerStore {
+  static final int MAX_TABLE_DELETE_ATTEMPTS = 3;
+
   private final PointerStore durable;
   private final PlanningPointerIndex index;
 
@@ -101,17 +105,67 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-    return index.mutateKeys(
-        List.of(key),
-        () -> durable.compareAndSet(key, expectedVersion, next),
-        won -> {
-          if (won) publish(key, next, expectedVersion + 1L);
-          else index.refresh(key, durable.getConsistent(key));
-        });
+    List<CasOp> operation = List.of(new CasUpsert(key, expectedVersion, next));
+    if (!TableWriteFence.requiresFence(operation)) {
+      return index.mutateKeys(
+          List.of(key),
+          () -> durable.compareAndSet(key, expectedVersion, next),
+          won -> {
+            if (won) publish(key, next, expectedVersion + 1L);
+            else index.refresh(key, durable.getConsistent(key));
+          });
+    }
+    var fenced = TableWriteFence.fence(durable, operation);
+    if (!fenced.writable()) {
+      TableWriteFence.requireTableRowsPresent(durable, operation);
+      return false;
+    }
+    boolean won =
+        index.mutateKeys(
+            List.of(key),
+            () -> durable.compareAndSetBatch(fenced.operations()),
+            committed -> {
+              if (committed) publish(key, next, expectedVersion + 1L);
+              else index.refresh(key, durable.getConsistent(key));
+            });
+    if (!won) TableWriteFence.requireTableRowsPresent(durable, operation);
+    return won;
   }
 
   @Override
   public boolean delete(String key) {
+    if (TableWriteFence.isTableRow(key)) {
+      // A table row leaves only together with its lifecycle markers, which need a versioned delete.
+      for (int attempt = 0; attempt < MAX_TABLE_DELETE_ATTEMPTS; attempt++) {
+        Optional<Pointer> current =
+            index.mutateKeys(
+                List.of(key),
+                () -> durable.getConsistent(key),
+                observed -> {
+                  if (observed.isEmpty()) index.refresh(key, observed);
+                });
+        if (current.isEmpty()) {
+          return false;
+        }
+        if (compareAndSetBatch(List.of(new CasDelete(key, current.get().getVersion())))) {
+          return true;
+        }
+      }
+      // Contention is transient: only report absent when the row did leave concurrently.
+      // Read and refresh under the key's mutation guard, as the attempts do, so a row recreated
+      // after this read cannot be removed from the index by a stale empty result.
+      Optional<Pointer> last =
+          index.mutateKeys(
+              List.of(key),
+              () -> durable.getConsistent(key),
+              observed -> {
+                if (observed.isEmpty()) index.refresh(key, observed);
+              });
+      if (last.isEmpty()) {
+        return false;
+      }
+      throw new StorageAbortRetryableException("table row delete lost every CAS under " + key);
+    }
     return index.mutateKeys(
         List.of(key),
         () -> durable.delete(key),
@@ -123,6 +177,9 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public boolean compareAndDelete(String key, long expectedVersion) {
+    if (expectedVersion > 0L && TableWriteFence.isTableRow(key)) {
+      return compareAndSetBatch(List.of(new CasDelete(key, expectedVersion)));
+    }
     return index.mutateKeys(
         List.of(key),
         () -> durable.compareAndDelete(key, expectedVersion),
@@ -135,55 +192,63 @@ public class IndexedPointerStore implements PointerStore {
   @Override
   public boolean compareAndSetBatch(List<CasOp> ops) {
     if (ops == null || ops.isEmpty()) return durable.compareAndSetBatch(ops);
-    List<String> keys = ops.stream().map(CasOp::key).distinct().toList();
-    return index.mutateKeys(
-        keys,
-        () -> durable.compareAndSetBatch(ops),
-        won -> {
-          if (!won) {
-            // Same ordering rule as the winning path: refresh is publish-if-present and
-            // remove-if-absent, so resyncing in key order could remove a name before
-            // republishing the other one.
-            Map<String, Optional<Pointer>> fresh = new LinkedHashMap<>();
-            for (String key : keys) fresh.put(key, durable.getConsistent(key));
-            fresh.forEach(
-                (key, pointer) -> {
-                  if (pointer.isPresent()) index.refresh(key, pointer);
-                });
-            fresh.forEach(
-                (key, pointer) -> {
-                  if (pointer.isEmpty()) index.refresh(key, pointer);
-                });
-            return;
-          }
-          // Every insertion before any removal, whatever order the batch arrived in. Listing
-          // paths hold the partition write lock and never see a partial batch, but a caller
-          // doing two point lookups can land between them, and absence in the index is
-          // authoritative. A rename may show both names to such a caller; it must never show
-          // neither. Both switches stay exhaustive so a new CasOp cannot be silently dropped.
-          for (CasOp op : ops) {
-            switch (op) {
-              case CasUpsert upsert ->
-                  publish(upsert.key(), upsert.next(), upsert.expectedVersion() + 1L);
-              case UnconditionalUpsert upsert ->
-                  publish(upsert.key(), upsert.next(), upsert.next().getVersion());
-              case CasDelete ignored -> {}
-              case CasCheckAbsent ignored -> {}
-              case CasCheck ignored -> {}
-            }
-          }
-          // Splitting the passes cannot reorder two ops against each other: only planner-key
-          // batches reach the index, and the assemblers that build those reject duplicate keys.
-          for (CasOp op : ops) {
-            switch (op) {
-              case CasDelete delete -> index.remove(delete.key());
-              case CasCheckAbsent absent -> index.remove(absent.key());
-              case CasUpsert ignored -> {}
-              case UnconditionalUpsert ignored -> {}
-              case CasCheck ignored -> {}
-            }
-          }
-        });
+    var fenced = TableWriteFence.fence(durable, ops);
+    if (!fenced.writable()) {
+      TableWriteFence.requireTableRowsPresent(durable, ops);
+      return false;
+    }
+    List<String> keys = fenced.operations().stream().map(CasOp::key).distinct().toList();
+    boolean won =
+        index.mutateKeys(
+            keys,
+            () -> durable.compareAndSetBatch(fenced.operations()),
+            committed -> {
+              if (!committed) {
+                // Same ordering rule as the winning path: refresh is publish-if-present and
+                // remove-if-absent, so resyncing in key order could remove a name before
+                // republishing the other one.
+                Map<String, Optional<Pointer>> fresh = new LinkedHashMap<>();
+                for (String key : keys) fresh.put(key, durable.getConsistent(key));
+                fresh.forEach(
+                    (key, pointer) -> {
+                      if (pointer.isPresent()) index.refresh(key, pointer);
+                    });
+                fresh.forEach(
+                    (key, pointer) -> {
+                      if (pointer.isEmpty()) index.refresh(key, pointer);
+                    });
+                return;
+              }
+              // Every insertion before any removal, whatever order the batch arrived in. Listing
+              // paths hold the partition write lock and never see a partial batch, but a caller
+              // doing two point lookups can land between them, and absence in the index is
+              // authoritative. A rename may show both names to such a caller; it must never show
+              // neither. Both switches stay exhaustive so a new CasOp cannot be silently dropped.
+              for (CasOp op : ops) {
+                switch (op) {
+                  case CasUpsert upsert ->
+                      publish(upsert.key(), upsert.next(), upsert.expectedVersion() + 1L);
+                  case UnconditionalUpsert upsert ->
+                      publish(upsert.key(), upsert.next(), upsert.next().getVersion());
+                  case CasDelete ignored -> {}
+                  case CasCheckAbsent ignored -> {}
+                  case CasCheck ignored -> {}
+                }
+              }
+              // Splitting the passes cannot reorder two ops against each other: only planner-key
+              // batches reach the index, and the assemblers that build those reject duplicate keys.
+              for (CasOp op : ops) {
+                switch (op) {
+                  case CasDelete delete -> index.remove(delete.key());
+                  case CasCheckAbsent absent -> index.remove(absent.key());
+                  case CasUpsert ignored -> {}
+                  case UnconditionalUpsert ignored -> {}
+                  case CasCheck ignored -> {}
+                }
+              }
+            });
+    if (!won) TableWriteFence.requireTableRowsPresent(durable, ops);
+    return won;
   }
 
   @Override

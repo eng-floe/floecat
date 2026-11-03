@@ -21,6 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
+import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -86,5 +88,25 @@ class RootResyncQueueTest {
     queue.enqueue(tableId);
 
     assertTrue(pointers.get(Keys.rootResyncPendingPointer("acct", "tbl-deleting")).isEmpty());
+  }
+
+  @Test
+  void enqueueForADroppedTableReturnsWithoutRetrying() {
+    var durable = new InMemoryPointerStore();
+    PointerStore pointers = new IndexedPointerStore(durable, new PlanningPointerIndex(durable));
+    var backoffs = new ArrayList<Long>();
+    var queue = new RootResyncQueue(pointers, backoffs::add);
+    // No table row: the store's table fence refuses the marker as belonging to a dropped table.
+    String tableId = "123e4567-e89b-12d3-a456-426614174000";
+
+    queue.enqueue(
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId(tableId)
+            .setKind(ResourceKind.RK_TABLE)
+            .build());
+
+    assertTrue(backoffs.isEmpty(), "a dropped table is permanent, not transient");
+    assertTrue(pointers.get(Keys.rootResyncPendingPointer("acct", tableId)).isEmpty());
   }
 }

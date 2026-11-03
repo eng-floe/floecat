@@ -19,10 +19,12 @@ package ai.floedb.floecat.service.transaction.impl;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.catalog.impl.RelationPurge;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -33,6 +35,7 @@ import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
@@ -53,7 +56,7 @@ import org.jboss.logging.Logger;
 public class TransactionIntentApplierSupport {
 
   private static final Logger LOG = Logger.getLogger(TransactionIntentApplierSupport.class);
-  private static final int MAX_POINTER_TXN_OPS = 100;
+  private static final int MAX_POINTER_TXN_OPS = PointerStore.MAX_ATOMIC_BATCH_OPERATIONS;
 
   /** Owns ordered, key-unique assembly of one pointer-store transaction. */
   private static final class PointerBatch {
@@ -139,6 +142,7 @@ public class TransactionIntentApplierSupport {
   @Inject EngineContextProvider engineContext;
   @Inject CatalogRepository catalogRepo;
   @Inject MarkerStore markerStore;
+  @Inject RelationPurge relationPurge;
 
   public boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
@@ -309,17 +313,14 @@ public class TransactionIntentApplierSupport {
       if (planOutcome.status != ApplyStatus.APPLIED) {
         return planOutcome;
       }
-      if (batch.size() > MAX_POINTER_TXN_OPS) {
-        return ApplyOutcome.conflict(
-            "POINTER_TXN_TOO_LARGE",
-            "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
-            null,
-            null,
-            null);
+      ApplyOutcome sizeOutcome = checkFencedBatchSize(batch, 0);
+      if (sizeOutcome.status != ApplyStatus.APPLIED) {
+        return sizeOutcome;
       }
     }
 
-    if (!batch.isEmpty() && !pointerStore.compareAndSetBatch(batch.operations())) {
+    ApplyOutcome submitted = batch.isEmpty() ? ApplyOutcome.applied() : submitBatch(batch);
+    if (submitted.status == ApplyStatus.RETRYABLE) {
       ApplyOutcome fenceOutcomeAfterFailure = findAccountDeletionConflict(intents);
       if (fenceOutcomeAfterFailure != null) {
         return fenceOutcomeAfterFailure;
@@ -328,9 +329,13 @@ public class TransactionIntentApplierSupport {
       if (conflictOutcome != null) {
         return conflictOutcome;
       }
-      return ApplyOutcome.retryable("POINTER_TXN_CAS_FAILED", "pointer transaction conflict");
+      return submitted;
+    }
+    if (submitted.status != ApplyStatus.APPLIED) {
+      return submitted;
     }
 
+    purgeAppliedTableDeletes(intents);
     return ApplyOutcome.applied();
   }
 
@@ -374,13 +379,9 @@ public class TransactionIntentApplierSupport {
       if (cleanupOutcome.status != ApplyStatus.APPLIED) {
         return cleanupOutcome;
       }
-      if (batch.size() > MAX_POINTER_TXN_OPS - 1 - completionOps.size()) {
-        return ApplyOutcome.conflict(
-            "POINTER_TXN_TOO_LARGE",
-            "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
-            null,
-            null,
-            null);
+      ApplyOutcome sizeOutcome = checkFencedBatchSize(batch, 1 + completionOps.size());
+      if (sizeOutcome.status != ApplyStatus.APPLIED) {
+        return sizeOutcome;
       }
     }
 
@@ -395,17 +396,18 @@ public class TransactionIntentApplierSupport {
         return completionOutcome;
       }
     }
-    if (batch.size() > MAX_POINTER_TXN_OPS) {
-      return ApplyOutcome.conflict(
-          "POINTER_TXN_TOO_LARGE",
-          "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
-          null,
-          null,
-          null);
+    ApplyOutcome sizeOutcome = checkFencedBatchSize(batch, 0);
+    if (sizeOutcome.status != ApplyStatus.APPLIED) {
+      return sizeOutcome;
     }
 
-    if (pointerStore.compareAndSetBatch(batch.operations())) {
-      return ApplyOutcome.applied();
+    ApplyOutcome submitted = submitBatch(batch);
+    if (submitted.status == ApplyStatus.APPLIED) {
+      purgeAppliedTableDeletes(intents);
+      return submitted;
+    }
+    if (submitted.status != ApplyStatus.RETRYABLE) {
+      return submitted;
     }
     ApplyOutcome fenceOutcomeAfterFailure = findAccountDeletionConflict(intents);
     if (fenceOutcomeAfterFailure != null) {
@@ -413,6 +415,87 @@ public class TransactionIntentApplierSupport {
     }
     return classifyAtomicApplyFailure(
         appliedTransaction, expectedTransactionPointerVersion, intents, intentRepo);
+  }
+
+  /**
+   * Refuses a batch whose size, once the store's {@link TableWriteFence} has expanded it, would
+   * exceed the pointer-transaction limit with {@code reserved} operations still to be added.
+   *
+   * <p>The fence runs inside the pointer store, below this check, adding a row check per table
+   * whose state the batch writes, a retired-marker absence check for a table create, and purge and
+   * retired markers for a table delete. Counting only the planned operations let a batch pass here
+   * and then fail in the backend after its intents were staged.
+   */
+  private static ApplyOutcome checkFencedBatchSize(PointerBatch batch, int reserved) {
+    int fenceOps;
+    try {
+      fenceOps = TableWriteFence.addedOperationCount(batch.operations());
+    } catch (IllegalArgumentException e) {
+      return ApplyOutcome.conflict(
+          "TABLE_DELETE_WITH_TABLE_WRITE", e.getMessage(), null, null, null);
+    }
+    if (batch.size() + fenceOps > MAX_POINTER_TXN_OPS - reserved) {
+      return ApplyOutcome.conflict(
+          "POINTER_TXN_TOO_LARGE",
+          "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
+          null,
+          null,
+          null);
+    }
+    return ApplyOutcome.applied();
+  }
+
+  /**
+   * Submits {@code batch}: APPLIED when it commits, a retryable POINTER_TXN_CAS_FAILED when it
+   * loses a CAS, and a TABLE_NOT_FOUND conflict when a table it writes under was dropped. Every
+   * apply path submits through here, so none can let the store's table fence escape as an
+   * exception.
+   *
+   * <p>A dropped table is terminal, not a lost CAS: no retry can succeed, and reporting it lets
+   * commit leave TS_APPLYING and release the transaction's intents instead of rethrowing on every
+   * subsequent commit attempt.
+   */
+  private ApplyOutcome submitBatch(PointerBatch batch) {
+    try {
+      return pointerStore.compareAndSetBatch(batch.operations())
+          ? ApplyOutcome.applied()
+          : ApplyOutcome.retryable("POINTER_TXN_CAS_FAILED", "pointer transaction conflict");
+    } catch (TableWriteFence.TableDeletedException deleted) {
+      return ApplyOutcome.conflict("TABLE_NOT_FOUND", deleted.getMessage(), null, null, null);
+    }
+  }
+
+  private void purgeAppliedTableDeletes(List<TransactionIntent> intents) {
+    for (TransactionIntent intent : intents) {
+      if (!isDeleteSentinel(intent)) {
+        continue;
+      }
+      String prefix = Keys.tablePointerByIdPrefix(intent.getAccountId());
+      String tableId = Keys.idAfterPrefix(prefix, intent.getTargetPointerKey());
+      if (tableId == null
+          || !Keys.tablePointerById(intent.getAccountId(), tableId)
+              .equals(intent.getTargetPointerKey())) {
+        continue;
+      }
+      try {
+        relationPurge.purgeTableState(
+            ResourceId.newBuilder()
+                .setAccountId(intent.getAccountId())
+                .setKind(ResourceKind.RK_TABLE)
+                .setId(tableId)
+                .build());
+      } catch (RuntimeException purgeFailure) {
+        // The pointer batch has already committed, and the atomic path has also made the
+        // transaction terminal. Report the committed outcome: the row delete left a purge marker,
+        // so pointer GC finishes this cleanup. The retired marker keeps the table id unusable.
+        LOG.errorf(
+            purgeFailure,
+            "transaction_table_purge_failed account_id=%s table_id=%s tx_id=%s",
+            intent.getAccountId(),
+            tableId,
+            intent.getTxId());
+      }
+    }
   }
 
   private ApplyOutcome appendAccountDeletionFenceChecks(
@@ -532,6 +615,21 @@ public class TransactionIntentApplierSupport {
     ApplyOutcome targetValidation = validateTableIntentTarget(pointerKey, nextTable);
     if (targetValidation.status != ApplyStatus.APPLIED) {
       return targetValidation;
+    }
+    // The fence refuses to create a dropped table's id; without this the refusal reads as an
+    // ordinary CAS loss and the transaction retries a write that can never land.
+    if (current == null
+        && pointerStore
+            .get(
+                Keys.tableRetiredPointer(
+                    nextTable.getResourceId().getAccountId(), nextTable.getResourceId().getId()))
+            .isPresent()) {
+      return ApplyOutcome.conflict(
+          "TABLE_ID_RETIRED",
+          "table id belongs to a dropped table",
+          null,
+          null,
+          nextTable.getResourceId().getId());
     }
     // The row being replaced, read before the fence because the fence depends on it: a relation
     // that stays in the container it is already counted in changes no namespace's relation set.

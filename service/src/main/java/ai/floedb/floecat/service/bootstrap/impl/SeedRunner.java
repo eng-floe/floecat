@@ -541,7 +541,9 @@ public class SeedRunner {
     if (existing != null) {
       return existing.getResourceId();
     }
-    String tableId = uuidFor(account + "/tbl:" + name);
+    // Not derived from the name: a dropped table's id is retired, so re-seeding a fixture a user
+    // dropped needs a fresh one. The by-name lookup above keeps seeding idempotent.
+    String tableId = UUID.randomUUID().toString();
     var tableRid =
         ResourceId.newBuilder()
             .setAccountId(account)

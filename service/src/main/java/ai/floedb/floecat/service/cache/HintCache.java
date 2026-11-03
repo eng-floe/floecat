@@ -225,6 +225,12 @@ public final class HintCache {
   public void deleteRelation(ResourceId relationId) {
     Objects.requireNonNull(relationId, "relationId");
     repository.deleteAll(relationId);
+    evictRelation(relationId);
+  }
+
+  /** Drops this replica's decoded hints for a relation whose persisted hints are gone. */
+  public void evictRelation(ResourceId relationId) {
+    Objects.requireNonNull(relationId, "relationId");
     entries.evictPartition(
         key ->
             key.accountId().equals(relationId.getAccountId())

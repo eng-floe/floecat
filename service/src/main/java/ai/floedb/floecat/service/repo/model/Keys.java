@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.model;
 
+import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.storage.spi.PointerStoreKeys;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -27,14 +28,13 @@ import java.util.Optional;
 
 public final class Keys {
   public static final int ACCOUNT_DELETION_FENCE_SHARDS = 64;
-  private static final int DYNAMODB_TRANSACTION_ITEM_LIMIT = 100;
 
   static {
     if (ACCOUNT_DELETION_FENCE_SHARDS < 2
-        || ACCOUNT_DELETION_FENCE_SHARDS + 1 > DYNAMODB_TRANSACTION_ITEM_LIMIT) {
+        || ACCOUNT_DELETION_FENCE_SHARDS + 1 > PointerStore.MAX_ATOMIC_BATCH_OPERATIONS) {
       throw new ExceptionInInitializerError(
           "account deletion fence must have at least two shards and fit with its marker in one "
-              + "DynamoDB transaction");
+              + "atomic pointer batch");
     }
   }
 
@@ -568,9 +568,14 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/tables/";
   }
 
+  /** Pointer-store prefix containing every table-scoped pointer family for one table. */
+  public static String tablePrefix(String accountId, String tableId) {
+    return tableRootPrefix(accountId) + encode(req("table_id", tableId)) + "/";
+  }
+
   /** Immediate object-store prefix containing every blob family owned by one table. */
   public static String tableBlobPrefix(String accountId, String tableId) {
-    return tableRootPrefix(accountId) + encode(req("table_id", tableId)) + "/";
+    return tablePrefix(accountId, tableId);
   }
 
   public static String tablePointerByName(
@@ -1561,6 +1566,17 @@ public final class Keys {
         + String.format("%019d", sid);
   }
 
+  public static String reconcileFinalizedSnapshotIdentityPointerPrefix(
+      String accountId, String tableId) {
+    String tid = req("account_id", accountId);
+    String table = req("table_id", tableId);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/finalized-snapshots/by-id/"
+        + encode(table)
+        + "/";
+  }
+
   public static String reconcileDirtyParentPointerRootPrefix() {
     // This namespace deliberately does not descend from the legacy "dirty-parents/" prefix.
     // Older deployments scan that entire prefix and delete markers whose payload schema they do
@@ -2193,6 +2209,33 @@ public final class Keys {
 
   public static String rootResyncPendingPrefix(String accountId) {
     return "/accounts/" + encode(req("account_id", accountId)) + "/root-resyncs/by-table/";
+  }
+
+  // ===== Table purge =====
+
+  /**
+   * Durable marker: this table's row is deleted and its table-scoped state still awaits purge.
+   * {@code TableWriteFence} writes it in the batch that deletes the row; the purge removes it last,
+   * so a failed purge is retried by pointer GC.
+   */
+  public static String tablePurgePointer(String accountId, String tableId) {
+    return tablePurgePrefix(accountId) + encode(req("table_id", tableId));
+  }
+
+  public static String tablePurgePrefix(String accountId) {
+    return "/accounts/" + encode(req("account_id", accountId)) + "/tables/purging/";
+  }
+
+  /**
+   * Permanent marker: this table id belonged to a table that has been deleted. {@code
+   * TableWriteFence} writes it in the batch that deletes the row and refuses to create a row while
+   * it exists, so a table id is never reused. Only account deletion removes it.
+   */
+  public static String tableRetiredPointer(String accountId, String tableId) {
+    return "/accounts/"
+        + encode(req("account_id", accountId))
+        + "/tables/retired/"
+        + encode(req("table_id", tableId));
   }
 
   // ===== Markers =====

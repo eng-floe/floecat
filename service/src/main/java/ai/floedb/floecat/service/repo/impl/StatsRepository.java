@@ -34,6 +34,7 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
+import ai.floedb.floecat.service.repo.util.TableWriteFence;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
@@ -71,12 +72,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import org.eclipse.microprofile.config.ConfigProvider;
 
 @ApplicationScoped
 public class StatsRepository implements StatsStore {
-  // Leave one DynamoDB transaction slot for the account-deletion fence check.
-  private static final int MAX_POINTER_BATCH_SIZE = 99;
+  // The account-deletion fence check AccountDeletionFence adds to every batch.
+  private static final int ACCOUNT_FENCE_OPERATIONS = 1;
   private static final String GENERATION_WRITING = "WRITING";
   private static final String GENERATION_PUBLISHING = "PUBLISHING";
   private static final String GENERATION_PUBLISHED = "PUBLISHED";
@@ -3232,7 +3234,7 @@ public class StatsRepository implements StatsStore {
           }
           putBlob(write.blobUri(), write.value());
         }
-        forEachPointerBatch(pending, this::reserveBatchOrClassify);
+        forEachPointerBatch(pending, TargetStatsWrite::pointerKey, this::reserveBatchOrClassify);
       } catch (AccountDeletionInProgressException deleting) {
         blobsCreatedByCall.forEach(this::deleteBlobQuietly);
         throw deleting;
@@ -3296,7 +3298,10 @@ public class StatsRepository implements StatsStore {
       }
       List<PrewrittenStatsWrite> pending = new ArrayList<>(uniqueWrites.values());
       String accountId = prewrittenStatsAccountId(pending);
-      forEachPointerBatch(pending, batch -> overwriteReferencesChunk(accountId, batch));
+      forEachPointerBatch(
+          pending,
+          PrewrittenStatsWrite::pointerKey,
+          batch -> overwriteReferencesChunk(accountId, batch));
     }
 
     private void createExactReferencesBatch(List<PrewrittenStatsWrite> writes) {
@@ -3304,7 +3309,10 @@ public class StatsRepository implements StatsStore {
         return;
       }
       String accountId = prewrittenStatsAccountId(writes);
-      forEachPointerBatch(writes, batch -> createExactReferencesChunk(accountId, batch));
+      forEachPointerBatch(
+          writes,
+          PrewrittenStatsWrite::pointerKey,
+          batch -> createExactReferencesChunk(accountId, batch));
     }
 
     private void createExactReferencesChunk(String accountId, List<PrewrittenStatsWrite> writes) {
@@ -3518,9 +3526,11 @@ public class StatsRepository implements StatsStore {
             }
           }
           List<TargetStatsWrite> nextRemaining = new ArrayList<>();
-          for (int from = 0; from < absent.size(); from += MAX_POINTER_BATCH_SIZE) {
-            List<TargetStatsWrite> batch =
-                absent.subList(from, Math.min(from + MAX_POINTER_BATCH_SIZE, absent.size()));
+          for (int from = 0, to; from < absent.size(); from = to) {
+            to =
+                TableWriteFence.atomicChunkEnd(
+                    absent, from, TargetStatsWrite::pointerKey, ACCOUNT_FENCE_OPERATIONS);
+            List<TargetStatsWrite> batch = absent.subList(from, to);
             if (reserveIfAbsentBatch(batch)) {
               batch.forEach(write -> created.add(write.value()));
               continue;
@@ -3553,9 +3563,11 @@ public class StatsRepository implements StatsStore {
       return List.copyOf(created);
     }
 
-    private static <T> void forEachPointerBatch(List<T> values, Consumer<List<T>> action) {
-      for (int from = 0; from < values.size(); from += MAX_POINTER_BATCH_SIZE) {
-        action.accept(values.subList(from, Math.min(from + MAX_POINTER_BATCH_SIZE, values.size())));
+    private static <T> void forEachPointerBatch(
+        List<T> values, Function<? super T, String> pointerKey, Consumer<List<T>> action) {
+      for (int from = 0, to; from < values.size(); from = to) {
+        to = TableWriteFence.atomicChunkEnd(values, from, pointerKey, ACCOUNT_FENCE_OPERATIONS);
+        action.accept(values.subList(from, to));
       }
     }
 

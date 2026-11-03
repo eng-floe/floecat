@@ -16,8 +16,10 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+import ai.floedb.floecat.storage.spi.PointerStore;
+
 final class ReconcileJobWriteLimits {
-  static final int MAX_TRANSACTION_ITEMS = 100;
+  static final int MAX_TRANSACTION_ITEMS = PointerStore.MAX_ATOMIC_BATCH_OPERATIONS;
 
   private ReconcileJobWriteLimits() {}
 
