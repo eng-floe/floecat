@@ -2392,7 +2392,9 @@ intend lossy rounding opt in explicitly, e.g.
   nullability; <code>IcebergSchemaMapper</code> stores the result in <code>SchemaColumn.type</code>. This avoids the
   historic ambiguity where <code>"timestamp"</code> meant UTC-stored in Delta but non-UTC in Iceberg.
   Iceberg <code>TimestampNanoType</code> uses the same timezone semantics (<code>withZone()</code> → <code>TIMESTAMPTZ</code>,
-  <code>withoutZone()</code> → <code>TIMESTAMP</code>), and Iceberg <code>VariantType</code> maps to <code>VARIANT</code>.</li>
+  <code>withoutZone()</code> → <code>TIMESTAMP</code>) with temporal precision 9, and Iceberg <code>VariantType</code> maps to
+  <code>VARIANT</code>. A view's output columns, from the Iceberg REST gateway or a reconciled catalog, are
+  mapped the same way: only a view's top-level columns, each at its position.</li>
 <li><strong>Delta schema parsing</strong> – <code>DeltaSchemaMapper.toLogicalType(DataType)</code> (kernel path) and
   <code>fallbackLogicalType(JsonNode)</code> (JSON fallback) apply Delta-specific semantics: <code>"timestamp"</code> →
   <code>TIMESTAMPTZ</code> (UTC-stored), <code>"timestamp_ntz"</code> → <code>TIMESTAMP</code> (timezone-naive). Both recurse into
