@@ -701,6 +701,10 @@ message SnapshotCaptureManifest {
   uint64 owner_file_stats_record_count = 40;
   uint64 owner_index_artifact_count = 41;
   uint64 owner_aggregate_stats_record_count = 42;
+  // What the manifest's statistics mean (ReconcileCapturePolicy.STATS_SEMANTICS); empty for
+  // manifests written before it was named. A snapshot inherits only a base whose statistics mean
+  // what its own do.
+  string stats_semantics = 43;
 }
 
 // Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced

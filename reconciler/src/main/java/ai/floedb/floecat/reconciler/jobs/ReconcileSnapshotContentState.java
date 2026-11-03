@@ -409,7 +409,7 @@ public final class ReconcileSnapshotContentState {
           || output == ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX) {
         continue;
       }
-      atoms.add(atom(output, target, "", nonColumnPolicySemantics(policy)));
+      atoms.add(atom(output, target, "", statsSemantics(nonColumnPolicySemantics(policy))));
     }
   }
 
@@ -436,7 +436,12 @@ public final class ReconcileSnapshotContentState {
                       .anyMatch(
                           column -> column.selector().equals(selector) && column.captureIndex()));
       if (stats) {
-        atoms.add(atom(ReconcileCapturePolicy.Output.COLUMN_STATS, target, selector, semantics));
+        atoms.add(
+            atom(
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                target,
+                selector,
+                statsSemantics(semantics)));
       }
       if (indexes) {
         atoms.add(
@@ -466,7 +471,8 @@ public final class ReconcileSnapshotContentState {
                             column.captureIndex()
                                 && normalizeColumnIdentity(column.selector()).equals(identity)));
     if (stats) {
-      atoms.add(atom(ReconcileCapturePolicy.Output.COLUMN_STATS, target, "", semantics));
+      atoms.add(
+          atom(ReconcileCapturePolicy.Output.COLUMN_STATS, target, "", statsSemantics(semantics)));
     }
     if (indexes) {
       atoms.add(atom(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX, target, "", semantics));
@@ -538,6 +544,11 @@ public final class ReconcileSnapshotContentState {
   private static String atom(
       ReconcileCapturePolicy.Output output, String target, String selector, String semantics) {
     return output.name() + "|" + encode(target) + "|" + encode(selector) + "|" + semantics;
+  }
+
+  /** A statistics output's semantics, which carry what captured statistics mean. */
+  private static String statsSemantics(String semantics) {
+    return semantics + "+" + ReconcileCapturePolicy.STATS_SEMANTICS;
   }
 
   private static String policySemantics(ReconcileCapturePolicy policy) {

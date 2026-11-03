@@ -365,6 +365,8 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertEquals(0, manifest.getFileGroupsCount());
     assertEquals(0, manifest.getSourceFileCount());
     assertThat(manifest.getReusableArtifactBundlesComplete()).isTrue();
+    // An append-only descendant inherits the manifest's statistics only under this meaning.
+    assertEquals(ReconcileCapturePolicy.STATS_SEMANTICS, manifest.getStatsSemantics());
   }
 
   @Test

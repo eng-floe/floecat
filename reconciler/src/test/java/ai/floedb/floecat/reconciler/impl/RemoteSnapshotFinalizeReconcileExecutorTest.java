@@ -1080,6 +1080,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             .build();
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
+            .setStatsSemantics(ReconcileCapturePolicy.STATS_SEMANTICS)
             .setFormatVersion(1)
             .setAccountId("acct")
             .setConnectorId("connector-1")
@@ -1213,6 +1214,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             .build();
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
+            .setStatsSemantics(ReconcileCapturePolicy.STATS_SEMANTICS)
             .setFormatVersion(1)
             .setAccountId("acct")
             .setConnectorId("connector-1")

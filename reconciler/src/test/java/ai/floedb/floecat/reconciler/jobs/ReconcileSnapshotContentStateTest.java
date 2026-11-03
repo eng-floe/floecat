@@ -153,6 +153,41 @@ class ReconcileSnapshotContentStateTest {
   }
 
   @Test
+  void statisticsCapturedUnderAnEarlierMeaningAreMissingButIndexesAreNot() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("a", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.TABLE_STATS,
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    // A table-wide capture, and one of a column target.
+    for (ReconcileScope scope :
+        List.of(
+            scope(policy),
+            ReconcileScope.of(
+                List.of(),
+                "table-1",
+                List.of(
+                    new ReconcileScope.ScopedCaptureRequest(
+                        "table-1", 7L, "column:101", List.of())),
+                policy))) {
+      List<String> requested =
+          ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope);
+      // What a snapshot captured before the current statistics meaning stored.
+      List<String> earlier =
+          requested.stream()
+              .map(atom -> atom.replace("+" + ReconcileCapturePolicy.STATS_SEMANTICS, ""))
+              .toList();
+
+      assertThat(ReconcileSnapshotContentState.missingCoverage(requested, earlier))
+          .containsExactlyInAnyOrderElementsOf(
+              requested.stream().filter(atom -> !atom.startsWith("PARQUET_PAGE_INDEX|")).toList())
+          .isNotEmpty();
+    }
+  }
+
+  @Test
   void narrowedScopePreservesRequestedColumnsForRecapture() {
     ReconcileScope requested = scope(policy("a", "b", "c"));
     List<String> all = ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, requested);
