@@ -1907,7 +1907,7 @@ overlay get &lt;name|id&gt;
 overlay create &lt;name&gt; &lt;integration-name|id&gt; [catalog-name|id] [options]
 overlay update &lt;name|id&gt; [options]
 overlay reconcile &lt;name|id&gt; [--etag &lt;etag&gt;]
-overlay delete &lt;name|id&gt;
+overlay delete &lt;name|id&gt; [--cascade]
 </code></pre></div>
 <p>Run only the real-Polaris Integration validation and Overlay reconciliation smoke scenario with:</p>
 <div class="highlight"><pre><span></span><code>COMPOSE_SMOKE_MODES=polaris-integration make compose-smoke
@@ -2070,13 +2070,17 @@ the region for both validation and reads. Only when none is set does the deploym
 <li>Overlay display names are unique within an account and identify the mapping into a destination
   catalog.</li>
 <li>An integration cannot be deleted while overlays refer to it.</li>
-<li>Integration deletion supports <code>--cascade</code> to delete dependent overlays.</li>
-<li>Deleting an overlay also recursively deletes a catalog that Floecat created for it, including its
-  namespaces and relations. A direct overlay delete requires the catalog to be unshared. An
-  integration cascade may remove a catalog shared only by that integration's overlays, because it
-  deletes all of them; an overlay from another integration still blocks the cascade.</li>
+<li>Integration deletion supports <code>--cascade</code> to delete dependent overlays, including unmanaged
+  content in Catalogs those overlays own.</li>
+<li>Deleting an overlay also deletes a catalog that Floecat created for it and the content that
+  overlay materialized. Other content requires <code>--cascade</code>; without it the delete is rejected as
+  <code>CATALOG_NOT_EMPTY</code>. A direct overlay delete requires the catalog to be unshared. An integration
+  cascade may remove a catalog shared only by that integration's overlays, because it deletes all
+  of them; an overlay from another integration still blocks the cascade.</li>
 <li>If an owned catalog is already absent, deleting its overlay still removes the stale overlay and
   its dependency pointers.</li>
+<li>Retrying an interrupted owned-Catalog cascade without <code>--cascade</code> may return
+  <code>CATALOG_NOT_EMPTY</code>; retry with <code>--cascade</code> to resume the explicitly destructive operation.</li>
 <li>Renaming an overlay does not rename its owned catalog.</li>
 <li>Supplying the owned catalog ID explicitly in a replacing create makes the catalog independent;
   subsequent overlay deletion leaves it in place.</li>

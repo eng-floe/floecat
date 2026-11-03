@@ -2282,7 +2282,9 @@ Catalog &quot;analytics&quot;                     independently managed target
 <p>An overlay is a mapping resource that references exactly one Integration and one Floecat <code>Catalog</code>.
 The caller may supply an independently managed Catalog, or omit it and let Floecat create an owned
 Catalog with the overlay name. Deleting an owning overlay recursively deletes that Catalog once it
-is unshared. Multiple overlays may target an independently managed Catalog. An overlay owns the
+is unshared; replacement also deletes it when rebinding to a different Catalog. Either operation
+requires explicit cascade consent when the Catalog contains content not materialized by the owning
+Overlay. Multiple overlays may target an independently managed Catalog. An overlay owns the
 materialized contributions produced by its mapping. Name resolution, listing, pinning, planning,
 and garbage collection operate on ordinary Catalog, Namespace, Table, View, and Snapshot resources
 with no overlay-specific read path.</p>
@@ -2377,10 +2379,14 @@ immutable resource identity rather than display name.</p>
 <p>An explicitly selected target Catalog remains directly manageable. Clients may create local
 namespaces and relations in it, and other overlays may contribute non-conflicting resources. An
 owned Catalog must be unshared before its Overlay can be deleted. It accepts direct writes like any
-other Catalog, and that content is not preserved: deleting the Overlay, or replacing it with one
-bound to another Catalog, recursively deletes every namespace and relation in the owned Catalog,
-local or materialized, which is why both require catalog cascade permission. Materialized Tables and Views carry
-typed Integration and Overlay provenance and reject direct mutation while managed by the Overlay.
+other Catalog. Deleting the Overlay, or replacing it with one bound to another Catalog, removes the
+Overlay's materialized content automatically. If any other content remains, the operation is
+rejected as <code>CATALOG_NOT_EMPTY</code> unless the request explicitly enables cascade deletion. Both paths
+require catalog cascade permission. Materialized Tables and Views carry typed Integration and
+Overlay provenance and reject direct mutation while managed by the Overlay.
+The <code>floecat.catalog-overlay.*</code> and <code>floecat.catalog-integration.*</code> property namespaces are
+server-managed and rejected on user create and update paths so they cannot be used to spoof that
+provenance.
 During a cascading Integration delete, overlays of that same Integration do not count as external
 sharing because the operation removes them all; an Overlay belonging to another Integration still
 blocks deletion of the owned Catalog. If the owned Catalog is already absent, deletion removes the
@@ -2404,10 +2410,11 @@ choose different bindings after the previous Overlay's contributions are retired
 <p>Deleting an Overlay installs a deletion fence. For an independently managed target it removes only
 Tables, Views, snapshot state, and namespace claims managed by that Overlay, then removes its
 dependencies and resource record. For an owned target, it uses the catalog cascade driver to fence
-and recursively delete the unshared Catalog and all of its contents, then atomically removes the
-Overlay, Catalog, and their deletion fences. If the Catalog proves shared before anything has been removed,
-the delete is rejected and withdraws the deletion fence it installed, so the Overlay stays
-updatable and reconcilable.</p>
+and recursively delete the unshared Catalog. Content not managed by the Overlay requires explicit
+cascade consent; without it, deletion is rejected as <code>CATALOG_NOT_EMPTY</code>. Validation runs under the
+Catalog fence before cleanup begins. The final mutation atomically removes the Overlay, Catalog,
+and their deletion fences. If validation rejects before anything has been removed, the operation
+withdraws the new fences it installed, so the Overlay stays updatable and reconcilable.</p>
 <h2 id="namespace-selection">Namespace selection<a class="headerlink" href="#namespace-selection" title="Permanent link">&para;</a></h2>
 <p>Selection is expressed as include and exclude namespace paths in the upstream catalog's namespace
 space.</p>
@@ -2624,7 +2631,7 @@ deletion changes invalidate older work.</p>
 </tr>
 <tr>
 <td>Create or replace overlay</td>
-<td>Attaches to a supplied Catalog or atomically creates an owned Catalog; stores the selection plus Integration and Catalog dependencies; replacement fences and retires only the prior Overlay's contributions</td>
+<td>Attaches to a supplied Catalog or atomically creates an owned Catalog; stores the selection plus Integration and Catalog dependencies; replacement fences and retires the prior Overlay's contributions, requiring cascade consent before removing other content from an owned Catalog</td>
 <td>Trigger or join durable snapshot/file capture into the target Catalog</td>
 </tr>
 <tr>
