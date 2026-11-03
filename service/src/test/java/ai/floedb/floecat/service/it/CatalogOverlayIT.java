@@ -250,6 +250,7 @@ class CatalogOverlayIT {
         DeleteCatalogOverlayRequest.newBuilder()
             .setOverlayId(overlay.getResourceId())
             .setPrecondition(precondition(created.getMeta()))
+            .setCascade(true)
             .build());
 
     assertThrows(
