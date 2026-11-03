@@ -26,16 +26,18 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
+import java.util.function.LongSupplier;
 import org.jboss.logging.Logger;
 
 /**
  * Finishes table purges that did not complete after their table row was deleted.
  *
  * <p>Every table-row delete leaves a {@link Keys#tablePurgePointer} marker, and the purge removes
- * it once the table's state is gone. A marker this pass finds therefore names a purge that failed
- * or was interrupted, or one still running inline. Overlapping with an inline purge is safe: both
- * fence their deletes on the marker, so whichever finishes second stops instead of deleting state a
- * recreated table may own by then (see {@link RelationPurge#purgeTableState}).
+ * it once the table's state is gone. A marker this pass finds therefore names a purge that failed,
+ * was interrupted, outgrew its inline batch budget, or is still running inline. This pass advances
+ * each one a batch at a time so it stops at its deadline. Overlapping with an inline purge is safe:
+ * both fence their deletes on the marker, so whichever finishes second stops instead of deleting
+ * state a recreated table may own by then (see {@link RelationPurge#purgeTableState}).
  */
 @ApplicationScoped
 public class TablePurgeQueue {
@@ -44,6 +46,8 @@ public class TablePurgeQueue {
   @Inject PointerStore pointerStore;
   @Inject RelationPurge relations;
 
+  LongSupplier nowMillis = System::currentTimeMillis;
+
   public record Result(int scanned, int purged) {}
 
   public Result drainAccount(String accountId, long deadlineMs, int pageSize) {
@@ -51,12 +55,12 @@ public class TablePurgeQueue {
     int scanned = 0;
     int purged = 0;
     String token = "";
-    while (System.currentTimeMillis() < deadlineMs) {
+    while (nowMillis.getAsLong() < deadlineMs) {
       StringBuilder next = new StringBuilder();
       List<Pointer> markers =
           pointerStore.listPointersByPrefix(prefix, Math.max(1, pageSize), token, next);
       for (Pointer marker : markers) {
-        if (System.currentTimeMillis() >= deadlineMs) break;
+        if (nowMillis.getAsLong() >= deadlineMs) break;
         scanned++;
         String tableId = Keys.idAfterPrefix(prefix, marker.getKey());
         if (tableId == null || !ResourceIds.isCanonicalUuid(tableId)) {
@@ -64,14 +68,19 @@ public class TablePurgeQueue {
           pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
           continue;
         }
+        ResourceId resourceId =
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId(tableId)
+                .setKind(ResourceKind.RK_TABLE)
+                .build();
         try {
-          if (relations.purgeTableState(
-              ResourceId.newBuilder()
-                  .setAccountId(accountId)
-                  .setId(tableId)
-                  .setKind(ResourceKind.RK_TABLE)
-                  .build())) {
-            purged++;
+          while (nowMillis.getAsLong() < deadlineMs
+              && pointerStore.get(marker.getKey()).isPresent()) {
+            if (relations.purgeTableState(resourceId, 1)) {
+              purged++;
+              break;
+            }
           }
         } catch (RuntimeException failure) {
           LOG.errorf(failure, "table_purge_failed account_id=%s table_id=%s", accountId, tableId);

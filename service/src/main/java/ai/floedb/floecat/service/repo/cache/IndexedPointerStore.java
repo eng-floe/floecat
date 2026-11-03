@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.cache;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.util.TableWriteFence;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -39,6 +40,8 @@ import java.util.Optional;
  * replicas.
  */
 public class IndexedPointerStore implements PointerStore {
+  static final int MAX_TABLE_DELETE_ATTEMPTS = 3;
+
   private final PointerStore durable;
   private final PlanningPointerIndex index;
 
@@ -133,7 +136,7 @@ public class IndexedPointerStore implements PointerStore {
   public boolean delete(String key) {
     if (TableWriteFence.isTableRow(key)) {
       // A table row leaves only together with its purge marker, which needs a versioned delete.
-      while (true) {
+      for (int attempt = 0; attempt < MAX_TABLE_DELETE_ATTEMPTS; attempt++) {
         Optional<Pointer> current =
             index.mutateKeys(
                 List.of(key),
@@ -148,6 +151,20 @@ public class IndexedPointerStore implements PointerStore {
           return true;
         }
       }
+      // Contention is transient: only report absent when the row did leave concurrently.
+      // Read and refresh under the key's mutation guard, as the attempts do, so a row recreated
+      // after this read cannot be removed from the index by a stale empty result.
+      Optional<Pointer> last =
+          index.mutateKeys(
+              List.of(key),
+              () -> durable.getConsistent(key),
+              observed -> {
+                if (observed.isEmpty()) index.refresh(key, observed);
+              });
+      if (last.isEmpty()) {
+        return false;
+      }
+      throw new StorageAbortRetryableException("table row delete lost every CAS under " + key);
     }
     return index.mutateKeys(
         List.of(key),

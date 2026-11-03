@@ -22,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -34,6 +36,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.lang.reflect.Field;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
 class TablePurgeQueueTest {
@@ -84,6 +87,32 @@ class TablePurgeQueueTest {
 
     assertEquals(new TablePurgeQueue.Result(1, 0), result);
     assertTrue(pointers.get(bogus).isEmpty());
+  }
+
+  @Test
+  void drainStopsBetweenBoundedPurgeBatchesAtTheDeadline() {
+    var pointers = new InMemoryPointerStore();
+    String marker = Keys.tablePurgePointer(ACCOUNT, TABLE);
+    assertTrue(pointers.compareAndSet(marker, 0L, pointer(marker)));
+    var purge = mock(RelationPurge.class);
+    AtomicLong clock = new AtomicLong();
+    // Each batch makes progress but leaves work behind, and runs past the deadline.
+    when(purge.purgeTableState(tableId(), 1))
+        .thenAnswer(
+            call -> {
+              clock.set(10L);
+              return false;
+            });
+    var queue = new TablePurgeQueue();
+    queue.pointerStore = pointers;
+    queue.relations = purge;
+    queue.nowMillis = clock::get;
+
+    var result = queue.drainAccount(ACCOUNT, 5L, 10);
+
+    assertEquals(new TablePurgeQueue.Result(1, 0), result);
+    verify(purge).purgeTableState(tableId(), 1);
+    assertTrue(pointers.get(marker).isPresent());
   }
 
   private static TablePurgeQueue queue(PointerStore pointers, HintCache hints) throws Exception {

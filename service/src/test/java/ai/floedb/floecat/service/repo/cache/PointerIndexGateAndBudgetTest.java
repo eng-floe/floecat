@@ -21,7 +21,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -362,6 +364,37 @@ class PointerIndexGateAndBudgetTest {
   }
 
   @Test
+  void aContendedTableDeleteStopsAfterTheRetryLimit() {
+    RejectingBatchStore durable = new RejectingBatchStore();
+    String key = Keys.tablePointerById(ACCOUNT, "contended");
+    assertThat(durable.compareAndSet(key, 0L, pointer(key, "s3://table"))).isTrue();
+    durable.rejectBatches = true;
+    IndexedPointerStore store =
+        new IndexedPointerStore(durable, index(durable, PlanningPointerIndex.Policy.UNLIMITED));
+
+    assertThatThrownBy(() -> store.delete(key)).isInstanceOf(StorageAbortRetryableException.class);
+
+    assertThat(durable.batchAttempts).isEqualTo(IndexedPointerStore.MAX_TABLE_DELETE_ATTEMPTS);
+    assertThat(durable.getConsistent(key)).isPresent();
+  }
+
+  @Test
+  void aContendedTableDeleteReportsARowThatLeftConcurrentlyAsAbsent() {
+    RejectingBatchStore durable = new RejectingBatchStore();
+    String key = Keys.tablePointerById(ACCOUNT, "contended");
+    assertThat(durable.compareAndSet(key, 0L, pointer(key, "s3://table"))).isTrue();
+    durable.rejectBatches = true;
+    durable.vanishOnLastAttempt = key;
+    IndexedPointerStore store =
+        new IndexedPointerStore(durable, index(durable, PlanningPointerIndex.Policy.UNLIMITED));
+
+    assertThat(store.delete(key)).isFalse();
+
+    assertThat(durable.batchAttempts).isEqualTo(IndexedPointerStore.MAX_TABLE_DELETE_ATTEMPTS);
+    assertThat(store.get(key)).isEmpty();
+  }
+
+  @Test
   void writingDurableOnlySnapshotRowsDoesNotWarmTheResidentIndex() {
     ScanCountingStore counting = new ScanCountingStore();
     String table = Keys.tablePointerById(ACCOUNT, "t0");
@@ -560,6 +593,26 @@ class PointerIndexGateAndBudgetTest {
         await(releaseAbsentRead);
       }
       return observed;
+    }
+  }
+
+  private static final class RejectingBatchStore extends InMemoryPointerStore {
+    private boolean rejectBatches;
+    private int batchAttempts;
+    // A concurrent writer removes this key as the final rejected attempt runs.
+    private String vanishOnLastAttempt;
+
+    @Override
+    public synchronized boolean compareAndSetBatch(List<PointerStore.CasOp> operations) {
+      if (rejectBatches) {
+        batchAttempts++;
+        if (vanishOnLastAttempt != null
+            && batchAttempts == IndexedPointerStore.MAX_TABLE_DELETE_ATTEMPTS) {
+          super.delete(vanishOnLastAttempt);
+        }
+        return false;
+      }
+      return super.compareAndSetBatch(operations);
     }
   }
 

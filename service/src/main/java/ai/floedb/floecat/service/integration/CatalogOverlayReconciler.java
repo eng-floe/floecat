@@ -285,7 +285,7 @@ public class CatalogOverlayReconciler {
           throw new BaseResourceRepository.AbortRetryableException(
               "Table changed during Catalog Overlay retirement");
         }
-        relationPurge.purgeTableState(table.getResourceId());
+        advanceCommittedTablePurge(table.getResourceId());
       }
       for (View view : listViews(namespace)) {
         throwIfCancelled();
@@ -298,6 +298,20 @@ public class CatalogOverlayReconciler {
       }
       if (!ownedBy(namespace.getPropertiesMap(), overlay)) continue;
       deleteNamespaceIfEmpty(namespace, PointerConditions.none());
+    }
+  }
+
+  private void advanceCommittedTablePurge(ResourceId tableId) {
+    try {
+      relationPurge.purgeTableState(tableId);
+    } catch (RuntimeException purgeFailure) {
+      // The table row is already gone and its durable marker blocks reuse. Keep reconciliation's
+      // committed result; pointer GC will resume the bounded cleanup from that marker.
+      LOG.errorf(
+          purgeFailure,
+          "overlay_table_purge_failed account_id=%s table_id=%s",
+          tableId.getAccountId(),
+          tableId.getId());
     }
   }
 
@@ -726,7 +740,7 @@ public class CatalogOverlayReconciler {
           stale.getResourceId(), meta.getPointerVersion(), fence)) {
         throw lostFence();
       }
-      relationPurge.purgeTableState(stale.getResourceId());
+      advanceCommittedTablePurge(stale.getResourceId());
       result.tablesDeleted++;
     }
     for (var staleEntry : inventory.viewsByName().entrySet()) {

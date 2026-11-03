@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -139,6 +140,34 @@ class TableServiceImplSystemTableTest {
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
 
     verifyNoInteractions(tableRepo);
+  }
+
+  @Test
+  void deleteTableReturnsCommittedResultWhenInlinePurgeFails() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("123e4567-e89b-12d3-a456-426614174000")
+            .build();
+    Table table = Table.newBuilder().setResourceId(tableId).setDisplayName("orders").build();
+    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    when(tableRepo.getById(tableId)).thenReturn(Optional.of(table));
+    when(tableRepo.metaFor(tableId)).thenReturn(meta);
+    when(tableRepo.deleteWhilePointersMatch(
+            tableId, 7L, GenericResourceRepository.PointerConditions.none()))
+        .thenReturn(true);
+    doThrow(new IllegalStateException("storage unavailable"))
+        .when(svc.relationPurge)
+        .purgeTableState(tableId);
+
+    var response =
+        svc.deleteTable(DeleteTableRequest.newBuilder().setTableId(tableId).build())
+            .await()
+            .indefinitely();
+
+    assertEquals(meta, response.getMeta());
+    verify(svc.relationPurge).purgeTableState(tableId);
   }
 
   @Test

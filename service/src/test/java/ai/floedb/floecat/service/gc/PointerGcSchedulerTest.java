@@ -32,6 +32,7 @@ import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
 class PointerGcSchedulerTest {
@@ -157,12 +158,64 @@ class PointerGcSchedulerTest {
     assertThat(purges.accountIds).containsExactly("acct-a");
   }
 
+  @Test
+  void tablePurgesGetHalfOfTheTickLeftAfterSetup() {
+    AtomicLong clock = new AtomicLong(1_000L);
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenAnswer(
+            call -> {
+              // A slow listing consumes 40% of the tick before the bounded passes start.
+              clock.addAndGet(200L);
+              return List.of(account("acct-a"));
+            });
+    RecordingPointerGc gc = new RecordingPointerGc();
+    RecordingTablePurges purges = new RecordingTablePurges();
+    PointerGcScheduler scheduler = new PointerGcScheduler();
+    scheduler.accounts =
+        () ->
+            new OwnedAccounts(
+                accounts,
+                ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.ALWAYS_OWNED);
+    scheduler.pointerGc = () -> gc;
+    scheduler.snapshotExpiry =
+        () ->
+            new SnapshotExpiry(
+                null,
+                null,
+                null,
+                null,
+                null,
+                ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
+    scheduler.credentialCleanup = () -> credentialCleanup();
+    scheduler.tablePurges = () -> purges;
+    scheduler.observability = new TestObservability();
+    scheduler.nowMillis = clock::get;
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.pointer.enabled", "true");
+    System.setProperty("floecat.gc.pointer.max-tick-millis", "500");
+    try {
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.pointer.enabled");
+      System.clearProperty("floecat.gc.pointer.max-tick-millis");
+    }
+
+    // The tick runs 1000..1500 and setup ends at 1200, so the purge window is half of the 300ms
+    // left. Half the configured tick would end it at 1450, leaving the sweep 50ms.
+    assertThat(gc.deadlines).containsExactly(1_500L);
+    assertThat(purges.deadlines).containsExactly(1_350L);
+  }
+
   private static final class RecordingTablePurges extends TablePurgeQueue {
     private final List<String> accountIds = new ArrayList<>();
+    private final List<Long> deadlines = new ArrayList<>();
 
     @Override
     public Result drainAccount(String accountId, long deadlineMs, int pageSize) {
       accountIds.add(accountId);
+      deadlines.add(deadlineMs);
       return new Result(0, 0);
     }
   }
@@ -184,6 +237,7 @@ class PointerGcSchedulerTest {
 
   private static final class RecordingPointerGc extends PointerGc {
     private final List<String> accountIds = new ArrayList<>();
+    private final List<Long> deadlines = new ArrayList<>();
 
     @Override
     public Result runGlobalAccountPointers(long deadlineMs) {
@@ -193,6 +247,7 @@ class PointerGcSchedulerTest {
     @Override
     public Result runForAccount(String accountId, long deadlineMs) {
       accountIds.add(accountId);
+      deadlines.add(deadlineMs);
       return new Result(1, 0, 0, 0);
     }
   }

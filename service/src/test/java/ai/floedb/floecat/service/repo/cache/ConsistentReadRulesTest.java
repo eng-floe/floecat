@@ -37,11 +37,14 @@ class ConsistentReadRulesTest {
    * authoritative image, so every row it admits has to be a settled read. Its load is split across
    * these two files -- the locking and registry side, and the scan that fills an image.
    */
-  private static final Set<String> AUTHORITATIVE_INDEX_SOURCES =
+  private static final Set<String> AUTHORITATIVE_READ_SOURCES =
       Set.of(
           "repo/cache/PlanningPointerIndex.java",
           "repo/cache/PlannerPartitionLoad.java",
-          "repo/cache/DurablePointerReads.java");
+          "repo/cache/DurablePointerReads.java",
+          // This utility receives the raw durable store from IndexedPointerStore. Its reads decide
+          // whether a failed write is a permanent table deletion or a retryable CAS conflict.
+          "repo/util/TableWriteFence.java");
 
   private static final List<String> CONSISTENCY_METHODS =
       List.of(
@@ -57,7 +60,7 @@ class ConsistentReadRulesTest {
     for (Path file : scanned) {
       String relative = SERVICE_SOURCES.relativize(file).toString();
       String source = Files.readString(file).replaceAll("\\s+", "");
-      if (!AUTHORITATIVE_INDEX_SOURCES.contains(relative)
+      if (!AUTHORITATIVE_READ_SOURCES.contains(relative)
           && !source.contains("implementsPointerStore")
           && CONSISTENCY_METHODS.stream().anyMatch(source::contains)) {
         offenders.add(SERVICE_SOURCES.relativize(file).toString());

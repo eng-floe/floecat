@@ -35,6 +35,7 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.ConfigProvider;
 
@@ -49,6 +50,8 @@ public class PointerGcScheduler {
   @Inject Provider<CatalogIntegrationCredentialCleanup> credentialCleanup;
 
   @Inject Observability observability;
+
+  LongSupplier nowMillis = System::currentTimeMillis;
   private GcMetrics gcMetrics;
   private final AtomicInteger running = new AtomicInteger(0);
   private final AtomicInteger enabledGauge = new AtomicInteger(0);
@@ -100,7 +103,7 @@ public class PointerGcScheduler {
       return;
     }
 
-    final long now = System.currentTimeMillis();
+    final long now = nowMillis.getAsLong();
     lastTickStartMs.set(now);
     running.set(1);
     gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "tick"));
@@ -127,20 +130,27 @@ public class PointerGcScheduler {
       // Snapshot expiry runs before the other pointer sweeps and gets a bounded share of the
       // remaining tick. Starting the clock here prevents credential/global work from consuming
       // the entire expiry budget before the retention pass begins.
-      long expiryStart = System.currentTimeMillis();
-      long expiryDeadline = Math.min(deadline, expiryStart + Math.max(1L, maxTickMillis / 2L));
+      long expiryStart = nowMillis.getAsLong();
+      // Half of what account listing and pruning left, not half the configured tick: a slow setup
+      // must not shrink the sweep's guaranteed share.
+      long expiryDeadline =
+          Math.min(deadline, expiryStart + Math.max(1L, (deadline - expiryStart) / 2L));
+      // Table purges share the same bounded window, so one large table cannot hold off the
+      // pointer sweep for the rest of the tick.
+      long purgeDeadline = expiryDeadline;
 
       for (var account : allAccounts) {
-        if (System.currentTimeMillis() >= deadline || stopping) {
+        if (nowMillis.getAsLong() >= deadline || stopping) {
           break;
         }
         long accountStart = System.nanoTime();
         String accountId = account.getResourceId().getId();
         int expired = snapshotExpiry.get().expireAccount(accountId, expiryDeadline);
         gcMetrics.recordCollection(expired, Tag.of(TagKey.RESULT, "snapshots-expired"));
-        // Ahead of the pointer sweep: only failed or interrupted purges leave markers, so this is
-        // one short listing per account and must not starve behind the sweep's blob probes.
-        TablePurgeQueue.Result purged = purges.drainAccount(accountId, deadline, pointerPageSize);
+        // Ahead of the pointer sweep, so purges do not starve behind its blob probes; bounded by
+        // purgeDeadline, so a large table's purge does not starve the sweep either.
+        TablePurgeQueue.Result purged =
+            purges.drainAccount(accountId, purgeDeadline, pointerPageSize);
         gcMetrics.recordCollection(
             purged.purged(), Tag.of(TagKey.RESULT, "table-purges-completed"));
         PointerGc.Result result = gc.runForAccount(accountId, deadline);
@@ -170,7 +180,7 @@ public class PointerGcScheduler {
     } finally {
       gcMetrics.recordPause(
           Duration.ofNanos(System.nanoTime() - tickStart), Tag.of(TagKey.RESULT, "tick"));
-      lastTickEndMs.set(System.currentTimeMillis());
+      lastTickEndMs.set(nowMillis.getAsLong());
       running.set(0);
     }
   }

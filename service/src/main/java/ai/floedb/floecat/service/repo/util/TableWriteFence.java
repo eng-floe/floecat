@@ -39,7 +39,7 @@ public final class TableWriteFence {
   public static void requireTableRowsPresent(
       PointerStore pointerStore, List<? extends PointerStore.CasOp> operations) {
     for (String row : tableRowsRequiringChecks(operations)) {
-      if (pointerStore.get(row).isEmpty()) {
+      if (pointerStore.getConsistent(row).isEmpty()) {
         throw new TableDeletedException(row);
       }
     }
@@ -66,8 +66,8 @@ public final class TableWriteFence {
     List<PointerStore.CasOp> fenced =
         new ArrayList<>(source.size() + rows.size() + purgeMarkers.size());
     for (String row : rows) {
-      // pointerStore is the raw durable store, never a cached view, so this read is authoritative.
-      Optional<Pointer> current = pointerStore.get(row);
+      // A strong read: a stale miss would refuse a write to a live table as if it were deleted.
+      Optional<Pointer> current = pointerStore.getConsistent(row);
       if (current.isEmpty()) {
         return new FencedBatch(false, List.of());
       }

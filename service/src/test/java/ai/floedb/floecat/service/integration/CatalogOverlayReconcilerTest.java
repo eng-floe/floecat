@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -1018,6 +1019,9 @@ class CatalogOverlayReconcilerTest {
             .orElseThrow()
             .getResourceId();
 
+    doThrow(new IllegalStateException("storage unavailable"))
+        .when(reconciler.relationPurge)
+        .purgeTableState(oldId);
     client.tables.put(orders, catalogTable(orders, "new-table-uuid"));
     var result = reconcile();
 

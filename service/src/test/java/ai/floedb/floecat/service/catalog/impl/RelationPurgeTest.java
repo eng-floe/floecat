@@ -16,9 +16,11 @@
 
 package ai.floedb.floecat.service.catalog.impl;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -73,13 +75,103 @@ class RelationPurgeTest {
     put(pointers, otherTable);
     put(pointers, marker);
 
-    purge.purgeTableState(id);
+    completePurge(purge, id);
 
     tableScoped.forEach(key -> assertTrue(pointers.get(key).isEmpty(), key));
     assertTrue(pointers.get(marker).isEmpty(), "purge marker should be acknowledged");
     assertTrue(pointers.get(tableRow).isPresent());
     assertTrue(pointers.get(otherTable).isPresent());
     verify(hints).evictRelation(id);
+  }
+
+  @Test
+  void purgeTableStateDeletesAtMostItsBatchBudgetPerCall() {
+    var pointers = new InMemoryPointerStore();
+    var purge = purge(pointers);
+    String marker = Keys.tablePurgePointer(ACCOUNT, TABLE);
+    put(pointers, marker);
+    putSnapshots(pointers, 100);
+
+    assertFalse(purge.purgeTableState(tableId(), 1));
+
+    assertEquals(1L, remainingSnapshots(pointers, 100));
+    assertTrue(pointers.get(marker).isPresent(), "bounded work must leave recovery queued");
+  }
+
+  @Test
+  void inlinePurgeFinishesATableWithinItsBatchBudget() {
+    var pointers = new InMemoryPointerStore();
+    var purge = purge(pointers);
+    String marker = Keys.tablePurgePointer(ACCOUNT, TABLE);
+    put(pointers, marker);
+    putSnapshots(pointers, 150);
+
+    assertTrue(purge.purgeTableState(tableId()));
+
+    assertEquals(0L, remainingSnapshots(pointers, 150));
+    assertTrue(pointers.get(marker).isEmpty());
+  }
+
+  @Test
+  void inlinePurgeLeavesATableBeyondItsBatchBudgetQueued() {
+    var pointers = new InMemoryPointerStore();
+    var purge = purge(pointers);
+    String marker = Keys.tablePurgePointer(ACCOUNT, TABLE);
+    put(pointers, marker);
+    int snapshots = RelationPurge.DELETE_BATCH * RelationPurge.INLINE_BATCH_BUDGET + 1;
+    putSnapshots(pointers, snapshots);
+
+    assertFalse(purge.purgeTableState(tableId()));
+
+    assertEquals(1L, remainingSnapshots(pointers, snapshots));
+    assertTrue(pointers.get(marker).isPresent(), "bounded work must leave recovery queued");
+  }
+
+  @Test
+  void purgeFinishesWhenItsLastBudgetedBatchEmptiesTheTable() {
+    var pointers = new InMemoryPointerStore();
+    var purge = purge(pointers);
+    String marker = Keys.tablePurgePointer(ACCOUNT, TABLE);
+    put(pointers, marker);
+    putSnapshots(pointers, RelationPurge.DELETE_BATCH);
+
+    assertTrue(purge.purgeTableState(tableId(), 1));
+
+    assertEquals(0L, remainingSnapshots(pointers, RelationPurge.DELETE_BATCH));
+    assertTrue(pointers.get(marker).isEmpty());
+  }
+
+  @Test
+  void rootResyncDeleteCountsAgainstTheBatchBudget() {
+    var pointers = new InMemoryPointerStore();
+    var purge = purge(pointers);
+    String marker = Keys.tablePurgePointer(ACCOUNT, TABLE);
+    String resync = Keys.rootResyncPendingPointer(ACCOUNT, TABLE);
+    put(pointers, marker);
+    put(pointers, resync);
+    putSnapshots(pointers, 1);
+
+    assertFalse(purge.purgeTableState(tableId(), 1));
+    assertEquals(0L, remainingSnapshots(pointers, 1));
+    assertTrue(pointers.get(resync).isPresent(), "a spent budget must not delete the resync");
+    assertTrue(pointers.get(marker).isPresent());
+
+    assertTrue(purge.purgeTableState(tableId(), 1));
+    assertTrue(pointers.get(resync).isEmpty());
+    assertTrue(pointers.get(marker).isEmpty());
+  }
+
+  private static void putSnapshots(InMemoryPointerStore pointers, int count) {
+    for (int snapshot = 0; snapshot < count; snapshot++) {
+      put(pointers, Keys.snapshotPointerById(ACCOUNT, TABLE, snapshot));
+    }
+  }
+
+  private static long remainingSnapshots(InMemoryPointerStore pointers, int count) {
+    return java.util.stream.IntStream.range(0, count)
+        .mapToObj(snapshot -> Keys.snapshotPointerById(ACCOUNT, TABLE, snapshot))
+        .filter(key -> pointers.get(key).isPresent())
+        .count();
   }
 
   @Test
@@ -110,7 +202,7 @@ class RelationPurgeTest {
     var recovery = purge(pointers);
     pointers.stallOnce(
         () -> {
-          assertTrue(recovery.purgeTableState(tableId()));
+          completePurge(recovery, tableId());
           assertTrue(write(pointers, row, 0L));
           assertTrue(write(pointers, resync, 0L));
         });
@@ -183,7 +275,7 @@ class RelationPurgeTest {
     var recovery = purge(pointers);
     pointers.stallOnce(
         () -> {
-          assertTrue(recovery.purgeTableState(tableId()));
+          completePurge(recovery, tableId());
           assertTrue(write(pointers, row, 0L));
           assertTrue(write(pointers, state, 0L));
         });
@@ -207,7 +299,7 @@ class RelationPurgeTest {
     var recovery = purge(pointers);
     pointers.stallOnce(
         () -> {
-          assertTrue(recovery.purgeTableState(tableId()));
+          completePurge(recovery, tableId());
           assertTrue(write(pointers, row, 0L));
           assertTrue(write(pointers, state, 0L));
           deleteRow(pointers, row);
@@ -216,7 +308,7 @@ class RelationPurgeTest {
     assertFalse(stalled.purgeTableState(tableId()));
 
     assertTrue(pointers.get(marker).isPresent(), "the later delete's purge must stay queued");
-    assertTrue(purge(pointers).purgeTableState(tableId()));
+    completePurge(purge(pointers), tableId());
     assertTrue(pointers.get(state).isEmpty());
     assertTrue(pointers.get(marker).isEmpty());
   }
@@ -237,6 +329,15 @@ class RelationPurgeTest {
     purge.pointerStore = pointers;
     purge.hints = mock(HintCache.class);
     return purge;
+  }
+
+  private static void completePurge(RelationPurge purge, ResourceId tableId) {
+    for (int pass = 0; pass < 20; pass++) {
+      if (purge.purgeTableState(tableId)) {
+        return;
+      }
+    }
+    fail("purge did not complete within 20 bounded passes");
   }
 
   /** Writes through the table fence, as the production store seam does. */

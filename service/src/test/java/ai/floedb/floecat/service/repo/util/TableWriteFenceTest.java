@@ -16,6 +16,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
@@ -48,6 +49,21 @@ class TableWriteFenceTest {
     assertEquals(2, fenced.operations().size());
     assertTrue(fenced.operations().getFirst() instanceof PointerStore.CasCheck);
     assertTrue(pointers.compareAndSetBatch(fenced.operations()));
+  }
+
+  @Test
+  void deletionClassificationUsesStrongTableRowReads() {
+    var pointers = new EventuallyConsistentGetStore();
+    String row = Keys.tablePointerById("account", "table");
+    String artifact = Keys.snapshotPointerById("account", "table", 7L);
+    assertTrue(pointers.compareAndSet(row, 0L, pointer(row)));
+    List<PointerStore.CasOp> operation =
+        List.of(new PointerStore.CasUpsert(artifact, 0L, pointer(artifact)));
+
+    var fenced = TableWriteFence.fence(pointers, operation);
+
+    assertTrue(fenced.writable());
+    TableWriteFence.requireTableRowsPresent(pointers, operation);
   }
 
   @Test
@@ -202,5 +218,12 @@ class TableWriteFenceTest {
 
   private static Pointer pointer(String key) {
     return Pointer.newBuilder().setKey(key).setBlobUri("blob://value").build();
+  }
+
+  private static final class EventuallyConsistentGetStore extends InMemoryPointerStore {
+    @Override
+    public synchronized Optional<Pointer> get(String key) {
+      return Optional.empty();
+    }
   }
 }

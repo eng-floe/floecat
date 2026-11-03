@@ -523,7 +523,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    relationPurge.purgeTableState(tableId);
+                    advanceCommittedTablePurge(tableId, correlationId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   } catch (BaseResourceRepository.CorruptionException corrupt) {
                     var safe = tableRepo.metaForSafe(tableId);
@@ -545,7 +545,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           safe.getPointerVersion(),
                           tableRepo.pointerMetaForSafe(tableId).getPointerVersion());
                     }
-                    relationPurge.purgeTableState(tableId);
+                    advanceCommittedTablePurge(tableId, correlationId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -561,7 +561,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           "table",
                           Map.of("id", tableId.getId()));
 
-                  relationPurge.purgeTableState(tableId);
+                  advanceCommittedTablePurge(tableId, correlationId);
                   return DeleteTableResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
@@ -569,6 +569,21 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private void advanceCommittedTablePurge(ResourceId tableId, String correlationId) {
+    try {
+      relationPurge.purgeTableState(tableId);
+    } catch (RuntimeException purgeFailure) {
+      // The table-row delete already committed and left a durable purge marker. Preserve the
+      // successful DROP result; pointer GC will resume the bounded cleanup from that marker.
+      LOG.errorf(
+          purgeFailure,
+          "table_purge_failed correlation_id=%s account_id=%s table_id=%s",
+          correlationId,
+          tableId.getAccountId(),
+          tableId.getId());
+    }
   }
 
   private static void validateTableMaskOrThrow(FieldMask mask, String corr) {
