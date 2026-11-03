@@ -1873,6 +1873,7 @@ and therefore have no blob key.</p>
 /accounts/{account_id}/gc/cas/generation-cursor
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
 /accounts/{account_id}/tables/purging/{table_id}
+/accounts/{account_id}/tables/retired/{table_id}
 /accounts/{account_id}/views/purging/{view_id}
 /accounts/{account_id}/tables/{table_id}/owner-reuse-leases/{publication_id}
 /accounts/{account_id}/tables/{table_id}/owner-publication-progress/{publication_id}
@@ -1892,11 +1893,17 @@ advancing it would create a row for a resource the same batch is deleting, and r
 what makes the writer that adds the first child of that kind lose to this delete. A namespace delete asserts nothing about it: removal is the direction that orphans nothing.</p>
 <p>A table's state outside its row is purged after the row delete commits, so the delete leaves a
 <code>tables/purging/{table_id}</code> marker in the same batch. <code>TableWriteFence</code> adds it to every batch that
-deletes a table row, and requires it absent in every batch that creates one, so a table id cannot be
-reused while the purge of its previous state could still delete the new table's state. The purge
-removes the marker last; pointer GC retries any purge that failed or was interrupted before then.
-A view row delete leaves a <code>views/purging/{view_id}</code> marker the same way, for the view's hints, so
-a cascade that loses a view's name pointer before its hints are gone still leaves the work queued.</p>
+deletes a table row. The purge removes the marker last; pointer GC retries any purge that failed or
+was interrupted before then.</p>
+<p>The same batch also writes a permanent <code>tables/retired/{table_id}</code> marker, and <code>TableWriteFence</code>
+requires it absent in every batch that creates a table row, so a table id is never reused. A
+reconcile job, transaction, or purge that captured the id before the drop can only find the row
+missing; it can never publish into, or purge, a later table under the same id. Only account deletion
+removes retired markers.</p>
+<p>A view row delete leaves a <code>views/purging/{view_id}</code> marker the same way, for the view's hints, so
+a cascade that loses a view's name pointer before its hints are gone still leaves the work queued.
+View creation requires that marker absent, preventing reuse only until the previous view's purge is
+complete.</p>
 <p>Two operations assert nothing here, and for the same reason: deleting a relation, and deleting a
 child namespace. Both are the removal direction — a namespace delete racing either can only find the
 namespace emptier than it counted, which orphans nothing — so asserting would cost a write to a hot
