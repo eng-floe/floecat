@@ -386,6 +386,11 @@ final class DeltaPlanner implements Planner<String> {
     return deletionVectorsByFile.get(filePath);
   }
 
+  /** The paths of the planned data files that have a deletion vector. */
+  Set<String> filesWithDeletionVectors() {
+    return Collections.unmodifiableSet(deletionVectorsByFile.keySet());
+  }
+
   StructType schema() {
     return snapshot.getSchema();
   }

@@ -1314,6 +1314,17 @@ abstract class DeltaConnector implements FloecatConnector {
         planned.contentIdentity());
   }
 
+  /**
+   * {@code file} with no deletes when it has no deletion vector, Delta's only deletes; unknown
+   * otherwise: a vector file holds the vectors of many data files.
+   */
+  static FloecatConnector.FileColumnStatsView withKnownDeletes(
+      FloecatConnector.FileColumnStatsView file, Set<String> filesWithDeletionVectors) {
+    return filesWithDeletionVectors.contains(file.filePath())
+        ? file
+        : file.withAppliedDeletes(List.of());
+  }
+
   protected Table loadTable(String storageLocation) {
     return Table.forPath(engine, storageLocation);
   }
@@ -1368,7 +1379,8 @@ abstract class DeltaConnector implements FloecatConnector {
       Map<String, LogicalType> logicalTypes,
       boolean hasDeletionVectors,
       boolean hasInlineDeletionVectors,
-      List<DeletionVectorDescriptor> deletionVectors) {}
+      List<DeletionVectorDescriptor> deletionVectors,
+      Set<String> filesWithDeletionVectors) {}
 
   protected EngineOut runEngine(
       String storageLocation,
@@ -1418,7 +1430,8 @@ abstract class DeltaConnector implements FloecatConnector {
           logicalTypes,
           planner.hasDeletionVectors(),
           planner.hasInlineDeletionVectors(),
-          planner.deletionVectors());
+          planner.deletionVectors(),
+          planner.filesWithDeletionVectors());
     } catch (Exception e) {
       throw new RuntimeException("Delta stats compute failed (version " + version + ")", e);
     }
@@ -1597,6 +1610,7 @@ abstract class DeltaConnector implements FloecatConnector {
                     return (lt != null) ? lt : nameToType.get(name);
                   }));
 
+      mutableFiles.replaceAll(file -> withKnownDeletes(file, engineOut.filesWithDeletionVectors()));
       for (DeletionVectorDescriptor dv : engineOut.deletionVectors()) {
         String dvPath =
             (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";

@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -1911,5 +1912,30 @@ class DeltaConnectorTest {
   private static KernelException truncatedHistory(long earliestAvailableVersion) {
     return new StartVersionNotFoundException(
         "s3://bucket/table", 0L, Optional.of(earliestAvailableVersion));
+  }
+
+  @Test
+  void aDataFileWithoutADeletionVectorHasNoDeletesAndOneWithOneIsUnknown() {
+    var withVector = dataFileView("s3://t/a.parquet");
+    var without = dataFileView("s3://t/b.parquet");
+
+    assertNull(
+        DeltaConnector.withKnownDeletes(withVector, Set.of(withVector.filePath()))
+            .appliedDeletes());
+    assertEquals(List.of(), DeltaConnector.withKnownDeletes(without, Set.of()).appliedDeletes());
+  }
+
+  private static FloecatConnector.FileColumnStatsView dataFileView(String path) {
+    return new FloecatConnector.FileColumnStatsView(
+        path,
+        "PARQUET",
+        10,
+        100,
+        ai.floedb.floecat.catalog.rpc.FileContent.FC_DATA,
+        "",
+        0,
+        List.of(),
+        null,
+        List.of());
   }
 }
