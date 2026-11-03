@@ -65,6 +65,7 @@ import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerCond
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.types.ViewOutputColumns;
 import ai.floedb.floecat.util.LogSafeText;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.runtime.Startup;
@@ -1172,7 +1173,7 @@ public class CatalogOverlayReconciler {
             .setDisplayName(normalizeName(source.name().name()))
             .setCreatedAt(current == null ? now() : current.getCreatedAt())
             .addAllCreationSearchPath(normalizePath(source.defaultNamespace()).segments())
-            .addAllOutputColumns(schema.getColumnsList())
+            .addAllOutputColumns(ViewOutputColumns.of(schema))
             .putAllProperties(objectProperties(overlay, integration, source.identity()));
     for (var definition : source.definitions()) {
       builder.addSqlDefinitions(

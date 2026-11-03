@@ -278,7 +278,9 @@ The module is pure Java; no configuration is required. Extending the type system
   nullability; `IcebergSchemaMapper` stores the result in `SchemaColumn.type`. This avoids the
   historic ambiguity where `"timestamp"` meant UTC-stored in Delta but non-UTC in Iceberg.
   Iceberg `TimestampNanoType` uses the same timezone semantics (`withZone()` → `TIMESTAMPTZ`,
-  `withoutZone()` → `TIMESTAMP`), and Iceberg `VariantType` maps to `VARIANT`.
+  `withoutZone()` → `TIMESTAMP`) with temporal precision 9, and Iceberg `VariantType` maps to
+  `VARIANT`. A view's output columns, from the Iceberg REST gateway or a reconciled catalog, are
+  mapped the same way: only a view's top-level columns, each at its position.
 - **Delta schema parsing** – `DeltaSchemaMapper.toLogicalType(DataType)` (kernel path) and
   `fallbackLogicalType(JsonNode)` (JSON fallback) apply Delta-specific semantics: `"timestamp"` →
   `TIMESTAMPTZ` (UTC-stored), `"timestamp_ntz"` → `TIMESTAMP` (timezone-naive). Both recurse into

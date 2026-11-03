@@ -17,6 +17,7 @@ package ai.floedb.floecat.service.catalog.impl.surface;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -44,6 +45,7 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
@@ -207,6 +209,22 @@ class CatalogSurfaceViewsTest {
   }
 
   @Test
+  void aViewStoredWithoutPositionsIsReadWithItsColumnsAtTheirPlaces() {
+    var type = LogicalTypeProtoAdapter.parseToProto("INT");
+    var stored =
+        View.newBuilder()
+            .addOutputColumns(SchemaColumn.newBuilder().setName("a").setType(type))
+            .addOutputColumns(SchemaColumn.newBuilder().setName("b").setType(type))
+            .build();
+
+    var read = CatalogSurfaceViews.withUpgradedOutputColumns(stored);
+
+    assertEquals(
+        List.of(1, 2), read.getOutputColumnsList().stream().map(SchemaColumn::getOrdinal).toList());
+    assertSame(read, CatalogSurfaceViews.withUpgradedOutputColumns(read));
+  }
+
+  @Test
   void getViewReadsSystemViewFromCatalogSurfaceWithoutRepoLookup() {
     var systemView = viewNode("engine_views", GraphNodeOrigin.SYSTEM);
     graphView.addRelation(namespaceId, systemView);
@@ -217,6 +235,8 @@ class CatalogSurfaceViewsTest {
 
     assertEquals(systemView.id(), response.getView().getResourceId());
     assertEquals("engine_views", response.getView().getDisplayName());
+    assertEquals(systemView.outputColumns(), response.getView().getOutputColumnsList());
+    assertEquals(systemView.creationSearchPath(), response.getView().getCreationSearchPathList());
     verifyNoInteractions(viewRepo);
   }
 
@@ -247,9 +267,14 @@ class CatalogSurfaceViewsTest {
         displayName,
         "select 1",
         "sql",
-        List.<SchemaColumn>of(),
+        List.of(
+            SchemaColumn.newBuilder()
+                .setName("one")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setOrdinal(1)
+                .build()),
         List.of(),
-        List.of(),
+        List.of("sys"),
         origin,
         Map.of(),
         Optional.empty(),

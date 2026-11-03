@@ -17,20 +17,25 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.view;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.common.resolver.IcebergTypeMappings;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.ViewMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.SchemaParser;
+import org.apache.iceberg.types.Type;
+import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -197,122 +202,67 @@ class ViewMetadataServiceTest {
   }
 
   @Test
-  void extractOutputColumnsMapsSchemaFields() {
-    ViewMetadataView.ViewVersion version =
-        new ViewMetadataView.ViewVersion(
-            1,
-            123L,
-            7, // schemaId=7 — must match the SchemaSummary below
-            Map.of("operation", "create"),
-            List.of(new ViewMetadataView.ViewRepresentation("sql", "select col_a", "ansi")),
-            List.of("db"),
-            null);
-    ViewMetadataView.SchemaSummary schema =
-        new ViewMetadataView.SchemaSummary(
-            7, // matches version.schemaId
-            "struct",
-            List.of(Map.of("id", 1, "name", "col_a", "type", "int", "required", true)),
-            List.of());
-    ViewMetadataView metadata =
-        new ViewMetadataView(
-            "uuid-x", 1, null, 1, List.of(version), List.of(), List.of(schema), Map.of());
-    ViewMetadataService.MetadataContext ctx =
-        new ViewMetadataService.MetadataContext(metadata, Map.of(), "select col_a");
+  void extractOutputColumnsMapsTheViewSchemaAsTableSchemasAre() throws Exception {
+    Schema schema =
+        new Schema(
+            Types.NestedField.required(42, "id", Types.IntegerType.get()),
+            Types.NestedField.optional(7, "at", Types.TimestampNanoType.withZone()),
+            Types.NestedField.optional(3, "tag", Types.FixedType.ofLength(16)),
+            Types.NestedField.optional(
+                9,
+                "point",
+                Types.StructType.of(Types.NestedField.optional(10, "x", Types.LongType.get()))));
 
-    List<SchemaColumn> cols = service.extractOutputColumns(ctx);
+    List<SchemaColumn> columns = service.extractOutputColumns(contextWithSchema(schema));
 
-    assertEquals(1, cols.size());
-    assertEquals("col_a", cols.get(0).getName());
-    assertFalse(cols.get(0).getNullable()); // required=true → nullable=false
+    // The top-level columns alone, at their positions, typed as table ingestion types them.
     assertEquals(
-        "INT", ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnTypeString(cols.get(0)));
-  }
-
-  // ── icebergTypeValueToCanonical timestamp semantics ──────────────────────
-
-  @Test
-  void timestampMapsToTimestamp() {
-    // Iceberg "timestamp" = no timezone (local) → TIMESTAMP
-    assertEquals("TIMESTAMP", ViewMetadataService.icebergTypeValueToCanonical("timestamp"));
-  }
-
-  @Test
-  void timestamptzMapsToTimestamptz() {
-    // Iceberg "timestamptz" = UTC-normalised → TIMESTAMPTZ
-    assertEquals("TIMESTAMPTZ", ViewMetadataService.icebergTypeValueToCanonical("timestamptz"));
-  }
-
-  @Test
-  void timestampNsMapsToTimestamp() {
-    // Iceberg "timestamp_ns" = nanosecond, no timezone → TIMESTAMP (not TIMESTAMPTZ)
-    // Regression test: previously mapped incorrectly to TIMESTAMPTZ.
-    assertEquals("TIMESTAMP", ViewMetadataService.icebergTypeValueToCanonical("timestamp_ns"));
-  }
-
-  @Test
-  void timestamptzNsMapsToTimestamptz() {
-    // Iceberg "timestamptz_ns" = nanosecond, UTC-normalised → TIMESTAMPTZ
-    assertEquals("TIMESTAMPTZ", ViewMetadataService.icebergTypeValueToCanonical("timestamptz_ns"));
-  }
-
-  // ── icebergTypeValueToLogical nested types ────────────────────────────────
-
-  @Test
-  void listTypeValuePreservesElementType() {
-    var logical =
-        ViewMetadataService.icebergTypeValueToLogical(
-            java.util.Map.of("type", "list", "element", "string", "element-required", true));
-    assertEquals("ARRAY<STRING>", ai.floedb.floecat.types.LogicalTypeFormat.format(logical));
-    assertEquals(Boolean.FALSE, logical.elementNullable());
-  }
-
-  @Test
-  void structTypeValuePreservesFields() {
-    var logical =
-        ViewMetadataService.icebergTypeValueToLogical(
-            java.util.Map.of(
-                "type",
-                "struct",
-                "fields",
-                java.util.List.of(
-                    java.util.Map.of("name", "sku", "required", true, "type", "string"),
-                    java.util.Map.of(
-                        "name",
-                        "quantities",
-                        "type",
-                        java.util.Map.of("type", "list", "element", "int")))));
-    assertEquals(
-        "STRUCT<sku: STRING, quantities: ARRAY<INT>>",
-        ai.floedb.floecat.types.LogicalTypeFormat.format(logical));
-  }
-
-  @Test
-  void mapTypeValuePreservesKeyAndValueTypes() {
-    var logical =
-        ViewMetadataService.icebergTypeValueToLogical(
-            java.util.Map.of("type", "map", "key", "string", "value", "double"));
-    assertEquals("MAP<STRING, DOUBLE>", ai.floedb.floecat.types.LogicalTypeFormat.format(logical));
-  }
-
-  @Test
-  void deeplyNestedTypeValueIsRejectedAtWriteTime() {
-    // A ~70-deep nested list must fail validation here, not persist and then throw on decode.
-    Object type = "string";
-    for (int i = 0; i < 70; i++) {
-      type = java.util.Map.of("type", "list", "element", type);
+        List.of("id:1:42", "at:2:7", "tag:3:3", "point:4:9"),
+        columns.stream()
+            .map(c -> c.getName() + ":" + c.getOrdinal() + ":" + c.getFieldId())
+            .toList());
+    for (int i = 0; i < columns.size(); i++) {
+      var source = schema.columns().get(i);
+      assertEquals(source.isOptional(), columns.get(i).getNullable());
+      assertEquals(
+          LogicalTypeProtoAdapter.toProto(IcebergTypeMappings.toLogical(source.type())),
+          columns.get(i).getType());
     }
-    Object deepest = type;
-    org.junit.jupiter.api.Assertions.assertThrows(
-        IllegalArgumentException.class,
-        () -> ViewMetadataService.icebergTypeValueToLogical(deepest));
+    assertEquals(9, columns.get(1).getType().getTemporalPrecision());
   }
 
   @Test
-  void complexTypeValueStillFormatsFlatTag() {
-    assertEquals(
-        "ARRAY",
-        ViewMetadataService.icebergTypeValueToCanonical(
-            java.util.Map.of("type", "list", "element", "string")));
+  void extractOutputColumnsRefusesATypeNestedPastFloecatsDepth() throws Exception {
+    Type type = Types.StringType.get();
+    for (int id = 100; id < 170; id++) {
+      type = Types.ListType.ofOptional(id, type);
+    }
+    Schema schema = new Schema(Types.NestedField.optional(1, "deep", type));
+
+    var ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> service.extractOutputColumns(contextWithSchema(schema)));
+    assertTrue(ex.getMessage().contains("nesting depth"), ex.getMessage());
+  }
+
+  /** A context whose current version's schema is `schema`. */
+  private ViewMetadataService.MetadataContext contextWithSchema(Schema schema) throws Exception {
+    var summary = json.readValue(SchemaParser.toJson(schema), ViewMetadataView.SchemaSummary.class);
+    var current = contextWithSingleVersion();
+    var metadata = current.metadata();
+    return new ViewMetadataService.MetadataContext(
+        new ViewMetadataView(
+            metadata.viewUuid(),
+            metadata.formatVersion(),
+            metadata.location(),
+            metadata.currentVersionId(),
+            metadata.versions(),
+            metadata.versionLog(),
+            List.of(summary),
+            metadata.properties()),
+        current.userProperties(),
+        current.sql());
   }
 
   private ViewMetadataService.MetadataContext contextWithSingleVersion() {

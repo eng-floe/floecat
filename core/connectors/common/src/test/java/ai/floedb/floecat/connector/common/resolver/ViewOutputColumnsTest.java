@@ -14,27 +14,26 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.reconciler.impl;
+package ai.floedb.floecat.connector.common.resolver;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
-import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.ViewOutputColumns;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /**
- * View output-column selection must be top-level membership, not stats-leaf eligibility. Filtering
- * on {@code leaf} dropped complex top-level outputs (a view whose only output is {@code
- * ARRAY<STRING>} appeared to have no outputs) and replaced STRUCT outputs with their flattened
- * children.
+ * Output membership is top-level, not stats-leaf: complex top-level outputs are kept whole, as the
+ * schema mappers flatten them.
  */
 class ViewOutputColumnsTest {
 
@@ -46,7 +45,7 @@ class ViewOutputColumnsTest {
         TableFormat.TF_ICEBERG,
         schemaJson,
         Set.of(),
-        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
+        ColumnIdentityMap.getDefaultInstance());
   }
 
   private static LogicalType type(SchemaColumn c) {
@@ -64,7 +63,7 @@ class ViewOutputColumnsTest {
             ]}
             """);
 
-    List<SchemaColumn> out = QueuedReconcileWorkerSupport.topLevelOutputColumns(schema);
+    List<SchemaColumn> out = ViewOutputColumns.of(schema);
 
     assertThat(out).hasSize(1);
     SchemaColumn tags = out.get(0);
@@ -87,7 +86,7 @@ class ViewOutputColumnsTest {
             ]}
             """);
 
-    List<SchemaColumn> out = QueuedReconcileWorkerSupport.topLevelOutputColumns(schema);
+    List<SchemaColumn> out = ViewOutputColumns.of(schema);
 
     assertThat(out).hasSize(1);
     SchemaColumn info = out.get(0);
@@ -113,7 +112,7 @@ class ViewOutputColumnsTest {
             ]}
             """);
 
-    List<SchemaColumn> out = QueuedReconcileWorkerSupport.topLevelOutputColumns(schema);
+    List<SchemaColumn> out = ViewOutputColumns.of(schema);
 
     assertThat(out).extracting(SchemaColumn::getName).containsExactly("id", "tags", "info");
     // Nested child rows (info.x) must not leak into view outputs.
@@ -142,9 +141,9 @@ class ViewOutputColumnsTest {
             ]}
             """,
             Set.of(),
-            ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
+            ColumnIdentityMap.getDefaultInstance());
 
-    List<SchemaColumn> out = QueuedReconcileWorkerSupport.topLevelOutputColumns(schema);
+    List<SchemaColumn> out = ViewOutputColumns.of(schema);
 
     assertThat(out).extracting(SchemaColumn::getName).containsExactly("id", "tags");
     assertThat(type(out.get(1)).kind()).isEqualTo(LogicalKind.ARRAY);

@@ -48,6 +48,7 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.types.ViewOutputColumns;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
@@ -1563,23 +1564,7 @@ class QueuedReconcileWorkerSupport {
             view.schemaJson(),
             Set.of(),
             ColumnIdentityMap.getDefaultInstance());
-    return topLevelOutputColumns(schema);
-  }
-
-  /**
-   * Selects a view's output columns from its mapped schema: exactly the top-level columns, complex
-   * or not. {@code leaf} is a stats-eligibility flag and must not decide output membership —
-   * filtering on it dropped ARRAY/MAP/STRUCT outputs entirely and replaced STRUCT outputs with
-   * their flattened children. Nested child rows are recognizable by their physical path ({@code
-   * parent.child}, {@code parent[].x}, {@code parent{}.x}); top-level rows have {@code
-   * physical_path == name}. The typed column (name, type tree, nullability, field ID, ordinal,
-   * path, leaf) is preserved; only the internal path-derived id is cleared.
-   */
-  static List<SchemaColumn> topLevelOutputColumns(SchemaDescriptor schema) {
-    return schema.getColumnsList().stream()
-        .filter(c -> c.getPhysicalPath().isEmpty() || c.getPhysicalPath().equals(c.getName()))
-        .map(c -> c.toBuilder().clearId().build())
-        .toList();
+    return ViewOutputColumns.of(schema);
   }
 
   private static FloecatConnector.TableDescriptor overrideDisplay(

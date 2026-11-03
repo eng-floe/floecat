@@ -184,6 +184,22 @@ class SystemNodeRegistryTest {
   }
 
   @Test
+  void aSystemViewResolvesNamesInItsOwnNamespace() {
+    SystemCatalogData catalog = catalogWithVersionedObjects();
+    SystemDefinitionRegistry defs =
+        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(PG_KIND, catalog)));
+
+    var nodes = registryWith(defs).nodesFor(context(PG_KIND, "1.0"));
+
+    var view =
+        nodes.viewNodes().stream()
+            .filter(node -> node.displayName().equals("preview_view"))
+            .findFirst()
+            .orElseThrow();
+    assertThat(view.creationSearchPath()).containsExactly("custom");
+  }
+
+  @Test
   void blankVersionTreatsAsLegacyView() {
     SystemCatalogData catalog = catalogWithVersionedObjects();
     SystemDefinitionRegistry defs =
