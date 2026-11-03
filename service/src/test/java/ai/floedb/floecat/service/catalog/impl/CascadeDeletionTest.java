@@ -14,11 +14,13 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
@@ -84,6 +86,84 @@ class CascadeDeletionTest {
                 }));
 
     assertTrue(pointers.get(Keys.catalogDeletionMarker("acct", "catalog")).isEmpty());
+  }
+
+  @Test
+  void validationRejectionReleasesNewCatalogFenceBeforeCleanup() {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var catalogs = new CatalogRepository(pointers, blobs);
+    var namespaces = new NamespaceRepository(pointers, blobs);
+    ResourceId catalogId = id("acct", "catalog", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = id("acct", "local", ResourceKind.RK_NAMESPACE);
+    catalogs.create(
+        Catalog.newBuilder().setResourceId(catalogId).setDisplayName("catalog").build());
+    namespaces.create(namespace(namespaceId, catalogId, "local", List.of()));
+
+    var cascade = new CascadeDeletion();
+    cascade.catalogRepo = catalogs;
+    cascade.namespaceRepo = namespaces;
+    cascade.overlays = new CatalogOverlayRepository(pointers, blobs);
+
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            cascade.prepareCatalogDeletion(
+                catalogId,
+                catalogs.metaFor(catalogId),
+                () -> {},
+                null,
+                () -> {
+                  throw new IllegalStateException("explicit cascade required");
+                }));
+
+    assertTrue(pointers.get(Keys.catalogDeletionMarker("acct", "catalog")).isEmpty());
+    assertTrue(namespaces.getById(namespaceId).isPresent());
+  }
+
+  @Test
+  void catalogFenceRefusesARelationBeforeNamespaceFencingBegins() {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var catalogs = new CatalogRepository(pointers, blobs);
+    var namespaces = new NamespaceRepository(pointers, blobs);
+    var tables = new TableRepository(pointers, blobs);
+    var markers = markerStoreOver(pointers);
+    ResourceId catalogId = id("acct", "catalog", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = id("acct", "managed", ResourceKind.RK_NAMESPACE);
+    ResourceId tableId = id("acct", "racing-table", ResourceKind.RK_TABLE);
+    catalogs.create(
+        Catalog.newBuilder().setResourceId(catalogId).setDisplayName("catalog").build());
+    namespaces.create(namespace(namespaceId, catalogId, "managed", List.of()));
+
+    var cascade = new CascadeDeletion();
+    cascade.catalogRepo = catalogs;
+    cascade.namespaceRepo = namespaces;
+    cascade.overlays = new CatalogOverlayRepository(pointers, blobs);
+    cascade.markerStore = markers;
+
+    cascade.prepareCatalogDeletion(
+        catalogId,
+        catalogs.metaFor(catalogId),
+        () -> {},
+        null,
+        () -> {
+          var racingTable =
+              Table.newBuilder()
+                  .setResourceId(tableId)
+                  .setCatalogId(catalogId)
+                  .setNamespaceId(namespaceId)
+                  .setDisplayName("racing")
+                  .build();
+          assertTrue(
+              tables
+                  .createWhilePointersMatch(
+                      racingTable, markers.relationCreateFence(catalogId, namespaceId))
+                  .isEmpty(),
+              "the Catalog fence refuses a relation before namespace cleanup starts");
+        });
+
+    assertTrue(tables.getById(tableId).isEmpty());
   }
 
   @Test

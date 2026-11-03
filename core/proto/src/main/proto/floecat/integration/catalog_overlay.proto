@@ -72,6 +72,9 @@ message CreateCatalogOverlayRequest {
   // Non-default modes replace the existing identity, or return the existing resource unchanged.
   // Non-default modes cannot be combined with idempotency; replacement is itself state-idempotent.
   ai.floedb.floecat.common.CreateMode create_mode = 3;
+  // Allow CM_REPLACE to remove content the replaced Overlay did not materialize when it also
+  // removes an Overlay-owned Catalog.
+  bool cascade = 4;
 }
 message CreateCatalogOverlayResponse {
   CatalogOverlay overlay = 1;
@@ -115,6 +118,8 @@ message UpdateCatalogOverlayResponse {
 message DeleteCatalogOverlayRequest {
   ai.floedb.floecat.common.ResourceId overlay_id = 1;
   ai.floedb.floecat.common.Precondition precondition = 2;
+  // Allow deletion of content the Overlay did not materialize from an owned Catalog.
+  bool cascade = 3;
 }
 message DeleteCatalogOverlayResponse {
   ai.floedb.floecat.common.MutationMeta meta = 1;

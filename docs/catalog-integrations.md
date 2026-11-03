@@ -159,7 +159,7 @@ overlay get <name|id>
 overlay create <name> <integration-name|id> [catalog-name|id] [options]
 overlay update <name|id> [options]
 overlay reconcile <name|id> [--etag <etag>]
-overlay delete <name|id>
+overlay delete <name|id> [--cascade]
 ```
 
 Run only the real-Polaris Integration validation and Overlay reconciliation smoke scenario with:
@@ -323,13 +323,17 @@ the region for both validation and reads. Only when none is set does the deploym
 - Overlay display names are unique within an account and identify the mapping into a destination
   catalog.
 - An integration cannot be deleted while overlays refer to it.
-- Integration deletion supports `--cascade` to delete dependent overlays.
-- Deleting an overlay also recursively deletes a catalog that Floecat created for it, including its
-  namespaces and relations. A direct overlay delete requires the catalog to be unshared. An
-  integration cascade may remove a catalog shared only by that integration's overlays, because it
-  deletes all of them; an overlay from another integration still blocks the cascade.
+- Integration deletion supports `--cascade` to delete dependent overlays, including unmanaged
+  content in Catalogs those overlays own.
+- Deleting an overlay also deletes a catalog that Floecat created for it and the content that
+  overlay materialized. Other content requires `--cascade`; without it the delete is rejected as
+  `CATALOG_NOT_EMPTY`. A direct overlay delete requires the catalog to be unshared. An integration
+  cascade may remove a catalog shared only by that integration's overlays, because it deletes all
+  of them; an overlay from another integration still blocks the cascade.
 - If an owned catalog is already absent, deleting its overlay still removes the stale overlay and
   its dependency pointers.
+- Retrying an interrupted owned-Catalog cascade without `--cascade` may return
+  `CATALOG_NOT_EMPTY`; retry with `--cascade` to resume the explicitly destructive operation.
 - Renaming an overlay does not rename its owned catalog.
 - Supplying the owned catalog ID explicitly in a replacing create makes the catalog independent;
   subsequent overlay deletion leaves it in place.

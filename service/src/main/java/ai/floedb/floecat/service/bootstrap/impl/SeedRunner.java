@@ -531,7 +531,9 @@ public class SeedRunner {
     // DeleteNamespace -- and seedData runs on an executor while traffic is served.
     seedFencedWrite(
         "seeding a view",
-        () -> views.createWhilePointersMatch(view, markerStore.relationCreateFence(nsRid)));
+        () ->
+            views.createWhilePointersMatch(
+                view, markerStore.relationCreateFence(catalogId, nsRid)));
     return viewRid;
   }
 
@@ -585,7 +587,7 @@ public class SeedRunner {
         "seeding a table",
         () ->
             tables
-                .createWhilePointersMatch(table, markerStore.relationCreateFence(nsRid))
+                .createWhilePointersMatch(table, markerStore.relationCreateFence(catalogId, nsRid))
                 .isPresent());
     return tableRid;
   }

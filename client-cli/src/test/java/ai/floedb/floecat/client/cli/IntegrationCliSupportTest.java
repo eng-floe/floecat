@@ -390,8 +390,9 @@ class IntegrationCliSupportTest {
           h.overlays.lastUpdate.getUpdateMask().getPathsList());
       assertEquals("renamed", h.overlays.lastUpdate.getSpec().getDisplayName());
 
-      h.run("overlay", List.of("delete", OVERLAY_ID));
+      h.run("overlay", List.of("delete", OVERLAY_ID, "--cascade"));
       assertEquals(OVERLAY_ID, h.overlays.lastDelete.getOverlayId().getId());
+      assertTrue(h.overlays.lastDelete.getCascade());
     }
   }
 

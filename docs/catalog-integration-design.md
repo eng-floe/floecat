@@ -80,7 +80,9 @@ Catalog "analytics"                     independently managed target
 An overlay is a mapping resource that references exactly one Integration and one Floecat `Catalog`.
 The caller may supply an independently managed Catalog, or omit it and let Floecat create an owned
 Catalog with the overlay name. Deleting an owning overlay recursively deletes that Catalog once it
-is unshared. Multiple overlays may target an independently managed Catalog. An overlay owns the
+is unshared; replacement also deletes it when rebinding to a different Catalog. Either operation
+requires explicit cascade consent when the Catalog contains content not materialized by the owning
+Overlay. Multiple overlays may target an independently managed Catalog. An overlay owns the
 materialized contributions produced by its mapping. Name resolution, listing, pinning, planning,
 and garbage collection operate on ordinary Catalog, Namespace, Table, View, and Snapshot resources
 with no overlay-specific read path.
@@ -194,10 +196,14 @@ immutable resource identity rather than display name.
 An explicitly selected target Catalog remains directly manageable. Clients may create local
 namespaces and relations in it, and other overlays may contribute non-conflicting resources. An
 owned Catalog must be unshared before its Overlay can be deleted. It accepts direct writes like any
-other Catalog, and that content is not preserved: deleting the Overlay, or replacing it with one
-bound to another Catalog, recursively deletes every namespace and relation in the owned Catalog,
-local or materialized, which is why both require catalog cascade permission. Materialized Tables and Views carry
-typed Integration and Overlay provenance and reject direct mutation while managed by the Overlay.
+other Catalog. Deleting the Overlay, or replacing it with one bound to another Catalog, removes the
+Overlay's materialized content automatically. If any other content remains, the operation is
+rejected as `CATALOG_NOT_EMPTY` unless the request explicitly enables cascade deletion. Both paths
+require catalog cascade permission. Materialized Tables and Views carry typed Integration and
+Overlay provenance and reject direct mutation while managed by the Overlay.
+The `floecat.catalog-overlay.*` and `floecat.catalog-integration.*` property namespaces are
+server-managed and rejected on user create and update paths so they cannot be used to spoof that
+provenance.
 During a cascading Integration delete, overlays of that same Integration do not count as external
 sharing because the operation removes them all; an Overlay belonging to another Integration still
 blocks deletion of the owned Catalog. If the owned Catalog is already absent, deletion removes the
@@ -224,10 +230,11 @@ choose different bindings after the previous Overlay's contributions are retired
 Deleting an Overlay installs a deletion fence. For an independently managed target it removes only
 Tables, Views, snapshot state, and namespace claims managed by that Overlay, then removes its
 dependencies and resource record. For an owned target, it uses the catalog cascade driver to fence
-and recursively delete the unshared Catalog and all of its contents, then atomically removes the
-Overlay, Catalog, and their deletion fences. If the Catalog proves shared before anything has been removed,
-the delete is rejected and withdraws the deletion fence it installed, so the Overlay stays
-updatable and reconcilable.
+and recursively delete the unshared Catalog. Content not managed by the Overlay requires explicit
+cascade consent; without it, deletion is rejected as `CATALOG_NOT_EMPTY`. Validation runs under the
+Catalog fence before cleanup begins. The final mutation atomically removes the Overlay, Catalog,
+and their deletion fences. If validation rejects before anything has been removed, the operation
+withdraws the new fences it installed, so the Overlay stays updatable and reconcilable.
 
 ## Namespace selection
 
@@ -441,7 +448,7 @@ deletion changes invalidate older work.
 | Rename target catalog | Ordinary Catalog rename; Overlay bindings remain valid by resource ID | No additional behavior required |
 | Replace integration | New identity; rejected while dependent overlays exist | Validation may run before publication |
 | Rotate credentials | Atomic new credential generation; old generation retired after publication | Reclaim acknowledgement-uncertain orphan generations |
-| Create or replace overlay | Attaches to a supplied Catalog or atomically creates an owned Catalog; stores the selection plus Integration and Catalog dependencies; replacement fences and retires only the prior Overlay's contributions | Trigger or join durable snapshot/file capture into the target Catalog |
+| Create or replace overlay | Attaches to a supplied Catalog or atomically creates an owned Catalog; stores the selection plus Integration and Catalog dependencies; replacement fences and retires the prior Overlay's contributions, requiring cascade consent before removing other content from an owned Catalog | Trigger or join durable snapshot/file capture into the target Catalog |
 | Reconcile overlay | Completes discovery and collision preflight, publishes desired namespace claims, Table definitions, and Views, then retires stale managed contributions behind generation fences | Schedule reconciliation and capture Snapshots, files, validation, and statistics |
 | Delete overlay | Preflights owned-Catalog sharing and installs an Overlay deletion fence; independent targets explicitly retire the Overlay's materialized relations and namespace claims, while owned targets use the catalog cascade driver and atomically remove the Overlay with the recursively emptied Catalog | Cancel and drain durable jobs |
 | Delete integration | Rejected while overlays exist | Fence integration-owned jobs |

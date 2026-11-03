@@ -6,6 +6,7 @@
 package ai.floedb.floecat.service.integration;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_DEPENDENT_OVERLAYS;
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_NOT_EMPTY;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -36,17 +37,24 @@ class CatalogOverlayLifecycle {
   @Inject CatalogOverlayRepository overlays;
   @Inject CatalogRepository catalogs;
   @Inject CascadeDeletion cascadeDeletion;
+  @Inject CatalogOverlayReconciler reconciler;
 
   /** Rejects a destructive operation before it installs a fence or retires managed content. */
-  void preflightOwnedCatalogRemoval(CatalogOverlay owner, String corr) {
-    preflightOwnedCatalogRemoval(owner, corr, null);
+  void preflightOwnedCatalogRemoval(CatalogOverlay owner, boolean cascade, String corr) {
+    preflightOwnedCatalogRemoval(owner, cascade, corr, null);
   }
 
   void preflightOwnedCatalogRemoval(
       CatalogOverlay owner, String corr, ResourceId deletingIntegrationId) {
+    preflightOwnedCatalogRemoval(owner, true, corr, deletingIntegrationId);
+  }
+
+  private void preflightOwnedCatalogRemoval(
+      CatalogOverlay owner, boolean cascade, String corr, ResourceId deletingIntegrationId) {
     if (!owner.getOwnsCatalog()) return;
     if (ownedCatalog(owner).isEmpty()) return;
     ensureUnshared(owner, corr, deletingIntegrationId);
+    ensureNoUnmanagedContent(owner, cascade, corr);
   }
 
   /** Completes an already-fenced overlay delete, including its owned catalog when applicable. */
@@ -54,14 +62,26 @@ class CatalogOverlayLifecycle {
       CatalogOverlay owner,
       long overlayPointerVersion,
       DurableDeletionFence.Fence overlayFence,
+      boolean cascade,
       String corr) {
-    return deleteFenced(owner, overlayPointerVersion, overlayFence, corr, null);
+    return deleteFenced(owner, overlayPointerVersion, overlayFence, cascade, corr, null);
   }
 
   boolean deleteFenced(
       CatalogOverlay owner,
       long overlayPointerVersion,
       DurableDeletionFence.Fence overlayFence,
+      String corr,
+      ResourceId deletingIntegrationId) {
+    return deleteFenced(
+        owner, overlayPointerVersion, overlayFence, true, corr, deletingIntegrationId);
+  }
+
+  private boolean deleteFenced(
+      CatalogOverlay owner,
+      long overlayPointerVersion,
+      DurableDeletionFence.Fence overlayFence,
+      boolean cascade,
       String corr,
       ResourceId deletingIntegrationId) {
     if (!owner.getOwnsCatalog()) {
@@ -75,7 +95,8 @@ class CatalogOverlayLifecycle {
           owner.getResourceId(), overlayPointerVersion, overlayFence.version());
     }
     OwnedCatalogRemoval removal =
-        prepareOwnedCatalogRemoval(owner, catalog.get(), overlayFence, corr, deletingIntegrationId);
+        prepareOwnedCatalogRemoval(
+            owner, catalog.get(), overlayFence, cascade, corr, deletingIntegrationId);
     return overlays.deleteWithFenceAndCompanions(
         owner.getResourceId(),
         overlayPointerVersion,
@@ -90,11 +111,28 @@ class CatalogOverlayLifecycle {
   }
 
   /**
-   * Rejects a shared catalog. The cascade runs this before it removes anything, so a rejected
-   * attempt withdraws the overlay fence it installed: the overlay was never partly deleted and must
-   * stay updatable and reconcilable. A fence an earlier attempt installed is left alone, since that
-   * attempt may have made progress this one cannot see.
+   * Validates sharing and unmanaged content under the Catalog fence. A rejected attempt withdraws
+   * the Overlay fence it installed because nothing was removed; a fence from an earlier attempt is
+   * retained because that attempt may have made progress this one cannot see.
    */
+  private void validateRemoval(
+      CatalogOverlay owner,
+      DurableDeletionFence.Fence overlayFence,
+      boolean cascade,
+      String corr,
+      ResourceId deletingIntegrationId) {
+    try {
+      ensureUnshared(owner, corr, deletingIntegrationId);
+      ensureNoUnmanagedContent(owner, cascade, corr);
+    } catch (RuntimeException rejected) {
+      if (overlayFence.newlyInstalled()) {
+        overlays.releaseDeletionFence(owner.getResourceId(), overlayFence.version());
+      }
+      throw rejected;
+    }
+  }
+
+  /** Rejects sharing at the Catalog cascade's pre-delete gate and releases a new Overlay fence. */
   private void requireUnshared(
       CatalogOverlay owner,
       DurableDeletionFence.Fence overlayFence,
@@ -108,6 +146,12 @@ class CatalogOverlayLifecycle {
       }
       throw rejected;
     }
+  }
+
+  private void ensureNoUnmanagedContent(CatalogOverlay owner, boolean cascade, String corr) {
+    if (cascade || !reconciler.hasUnmanagedContent(owner)) return;
+    throw GrpcErrors.conflict(
+        corr, CATALOG_NOT_EMPTY, Map.of("display_name", owner.getDisplayName()));
   }
 
   private void ensureUnshared(CatalogOverlay owner, String corr, ResourceId deletingIntegrationId) {
@@ -160,14 +204,16 @@ class CatalogOverlayLifecycle {
       CatalogOverlay owner,
       ResourceWithMeta<Catalog> catalog,
       DurableDeletionFence.Fence overlayFence,
+      boolean cascade,
       String corr) {
-    return prepareOwnedCatalogRemoval(owner, catalog, overlayFence, corr, null);
+    return prepareOwnedCatalogRemoval(owner, catalog, overlayFence, cascade, corr, null);
   }
 
   private OwnedCatalogRemoval prepareOwnedCatalogRemoval(
       CatalogOverlay owner,
       ResourceWithMeta<Catalog> catalog,
       DurableDeletionFence.Fence overlayFence,
+      boolean cascade,
       String corr,
       ResourceId deletingIntegrationId) {
     ResourceId catalogId = owner.getCatalogId();
@@ -176,7 +222,8 @@ class CatalogOverlayLifecycle {
             catalogId,
             catalog.meta(),
             () -> requireUnshared(owner, overlayFence, corr, deletingIntegrationId),
-            owner.getResourceId());
+            owner.getResourceId(),
+            () -> validateRemoval(owner, overlayFence, cascade, corr, deletingIntegrationId));
     Map<String, Long> deletes = new HashMap<>(prepared.childMarkers().toDelete());
     deletes.put(
         Keys.catalogDeletionMarker(catalogId.getAccountId(), catalogId.getId()),

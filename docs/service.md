@@ -121,8 +121,9 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   dependent overlays also requires `catalog-overlay.delete`.
 - **CatalogOverlaysImpl** – Binds an integration and optional upstream namespace filters to a
   supplied Catalog, or atomically creates an owned Catalog when the target is omitted. Supplied
-  Catalogs remain independently managed and may be shared; unshared owned Catalogs and their
-  contents are recursively deleted with their Overlay. Creating an overlay atomically publishes Integration and Catalog
+  Catalogs remain independently managed and may be shared; unshared owned Catalogs and the owning
+  Overlay's materialized content are recursively deleted with the Overlay. Other content requires
+  explicit cascade consent. Creating an overlay atomically publishes Integration and Catalog
   dependency pointers while requiring both parents to remain at their validated versions, and
   advances both dependency markers in the same transaction. `CM_REPLACE` atomically swaps in a new
   overlay identity and may bind it to another Integration or Catalog while advancing all affected

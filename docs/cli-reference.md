@@ -103,7 +103,7 @@ overlay create <name> <integration-name|id> [catalog-name|id]
 overlay update <name|id> [--display <name>]
     [--include ns[,ns...]] [--exclude ns[,ns...]] [--etag <etag>]
 overlay reconcile <name|id> [--etag <etag>]
-overlay delete <name|id> [--etag <etag>]
+overlay delete <name|id> [--cascade] [--etag <etag>]
 
 connectors
 connector list [--kind <KIND>]

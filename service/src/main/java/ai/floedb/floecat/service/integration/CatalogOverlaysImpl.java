@@ -257,6 +257,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                             includes,
                             excludes,
                             mode,
+                            request.getCascade(),
                             false,
                             null,
                             now,
@@ -289,6 +290,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                                     includes,
                                     excludes,
                                     CreateMode.CM_ERROR_IF_EXISTS,
+                                    false,
                                     true,
                                     completion,
                                     now,
@@ -323,6 +325,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
           List<NamespacePath> includes,
           List<NamespacePath> excludes,
           CreateMode mode,
+          boolean cascade,
           boolean reservedIdentity,
           IdempotencyGuard.SuccessCommitter<CatalogOverlay> completion,
           com.google.protobuf.Timestamp now,
@@ -441,7 +444,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
           current.value().getOwnsCatalog() && !oldCatalogId.equals(catalogId);
       if (deletesOwnedCatalog) {
         CatalogCascadeAuthorization.require(authz, principal.get());
-        lifecycle.preflightOwnedCatalogRemoval(current.value(), corr);
+        lifecycle.preflightOwnedCatalogRemoval(current.value(), cascade, corr);
       }
       var replacementFence =
           overlays
@@ -461,7 +464,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
       if (deletesOwnedCatalog) {
         var removal =
             lifecycle.prepareOwnedCatalogRemoval(
-                current.value(), oldCatalog, replacementFence, corr);
+                current.value(), oldCatalog, replacementFence, cascade, corr);
         replacementConditions = removal.alongside(replacementConditions);
         replacementDeletePointers = removal.deletes();
         replacementCompanions.addAll(removal.companions());
@@ -713,7 +716,8 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                       corr, meta, request.getPrecondition());
                   if (current.get().value().getOwnsCatalog()) {
                     CatalogCascadeAuthorization.require(authz, pc);
-                    lifecycle.preflightOwnedCatalogRemoval(current.get().value(), corr);
+                    lifecycle.preflightOwnedCatalogRemoval(
+                        current.get().value(), request.getCascade(), corr);
                   }
                   var deletionFence =
                       overlays
@@ -726,7 +730,11 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                     reconciler.retireMaterializedResources(current.get().value());
                   boolean deleted =
                       lifecycle.deleteFenced(
-                          current.get().value(), meta.getPointerVersion(), deletionFence, corr);
+                          current.get().value(),
+                          meta.getPointerVersion(),
+                          deletionFence,
+                          request.getCascade(),
+                          corr);
                   if (!deleted)
                     throw new BaseResourceRepository.AbortRetryableException(
                         "overlay changed during deletion");

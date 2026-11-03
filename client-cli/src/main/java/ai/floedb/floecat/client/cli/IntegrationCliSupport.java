@@ -334,12 +334,13 @@ final class IntegrationCliSupport {
       }
       case "delete" -> {
         if (args.size() < 2) {
-          out.println("usage: overlay delete <name|id> [--etag <etag>]");
+          out.println("usage: overlay delete <name|id> [--cascade] [--etag <etag>]");
           return;
         }
         var request =
             DeleteCatalogOverlayRequest.newBuilder()
-                .setOverlayId(resolveOverlay(args.get(1), overlays, accountId));
+                .setOverlayId(resolveOverlay(args.get(1), overlays, accountId))
+                .setCascade(args.contains("--cascade"));
         var precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) request.setPrecondition(precondition);
         overlays.deleteCatalogOverlay(request.build());

@@ -92,7 +92,8 @@ class CatalogOverlaysImplTest {
     when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId()))
         .thenReturn(2L);
     when(service.markerStore.catalogOverlaysMarkerVersion(catalogId())).thenReturn(3L);
-    when(service.lifecycle.deleteFenced(any(), anyLong(), any(), any())).thenReturn(true);
+    when(service.lifecycle.deleteFenced(any(), anyLong(), any(), anyBoolean(), any()))
+        .thenReturn(true);
     when(service.overlays.createAttachedWithMetaAndCompanions(any(), any(), any(), any(), any()))
         .thenAnswer(
             invocation -> {
@@ -385,7 +386,7 @@ class CatalogOverlaysImplTest {
     assertTrue(response.getOverlay().getOwnsCatalog());
     verify(service.catalogs, never()).prepareCreateOps(any());
     verify(service.catalogs, never()).prepareDeleteOps(any());
-    verify(service.lifecycle, never()).preflightOwnedCatalogRemoval(any(), any());
+    verify(service.lifecycle, never()).preflightOwnedCatalogRemoval(any(), anyBoolean(), any());
   }
 
   @Test
@@ -404,12 +405,13 @@ class CatalogOverlaysImplTest {
     when(service.catalogs.getByIdWithMeta(oldCatalogId))
         .thenReturn(Optional.of(row(oldCatalog, 13L)));
     when(service.overlays.countByCatalog("acct", "old-catalog")).thenReturn(1);
+    when(service.reconciler.hasUnmanagedContent(current)).thenReturn(true);
     when(service.markerStore.catalogOverlaysMarkerVersion(oldCatalogId)).thenReturn(6L);
     var childMarkers =
         new MarkerStore.MarkerRemoval(
             new PointerConditions(Map.of(), Set.of(), Map.of()), Map.of());
     when(cascadeDeletion.prepareCatalogDeletion(
-            eq(oldCatalogId), any(), any(Runnable.class), eq(oldOverlayId)))
+            eq(oldCatalogId), any(), any(Runnable.class), eq(oldOverlayId), any(Runnable.class)))
         .thenReturn(new CascadeDeletion.PreparedCatalogDeletion(fence(17L, true), childMarkers));
     when(service.catalogs.prepareDeleteOps(oldCatalogId)).thenReturn(List.of());
     when(service.overlays.acquireDeletionFence(oldOverlayId, 9L))
@@ -423,6 +425,7 @@ class CatalogOverlaysImplTest {
             .createCatalogOverlay(
                 CreateCatalogOverlayRequest.newBuilder()
                     .setCreateMode(CreateMode.CM_REPLACE)
+                    .setCascade(true)
                     .setSpec(baseSpec())
                     .build())
             .await()
@@ -431,6 +434,46 @@ class CatalogOverlaysImplTest {
     assertFalse(response.getOverlay().getOwnsCatalog());
     assertEquals(catalogId(), response.getOverlay().getCatalogId());
     verify(service.catalogs).prepareDeleteOps(oldCatalogId);
+  }
+
+  @Test
+  void replacingOwnedOverlayRejectsUnmanagedContentWithoutCascade() {
+    installRealLifecycle();
+    var oldOverlayId = id("old-overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var oldCatalogId = id("old-catalog", ResourceKind.RK_CATALOG);
+    var current =
+        overlay(oldOverlayId, integrationId(), oldCatalogId, "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByNameWithMeta("acct", "sales"))
+        .thenReturn(Optional.of(row(current, 9L)));
+    when(service.catalogs.getByIdWithMeta(oldCatalogId))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder()
+                        .setResourceId(oldCatalogId)
+                        .setDisplayName("sales")
+                        .build(),
+                    13L)));
+    when(service.overlays.countByCatalog("acct", "old-catalog")).thenReturn(1);
+    when(service.reconciler.hasUnmanagedContent(current)).thenReturn(true);
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createCatalogOverlay(
+                        CreateCatalogOverlayRequest.newBuilder()
+                            .setCreateMode(CreateMode.CM_REPLACE)
+                            .setSpec(baseSpec())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.ABORTED, error.getStatus().getCode());
+    verify(service.overlays, never()).acquireDeletionFence(any(), anyLong());
   }
 
   @Test
@@ -707,7 +750,7 @@ class CatalogOverlaysImplTest {
 
     verify(service.overlays).acquireDeletionFence(overlayId, 7L);
     verify(service.reconciler).retireMaterializedResources(current);
-    verify(service.lifecycle).deleteFenced(current, 7L, fence(1L, true), "corr");
+    verify(service.lifecycle).deleteFenced(current, 7L, fence(1L, true), false, "corr");
     verify(service.catalogs, never()).delete(any());
   }
 
@@ -740,9 +783,60 @@ class CatalogOverlaysImplTest {
         .await()
         .indefinitely();
 
-    verify(service.lifecycle).preflightOwnedCatalogRemoval(current, "corr");
-    verify(service.lifecycle).deleteFenced(current, 7L, fence(1L, true), "corr");
+    verify(service.lifecycle).preflightOwnedCatalogRemoval(current, false, "corr");
+    verify(service.lifecycle).deleteFenced(current, 7L, fence(1L, true), false, "corr");
     verify(service.reconciler, never()).retireMaterializedResources(current);
+  }
+
+  @Test
+  void ownedDeleteRejectsUnmanagedContentWithoutCascadeBeforeFencing() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1);
+    when(service.catalogs.getByIdWithMeta(catalogId()))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder().setResourceId(catalogId()).setDisplayName("sales").build(),
+                    5L)));
+    when(service.reconciler.hasUnmanagedContent(current)).thenReturn(true);
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .deleteCatalogOverlay(
+                        DeleteCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.ABORTED, error.getStatus().getCode());
+    verify(service.overlays, never()).acquireDeletionFence(any(), anyLong());
+  }
+
+  @Test
+  void cascadeConsentAllowsOwnedDeleteWithUnmanagedContent() {
+    installRealLifecycle();
+    var current =
+        overlay(
+                id("overlay", ResourceKind.RK_CATALOG_OVERLAY),
+                integrationId(),
+                catalogId(),
+                "sales")
+            .toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    stubCatalog(catalogId(), 5L);
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1);
+    when(service.reconciler.hasUnmanagedContent(current)).thenReturn(true);
+
+    assertDoesNotThrow(() -> service.lifecycle.preflightOwnedCatalogRemoval(current, true, "corr"));
   }
 
   @Test
@@ -853,7 +947,7 @@ class CatalogOverlaysImplTest {
         .indefinitely();
 
     verify(service.overlays).deleteWithFence(overlayId, 7L, 1L);
-    verify(cascadeDeletion, never()).prepareCatalogDeletion(any(), any(), any(), any());
+    verify(cascadeDeletion, never()).prepareCatalogDeletion(any(), any(), any(), any(), any());
   }
 
   @Test
@@ -905,14 +999,14 @@ class CatalogOverlaysImplTest {
         new MarkerStore.MarkerRemoval(
             new PointerConditions(Map.of(), Set.of(), Map.of()), Map.of());
     when(cascadeDeletion.prepareCatalogDeletion(
-            eq(catalogId()), any(), any(Runnable.class), eq(overlayId)))
+            eq(catalogId()), any(), any(Runnable.class), eq(overlayId), any(Runnable.class)))
         .thenReturn(new CascadeDeletion.PreparedCatalogDeletion(fence(2L, true), childMarkers));
     when(service.catalogs.prepareDeleteOps(catalogId())).thenReturn(List.of());
     when(service.overlays.deleteWithFenceAndCompanions(
             eq(overlayId), eq(7L), eq(1L), any(), any(), any()))
         .thenReturn(false);
 
-    assertFalse(service.lifecycle.deleteFenced(current, 7L, fence(1L, true), "corr"));
+    assertFalse(service.lifecycle.deleteFenced(current, 7L, fence(1L, true), false, "corr"));
   }
 
   @Test
@@ -931,12 +1025,12 @@ class CatalogOverlaysImplTest {
                     5L)));
     when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1);
     when(cascadeDeletion.prepareCatalogDeletion(
-            eq(catalogId()), any(), any(Runnable.class), eq(overlayId)))
+            eq(catalogId()), any(), any(Runnable.class), eq(overlayId), any(Runnable.class)))
         .thenThrow(new BaseResourceRepository.AbortRetryableException("namespace changed"));
 
     assertThrows(
         BaseResourceRepository.AbortRetryableException.class,
-        () -> service.lifecycle.deleteFenced(current, 7L, fence(1L, true), "corr"));
+        () -> service.lifecycle.deleteFenced(current, 7L, fence(1L, true), false, "corr"));
     verify(service.overlays, never()).releaseDeletionFence(any(), anyLong());
   }
 
@@ -955,6 +1049,44 @@ class CatalogOverlaysImplTest {
     // Unshared at preflight; another overlay attaches before the cascade fences the catalog.
     when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1, 2);
     runsSharingCheckBeforeRemovingAnything(catalogId(), overlayId);
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .deleteCatalogOverlay(
+                        DeleteCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.ABORTED, error.getStatus().getCode());
+    verify(service.overlays).releaseDeletionFence(overlayId, 1L);
+    verify(service.overlays, never())
+        .deleteWithFenceAndCompanions(any(), anyLong(), anyLong(), any(), any(), any());
+  }
+
+  @Test
+  void ownedDeleteRechecksUnmanagedContentUnderCatalogFence() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+    when(service.overlays.acquireDeletionFence(overlayId, 7L))
+        .thenReturn(Optional.of(fence(1L, true)));
+    stubCatalog(catalogId(), 5L);
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1);
+    when(service.reconciler.hasUnmanagedContent(current)).thenReturn(false, true);
+    when(cascadeDeletion.prepareCatalogDeletion(
+            eq(catalogId()), any(), any(Runnable.class), eq(overlayId), any(Runnable.class)))
+        .thenAnswer(
+            invocation -> {
+              invocation.<Runnable>getArgument(4).run();
+              throw new AssertionError("validation should have rejected unmanaged content");
+            });
 
     var error =
         assertThrows(
@@ -1056,7 +1188,7 @@ class CatalogOverlaysImplTest {
 
     assertThrows(
         StatusRuntimeException.class,
-        () -> service.lifecycle.deleteFenced(current, 7L, fence(1L, false), "corr"));
+        () -> service.lifecycle.deleteFenced(current, 7L, fence(1L, false), false, "corr"));
 
     verify(service.overlays, never()).releaseDeletionFence(any(), anyLong());
   }
@@ -1088,7 +1220,7 @@ class CatalogOverlaysImplTest {
   /** Has the mocked cascade run the overlay's sharing check where the real one does. */
   private void runsSharingCheckBeforeRemovingAnything(ResourceId catalogId, ResourceId overlayId) {
     when(cascadeDeletion.prepareCatalogDeletion(
-            eq(catalogId), any(), any(Runnable.class), eq(overlayId)))
+            eq(catalogId), any(), any(Runnable.class), eq(overlayId), any(Runnable.class)))
         .thenAnswer(
             invocation -> {
               invocation.<Runnable>getArgument(2).run();
@@ -1101,6 +1233,7 @@ class CatalogOverlaysImplTest {
     service.lifecycle.overlays = service.overlays;
     service.lifecycle.catalogs = service.catalogs;
     service.lifecycle.cascadeDeletion = cascadeDeletion;
+    service.lifecycle.reconciler = service.reconciler;
   }
 
   private static ai.floedb.floecat.service.repo.util.DurableDeletionFence.Fence fence(

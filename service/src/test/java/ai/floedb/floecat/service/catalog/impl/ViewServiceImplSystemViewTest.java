@@ -89,9 +89,9 @@ class ViewServiceImplSystemViewTest {
     svc.markerStore = mock(MarkerStore.class);
     // A view create reaches relationCreateFence; an update that may move it reaches
     // relationMoveFence. Both must answer with a real (empty) condition set rather than null.
-    when(svc.markerStore.relationMoveFence(any(), any(), anyBoolean()))
+    when(svc.markerStore.relationMoveFence(any(), any(), any(), anyBoolean()))
         .thenReturn(GenericResourceRepository.PointerConditions.none());
-    when(svc.markerStore.relationCreateFence(any()))
+    when(svc.markerStore.relationCreateFence(any(), any()))
         .thenReturn(GenericResourceRepository.PointerConditions.none());
 
     var pc = TestPrincipals.stubPrincipal(principal, authz);

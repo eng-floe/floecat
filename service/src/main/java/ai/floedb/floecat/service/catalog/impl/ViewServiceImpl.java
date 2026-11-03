@@ -45,6 +45,7 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.FenceRetry;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
+import ai.floedb.floecat.service.common.ManagedCatalogIntegrationProperties;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -165,6 +166,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   }
                   var spec = request.getSpec();
                   PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                      spec.getPropertiesMap(), corr, "spec.properties");
+                  ManagedCatalogIntegrationProperties.validateUserProperties(
                       spec.getPropertiesMap(), corr, "spec.properties");
 
                   if (!spec.hasCatalogId()) {
@@ -367,6 +370,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   if (maskTargets(mask, "properties")) {
                     PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
                         spec.getPropertiesMap(), corr, "spec.properties");
+                    ManagedCatalogIntegrationProperties.validateUserProperties(
+                        spec.getPropertiesMap(), corr, "spec.properties");
                   }
 
                   var meta = viewRepo.metaFor(viewId);
@@ -384,6 +389,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   // TableServiceImpl's update states.
                   final var fromNamespace = current.getNamespaceId();
                   final var toNamespace = desired.getNamespaceId();
+                  final var toCatalog = desired.getCatalogId();
                   // A catalog-only change still re-keys the relation, because its by-name key and
                   // the count behind the fence both carry the catalog.
                   final boolean changesCatalog =
@@ -394,7 +400,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           toNamespace,
                           () ->
                               markerStore.relationMoveFence(
-                                  fromNamespace, toNamespace, changesCatalog));
+                                  toCatalog, fromNamespace, toNamespace, changesCatalog));
                   var writePolicy = catalogSurfaceWritePolicy();
                   var desiredNamespace =
                       writePolicy.requireWritableNamespace(
@@ -737,7 +743,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
         namespaceFenceOrNotFound(
             corr,
             view.getNamespaceId(),
-            () -> markerStore.relationCreateFence(view.getNamespaceId()));
+            () -> markerStore.relationCreateFence(view.getCatalogId(), view.getNamespaceId()));
     var ns = writePolicy.requireWritableNamespace(namespaceId, "spec.namespace_id", corr);
     writePolicy.requireNamespaceInCatalog(ns, namespaceId, catalogId, corr);
     return fence;

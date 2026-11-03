@@ -59,8 +59,9 @@ and are not part of either new contract.
 
 An overlay references one Catalog. The caller may provide an independently managed Catalog, or
 Floecat can atomically create an owned Catalog with the overlay. Multiple overlays may target an
-independent Catalog; deleting an unshared owning overlay recursively deletes its Catalog and
-contents. Overlay creation is conditioned on current parent pointer versions and atomically
+independent Catalog; deleting an unshared owning overlay recursively deletes its Catalog and its
+materialized content. Other content requires explicit cascade consent. Overlay creation is
+conditioned on current parent pointer versions and atomically
 publishes dependency indexes while advancing fixed dependency markers. Integration and Catalog
 deletion check the strongly consistent indexes and matching markers, closing concurrent
 create/delete races. Account deletion fences every account-scoped writer, then an owner-local GC

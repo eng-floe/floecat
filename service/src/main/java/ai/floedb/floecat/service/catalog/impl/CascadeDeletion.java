@@ -57,7 +57,7 @@ public class CascadeDeletion {
   public MutationMeta deleteCatalog(
       ResourceId catalogId, MutationMeta catalogMeta, Runnable requireOverlayDelete) {
     PreparedCatalogDeletion prepared =
-        prepareCatalogDeletion(catalogId, catalogMeta, requireOverlayDelete, null);
+        prepareCatalogDeletion(catalogId, catalogMeta, requireOverlayDelete, null, () -> {});
     if (!catalogRepo.deleteForCascade(
         catalogId,
         catalogMeta.getPointerVersion(),
@@ -76,14 +76,17 @@ public class CascadeDeletion {
    * final batch removes that overlay, the emptied catalog, both fences and the catalog markers
    * together. All other callers pass no retained overlay and use {@link #deleteCatalog}.
    *
-   * <p>{@code requireOverlayDelete} runs before anything is removed, so a caller may treat a
-   * rejection from it as leaving the catalog and its overlays intact.
+   * <p>{@code requireOverlayDelete} runs before anything is removed. {@code validateBeforeDelete}
+   * runs after the Catalog fence is installed but before cleanup begins; a rejection releases a
+   * fence installed by this attempt. A caller may therefore treat either rejection as leaving the
+   * catalog and its overlays intact.
    */
   public PreparedCatalogDeletion prepareCatalogDeletion(
       ResourceId catalogId,
       MutationMeta catalogMeta,
       Runnable requireOverlayDelete,
-      ResourceId retainedOverlayId) {
+      ResourceId retainedOverlayId,
+      Runnable validateBeforeDelete) {
     boolean hadOverlays = hasDeletableOverlays(catalogId, retainedOverlayId);
     if (hadOverlays) requireOverlayDelete.run();
 
@@ -94,6 +97,15 @@ public class CascadeDeletion {
                 () ->
                     new BaseResourceRepository.AbortRetryableException(
                         "catalog changed while cascade deletion was fenced"));
+
+    try {
+      validateBeforeDelete.run();
+    } catch (RuntimeException rejected) {
+      if (fence.newlyInstalled()) {
+        catalogRepo.releaseCascadeDeletionFence(catalogId, fence.version());
+      }
+      throw rejected;
+    }
 
     if (hasDeletableOverlays(catalogId, retainedOverlayId)) {
       if (!hadOverlays) {
