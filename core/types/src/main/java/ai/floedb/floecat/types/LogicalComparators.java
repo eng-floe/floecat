@@ -18,7 +18,9 @@ package ai.floedb.floecat.types;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Arrays;
 import java.util.Base64;
@@ -91,6 +93,18 @@ public final class LogicalComparators {
 
     Object na = normalize(t, a);
     Object nb = normalize(t, b);
+
+    // Strings and UUIDs order as their bytes do, unsigned, as Iceberg, Parquet and Delta bounds
+    // do: String.compareTo orders UTF-16 code units, and UUID.compareTo signed halves.
+    if (na instanceof String sa && nb instanceof String sb) {
+      return compareCodePoints(sa, sb);
+    }
+    if (na instanceof UUID ua && nb instanceof UUID ub) {
+      int high = Long.compareUnsigned(ua.getMostSignificantBits(), ub.getMostSignificantBits());
+      return high != 0
+          ? high
+          : Long.compareUnsigned(ua.getLeastSignificantBits(), ub.getLeastSignificantBits());
+    }
 
     if (!(na instanceof Comparable<?> c)) {
       throw new IllegalArgumentException(
@@ -204,36 +218,110 @@ public final class LogicalComparators {
         throw typeErr("DATE", v);
 
       case TIME:
-        {
-          if (v instanceof LocalTime t0) {
-            return TemporalCoercions.truncateToTemporalPrecision(t0, t.temporalPrecision());
-          }
-
-          if (v instanceof CharSequence s) {
-            return TemporalCoercions.truncateToTemporalPrecision(
-                LocalTime.parse(s.toString()), t.temporalPrecision());
-          }
-
-          throw typeErr("TIME", v);
-        }
-
       case TIMESTAMP:
-        {
-          return TemporalCoercions.truncateToTemporalPrecision(
-              TemporalCoercions.coerceTimestampNoTz(v), t.temporalPrecision());
-        }
-
       case TIMESTAMPTZ:
-        {
-          // TIMESTAMPTZ is always UTC-normalised and compared as Instant.
-          return TemporalCoercions.truncateToTemporalPrecision(
-              TemporalCoercions.coerceInstant(v), t.temporalPrecision());
-        }
+        return truncate(exactTemporal(t.kind(), v), t.temporalPrecision());
 
         // INTERVAL, JSON, and complex types (ARRAY, MAP, STRUCT, VARIANT) have no meaningful
         // min/max stats ordering; callers should check for null before comparing.
     }
     return null;
+  }
+
+  /** Orders by code point, which is the unsigned order of the strings' UTF-8 bytes. */
+  private static int compareCodePoints(String a, String b) {
+    int i = 0;
+    int j = 0;
+    while (i < a.length() && j < b.length()) {
+      int ca = a.codePointAt(i);
+      int cb = b.codePointAt(j);
+      if (ca != cb) {
+        return Integer.compare(ca, cb);
+      }
+      i += Character.charCount(ca);
+      j += Character.charCount(cb);
+    }
+    return Integer.compare(a.length() - i, b.length() - j);
+  }
+
+  /**
+   * As {@link #normalize}, for a lower bound: a value {@code t} cannot hold exactly (a temporal
+   * value finer than its precision, a double on a FLOAT column) is rounded down, so the bound still
+   * holds for it.
+   */
+  public static Object normalizeLower(LogicalType t, Object v) {
+    if (isStatsOrderable(t) && t.kind() == LogicalKind.FLOAT && v instanceof Number n) {
+      float f = n.floatValue();
+      return (double) f > n.doubleValue() ? Math.nextDown(f) : f;
+    }
+    return normalize(t, v);
+  }
+
+  /**
+   * As {@link #normalize}, for an upper bound: a value {@code t} cannot hold exactly is rounded up,
+   * so the bound still holds for it. Null for a type that has no order, or for a TIME rounded up
+   * past midnight; throws for a timestamp rounded up past the type's range.
+   */
+  public static Object normalizeUpper(LogicalType t, Object v) {
+    if (!isStatsOrderable(t)) {
+      return null;
+    }
+    if (t.kind() == LogicalKind.FLOAT && v instanceof Number n) {
+      float f = n.floatValue();
+      return (double) f < n.doubleValue() ? Math.nextUp(f) : f;
+    }
+    return switch (t.kind()) {
+      case TIME, TIMESTAMP, TIMESTAMPTZ -> {
+        Object exact = exactTemporal(t.kind(), v);
+        Object floor = truncate(exact, t.temporalPrecision());
+        if (floor.equals(exact)) {
+          yield floor;
+        }
+        long unit = TemporalCoercions.temporalUnitNanos(t.temporalPrecision());
+        yield switch (floor) {
+          case LocalTime time -> {
+            LocalTime up = time.plusNanos(unit);
+            yield up.isAfter(time) ? up : null;
+          }
+          case LocalDateTime timestamp -> timestamp.plusNanos(unit);
+          default -> ((Instant) floor).plusNanos(unit);
+        };
+      }
+      default -> normalize(t, v);
+    };
+  }
+
+  /** A TIME, TIMESTAMP or TIMESTAMPTZ value with every fractional digit it was given. */
+  private static Object exactTemporal(LogicalKind kind, Object v) {
+    return switch (kind) {
+      case TIME ->
+          switch (v) {
+            case LocalTime time -> time;
+            case CharSequence s -> LocalTime.parse(s.toString());
+            default -> throw typeErr("TIME", v);
+          };
+      case TIMESTAMP ->
+          switch (v) {
+            case Instant instant ->
+                TemporalCoercions.localDateTimeFromInstantNoTzAtPrecision(
+                    instant, LogicalType.MAX_TEMPORAL_PRECISION);
+            case CharSequence s ->
+                TemporalCoercions.parseTimestampNoTzAtPrecision(
+                    s.toString(), LogicalType.MAX_TEMPORAL_PRECISION);
+            default -> TemporalCoercions.coerceTimestampNoTz(v);
+          };
+      // TIMESTAMPTZ is always UTC-normalised and compared as Instant.
+      default -> TemporalCoercions.coerceInstant(v);
+    };
+  }
+
+  private static Object truncate(Object temporal, Integer precision) {
+    return switch (temporal) {
+      case LocalTime time -> TemporalCoercions.truncateToTemporalPrecision(time, precision);
+      case LocalDateTime timestamp ->
+          TemporalCoercions.truncateToTemporalPrecision(timestamp, precision);
+      default -> TemporalCoercions.truncateToTemporalPrecision((Instant) temporal, precision);
+    };
   }
 
   private static IllegalArgumentException typeErr(String kind, Object v) {
