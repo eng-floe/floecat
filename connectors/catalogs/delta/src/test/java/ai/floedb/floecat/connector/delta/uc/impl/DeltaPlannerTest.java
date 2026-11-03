@@ -187,4 +187,13 @@ class DeltaPlannerTest {
       return new GenericRow(schema, values);
     }
   }
+
+  @Test
+  void aTimestampMaximumIsWidenedByTheMillisecondDeltaTruncatesItTo() {
+    assertThat(DeltaPlanner.widenTruncatedMax(Instant.parse("2026-01-01T00:00:00.123Z")))
+        .isEqualTo(Instant.parse("2026-01-01T00:00:00.124Z"));
+    assertThat(DeltaPlanner.widenTruncatedMax(LocalDateTime.parse("2026-01-01T00:00:00.123")))
+        .isEqualTo(LocalDateTime.parse("2026-01-01T00:00:00.124"));
+    assertThat(DeltaPlanner.widenTruncatedMax(7L)).isEqualTo(7L);
+  }
 }

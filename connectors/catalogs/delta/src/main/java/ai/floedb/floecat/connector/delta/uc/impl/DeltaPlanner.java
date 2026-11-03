@@ -255,7 +255,7 @@ final class DeltaPlanner implements Planner<String> {
                     if (colName != null) {
                       var lt = nameToLogical.get(colName);
                       Object raw = (e.getValue() == null) ? null : e.getValue().getValue();
-                      raw = canonicalizeStatValue(lt, raw);
+                      raw = widenTruncatedMax(canonicalizeStatValue(lt, raw));
                       Object typed = (lt == null) ? raw : LogicalComparators.normalize(lt, raw);
                       maxs.put(colName, typed);
                     }
@@ -832,6 +832,20 @@ final class DeltaPlanner implements Planner<String> {
       return instantFromMicros(n.longValue());
     }
     return raw;
+  }
+
+  /**
+   * Delta writes a timestamp's statistics truncated to milliseconds, so the true maximum may lie up
+   * to a millisecond above the written one; Delta's own readers widen it by that millisecond.
+   */
+  static Object widenTruncatedMax(Object max) {
+    if (max instanceof Instant instant) {
+      return instant.plusMillis(1);
+    }
+    if (max instanceof LocalDateTime timestamp) {
+      return timestamp.plusNanos(1_000_000L);
+    }
+    return max;
   }
 
   private static Instant instantFromMicros(long micros) {
