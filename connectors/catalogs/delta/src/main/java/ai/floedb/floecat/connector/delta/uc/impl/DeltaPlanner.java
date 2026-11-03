@@ -287,15 +287,15 @@ final class DeltaPlanner implements Planner<String> {
                 for (var e : bfs.cols.entrySet()) {
                   String name = e.getKey();
                   var c = e.getValue();
-                  nullCounts.put(name, c.nulls);
+                  nullCounts.put(name, c.nulls());
                   if (rowCount > 0) rowCounts.put(name, rowCount);
                   var lt = nameToLogical.get(name);
                   if (lt != null) {
-                    if (c.min != null) {
-                      mins.put(name, LogicalCoercions.coerceStatValue(lt, c.min));
+                    if (c.min() != null) {
+                      mins.put(name, LogicalCoercions.coerceStatValue(lt, c.min()));
                     }
-                    if (c.max != null) {
-                      maxs.put(name, LogicalCoercions.coerceStatValue(lt, c.max));
+                    if (c.max() != null) {
+                      maxs.put(name, LogicalCoercions.coerceStatValue(lt, c.max()));
                     }
                   }
                 }

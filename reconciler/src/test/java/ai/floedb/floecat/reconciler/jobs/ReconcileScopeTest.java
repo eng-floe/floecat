@@ -80,6 +80,17 @@ class ReconcileScopeTest {
   }
 
   @Test
+  void columnStatisticsBringTableStatistics() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS));
+
+    assertEquals(
+        Set.of(
+            ReconcileCapturePolicy.Output.COLUMN_STATS, ReconcileCapturePolicy.Output.TABLE_STATS),
+        policy.outputs());
+  }
+
+  @Test
   void rejectsIndexOutputWithExplicitOnlyAndNoIndexSelectors() {
     assertThrows(
         IllegalArgumentException.class,

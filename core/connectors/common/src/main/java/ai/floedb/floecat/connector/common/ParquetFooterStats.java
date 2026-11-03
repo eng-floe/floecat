@@ -16,9 +16,10 @@
 
 package ai.floedb.floecat.connector.common;
 
-import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.MergedBound;
+import ai.floedb.floecat.types.MergedCount;
 import ai.floedb.floecat.types.TemporalCoercions;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -53,58 +54,35 @@ public final class ParquetFooterStats {
   private static final long JULIAN_EPOCH_OFFSET_DAYS = 2_440_588L;
   private static final long NANOS_PER_SECOND = 1_000_000_000L;
 
+  /** A column's statistics over the file's row groups. */
   public static final class ColAgg {
-    public long nulls = 0;
-    public Object min = null;
-    public Object max = null;
+    private final MergedCount nulls = new MergedCount();
+    private final MergedBound min = MergedBound.lower();
+    private final MergedBound max = MergedBound.upper();
 
-    void mergeMin(Object v, LogicalType lt) {
-      if (lt != null && !LogicalComparators.isStatsOrderable(lt)) {
-        return;
-      }
-      if (v == null) {
-        return;
-      }
-      if (min == null) {
-        min = v;
-        return;
-      }
-
-      if (lt != null) {
-        if (LogicalComparators.compare(lt, v, min) < 0) {
-          min = v;
-        }
-      } else {
-        @SuppressWarnings({"rawtypes", "unchecked"})
-        int cmp = ((Comparable) v).compareTo(min);
-        if (cmp < 0) {
-          min = v;
-        }
-      }
+    /**
+     * Folds in one row group's statistics {@code s} (null when it has none) of a column chunk of
+     * {@code valueCount} values, NULLs included, bounded by {@code minV} and {@code maxV}.
+     */
+    void addRowGroup(long valueCount, Statistics<?> s, Object minV, Object maxV, LogicalType lt) {
+      Long numNulls = s == null ? null : s.getNumNulls();
+      nulls.add(numNulls);
+      boolean mayHoldValues = MergedBound.mayHoldValues(valueCount, numNulls, null);
+      min.add(lt, minV, mayHoldValues);
+      max.add(lt, maxV, mayHoldValues);
     }
 
-    void mergeMax(Object v, LogicalType lt) {
-      if (lt != null && !LogicalComparators.isStatsOrderable(lt)) {
-        return;
-      }
-      if (v == null) {
-        return;
-      }
-      if (max == null) {
-        max = v;
-        return;
-      }
-      if (lt != null) {
-        if (LogicalComparators.compare(lt, v, max) > 0) {
-          max = v;
-        }
-      } else {
-        @SuppressWarnings({"rawtypes", "unchecked"})
-        int cmp = ((Comparable) v).compareTo(max);
-        if (cmp > 0) {
-          max = v;
-        }
-      }
+    /** The NULLs over every row group, or null when a row group does not count them. */
+    public Long nulls() {
+      return nulls.value();
+    }
+
+    public Object min() {
+      return min.value();
+    }
+
+    public Object max() {
+      return max.value();
     }
   }
 
@@ -157,21 +135,10 @@ public final class ParquetFooterStats {
           }
 
           Statistics<?> s = c.getStatistics();
-          if (s == null) {
-            continue;
-          }
-
           LogicalType lt = nameToLogical.get(colName);
           ColAgg a = agg.computeIfAbsent(colName, k -> new ColAgg());
-
-          long numNulls = s.getNumNulls();
-          a.nulls += (numNulls < 0 ? 0 : numNulls);
-
-          Object minV = statToValue(s, c, lt, true);
-          a.mergeMin(minV, lt);
-
-          Object maxV = statToValue(s, c, lt, false);
-          a.mergeMax(maxV, lt);
+          a.addRowGroup(
+              c.getValueCount(), s, boundOf(s, c, lt, true), boundOf(s, c, lt, false), lt);
         }
       }
 
@@ -197,6 +164,14 @@ public final class ParquetFooterStats {
     public SeekableInputStream newStream() throws IOException {
       return delegate.newStream();
     }
+  }
+
+  /**
+   * A row group's minimum ({@code isMin}) or maximum, or null when it records none: Parquet fills
+   * an absent bound with the type's default value, so only {@code hasNonNullValue} says it is real.
+   */
+  static Object boundOf(Statistics<?> s, ColumnChunkMetaData c, LogicalType lt, boolean isMin) {
+    return s == null || !s.hasNonNullValue() ? null : statToValue(s, c, lt, isMin);
   }
 
   private static Object statToValue(

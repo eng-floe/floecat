@@ -118,9 +118,12 @@ enum StatsCaptureMode {
   SCM_ASYNC = 2;
 }
 
+// How much of its target a record describes.
 enum StatsCompleteness {
   SC_UNSPECIFIED = 0;
+  // Every data file the record covers contributed.
   SC_COMPLETE = 1;
+  // Some data file the record covers contributed nothing.
   SC_PARTIAL = 2;
   SC_UNAVAILABLE = 3;
 }
@@ -238,6 +241,24 @@ message TableValueStats {
 
 // ---------- Scalar value stats ----------
 
+// Statistics of a column, a file's column, or an expression.
+//
+// A record describes row_count values (one per row, or per element for a list's or map's
+// elements) of the files it covers, which may include rows a delete file removes, since deletes
+// only remove rows. Its counts and bounds are either absent or hold for all of those values,
+// whatever produced them and whatever the table's format, so a reader may rely on any that is
+// present:
+//   - null_count and nan_count count the NULLs and NaNs among those values;
+//   - min/max and min_value/max_value bound every non-NULL, non-NaN value: no value is below the
+//     minimum or above the maximum. They need not be values of the column: a bound may be
+//     truncated (strings) or rounded outward to the type's precision.
+// Strings, binary and UUIDs are ordered by their unsigned bytes (strings by code point).
+// On an SC_PARTIAL record, row_count counts only the values of the files that contributed, and
+// ndv, avg_width_bytes and sketches, which are estimates, may describe only those files.
+//
+// A producer reports every column it was asked for in every data file it describes, with only
+// row_count when it has no statistics of it, so a merge can tell a column without statistics from
+// a file it never saw.
 message ScalarStats {
   // Optional presentation label for this scalar target (column name, alias, etc.).
   // This field is cosmetic only and MUST NOT be used for identity, routing, or storage keys.

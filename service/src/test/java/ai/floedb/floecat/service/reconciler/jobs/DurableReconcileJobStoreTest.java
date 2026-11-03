@@ -6516,10 +6516,19 @@ class DurableReconcileJobStoreTest {
   void snapshotContentStateSkipsExplicitColumnCoveredByWildcardOnUnchangedRevision() {
     ReconcileCapturePolicy policy = statsOnlyCapturePolicy("#11");
     ReconcileScope wildcardScope = ReconcileScope.of(List.of(), "table-1", List.of(), policy);
+    List<String> wildcardCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, wildcardScope);
     String wildcardPolicyAtom =
-        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, wildcardScope).getFirst();
+        wildcardCoverage.stream()
+            .filter(atom -> atom.startsWith("COLUMN_STATS|"))
+            .findFirst()
+            .orElseThrow();
     String semantics = wildcardPolicyAtom.substring(wildcardPolicyAtom.lastIndexOf('|') + 1);
-    List<String> materializedCoverage = List.of(coverageAtom("COLUMN_STATS", "*", "", semantics));
+    List<String> materializedCoverage = new ArrayList<>();
+    materializedCoverage.add(coverageAtom("COLUMN_STATS", "*", "", semantics));
+    wildcardCoverage.stream()
+        .filter(atom -> atom.startsWith("TABLE_STATS|"))
+        .forEach(materializedCoverage::add);
     publishFinalizedContent(
         CaptureMode.CAPTURE_ONLY,
         wildcardScope,

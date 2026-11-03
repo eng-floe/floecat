@@ -86,7 +86,13 @@ public final class ReconcileCapturePolicy {
                 .filter(Column::enabled)
                 .distinct()
                 .toList();
-    this.outputs = outputs == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(outputs));
+    LinkedHashSet<Output> requested =
+        outputs == null ? new LinkedHashSet<>() : new LinkedHashSet<>(outputs);
+    // Merging column statistics across file groups counts the groups by their table records.
+    if (requested.contains(Output.COLUMN_STATS)) {
+      requested.add(Output.TABLE_STATS);
+    }
+    this.outputs = Set.copyOf(requested);
     this.defaultColumnScope =
         defaultColumnScope == null ? DefaultColumnScope.FIRST_N : defaultColumnScope;
     if (this.outputs.contains(Output.PARQUET_PAGE_INDEX)

@@ -34,6 +34,8 @@ import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.MergedBound;
+import ai.floedb.floecat.types.MergedCount;
 import com.google.protobuf.ByteString;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -43,6 +45,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NavigableMap;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import org.apache.datasketches.hll.HllSketch;
@@ -198,11 +201,13 @@ public final class FileGroupTargetStatsRollup {
   private static List<TargetStatsRecord> aggregateColumns(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> fileRecords) {
     LinkedHashMap<Long, ColumnAccumulator> byColumnId = new LinkedHashMap<>();
+    long dataFiles = 0L;
     for (TargetStatsRecord record : fileRecords) {
       FileTargetStats file = record.getFile();
       if (isDeleteFile(file)) {
         continue;
       }
+      dataFiles++;
       for (var fileColumn : file.getColumnsList()) {
         if (!fileColumn.hasScalar() || fileColumn.getColumnId() <= 0L) {
           continue;
@@ -213,6 +218,9 @@ public final class FileGroupTargetStatsRollup {
       }
     }
 
+    for (ColumnAccumulator column : byColumnId.values()) {
+      column.requireEvery(dataFiles);
+    }
     return columnRecordsFromAccumulators(tableId, snapshotId, byColumnId);
   }
 
@@ -250,6 +258,11 @@ public final class FileGroupTargetStatsRollup {
   private static List<TargetStatsRecord> aggregateColumnsFromPartials(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> partials) {
     LinkedHashMap<Long, ColumnAccumulator> byColumnId = new LinkedHashMap<>();
+    // Each partial aggregate carries one table record; one covering no data file reports no column.
+    long tablePartials =
+        partials.stream()
+            .filter(r -> r != null && r.hasTable() && r.getTable().getDataFileCount() > 0)
+            .count();
     for (TargetStatsRecord record : partials) {
       if (record == null || !record.hasScalar()) {
         continue;
@@ -261,6 +274,10 @@ public final class FileGroupTargetStatsRollup {
       byColumnId
           .computeIfAbsent(target.getColumn().getColumnId(), ignored -> new ColumnAccumulator())
           .add(record, record.getScalar());
+    }
+    for (ColumnAccumulator column : byColumnId.values()) {
+      // Without table records the partials cannot be counted, so none vouches for a column.
+      column.requireEvery(tablePartials == 0 ? Long.MAX_VALUE : tablePartials);
     }
     return columnRecordsFromAccumulators(tableId, snapshotId, byColumnId);
   }
@@ -353,15 +370,26 @@ public final class FileGroupTargetStatsRollup {
     private long filesScanned;
     private long rowGroupsSampled;
     private long bytesScanned;
+    private StatsCompleteness completeness = StatsCompleteness.SC_COMPLETE;
 
     void add(TargetStatsRecord record) {
-      if (record == null || !record.hasMetadata()) {
+      if (record == null) {
+        return;
+      }
+      if (!record.hasMetadata()) {
+        completeness = StatsCompleteness.SC_UNSPECIFIED;
         return;
       }
       StatsMetadata metadata = record.getMetadata();
       if (base == null) {
         base = metadata;
       }
+      completeness =
+          weakest(
+              completeness,
+              metadata.getCompleteness() == StatsCompleteness.UNRECOGNIZED
+                  ? StatsCompleteness.SC_UNSPECIFIED
+                  : metadata.getCompleteness());
       if (!metadata.hasCoverage()) {
         return;
       }
@@ -388,16 +416,44 @@ public final class FileGroupTargetStatsRollup {
       }
     }
 
+    /** Some data file or partial aggregate the merge covers contributed nothing to this column. */
+    void markPartial() {
+      completeness = weakest(completeness, StatsCompleteness.SC_PARTIAL);
+    }
+
+    /** The weakest completeness of what was merged. */
+    StatsCompleteness completeness() {
+      return completeness;
+    }
+
     StatsMetadata finish() {
-      if (base == null || coverageBase == null) {
-        return base;
+      if (base == null) {
+        return null;
+      }
+      StatsMetadata.Builder merged = base.toBuilder().setCompleteness(completeness);
+      if (coverageBase == null) {
+        return merged.build();
       }
       StatsCoverage.Builder coverage = coverageBase.toBuilder();
       if (rowsScannedPresent) coverage.setRowsScanned(rowsScanned);
       if (filesScannedPresent) coverage.setFilesScanned(filesScanned);
       if (rowGroupsSampledPresent) coverage.setRowGroupsSampled(rowGroupsSampled);
       if (bytesScannedPresent) coverage.setBytesScanned(bytesScanned);
-      return base.toBuilder().setCoverage(coverage).build();
+      return merged.setCoverage(coverage).build();
+    }
+
+    /** A merge claims only what every contributor claims; unspecified claims nothing. */
+    private static StatsCompleteness weakest(StatsCompleteness left, StatsCompleteness right) {
+      return rank(left) >= rank(right) ? left : right;
+    }
+
+    private static int rank(StatsCompleteness completeness) {
+      return switch (completeness) {
+        case SC_COMPLETE -> 0;
+        case SC_PARTIAL -> 1;
+        case SC_UNAVAILABLE -> 2;
+        case SC_UNSPECIFIED, UNRECOGNIZED -> 3;
+      };
     }
   }
 
@@ -420,7 +476,8 @@ public final class FileGroupTargetStatsRollup {
      * describes only that source's rows and must not be advertised as the column's distribution.
      * But when exactly one source contributed the whole column, its payloads ARE the column's
      * distribution, so {@link #toScalar} propagates its scalar sketches and {@link #aggregateNdv}
-     * its entire NDV envelope untouched.
+     * its entire NDV envelope untouched. {@link #requireEvery} drops it when another source the
+     * merge covers did not report the column.
      */
     private ScalarStats soleSource;
 
@@ -428,16 +485,14 @@ public final class FileGroupTargetStatsRollup {
     private LogicalType decodedLogicalType = null;
 
     private long rowCount = 0L;
-    private Long nullCount;
-    private Long nanCount;
-    private String min;
-    private String max;
-    private Object minValue;
-    private Object maxValue;
-    private boolean minComplete = true;
-    private boolean maxComplete = true;
-    private boolean minLegacyComplete = true;
-    private boolean maxLegacyComplete = true;
+    private final MergedCount nullCount = new MergedCount();
+    private final MergedCount nanCount = new MergedCount();
+    private final MergedBound min = MergedBound.lower();
+    private final MergedBound max = MergedBound.upper();
+
+    /** Every contributor reported the column, so its counts and bounds describe all of its rows. */
+    private boolean everyContributorReported = true;
+
     private final ColumnNdv ndv = new ColumnNdv();
     private org.apache.datasketches.hll.Union hllUnion;
     private Integer hllLgK;
@@ -480,23 +535,22 @@ public final class FileGroupTargetStatsRollup {
         }
       }
       rowCount += Math.max(0L, scalar.getRowCount());
-      if (scalar.hasNullCount()) nullCount = accumulate(nullCount, scalar.getNullCount());
-      if (scalar.hasNanCount()) nanCount = accumulate(nanCount, scalar.getNanCount());
+      nullCount.add(scalar.hasNullCount() ? scalar.getNullCount() : null);
+      nanCount.add(scalar.hasNanCount() ? scalar.getNanCount() : null);
       if (decodedLogicalType == null && !logicalType.isBlank()) {
         decodedLogicalType = LogicalTypeProtoAdapter.decodeLogicalType(logicalType);
       }
-      Object candidateMin =
+      boolean mayHoldValues =
+          MergedBound.mayHoldValues(
+              scalar.getRowCount(),
+              scalar.hasNullCount() ? scalar.getNullCount() : null,
+              scalar.hasNanCount() ? scalar.getNanCount() : null);
+      Object lower =
           decodedLogicalType == null ? null : LogicalTypeProtoAdapter.columnMinValue(scalar);
-      Object candidateMax =
+      Object upper =
           decodedLogicalType == null ? null : LogicalTypeProtoAdapter.columnMaxValue(scalar);
-      minComplete &= candidateMin != null;
-      maxComplete &= candidateMax != null;
-      minLegacyComplete &= scalar.hasMin() && !scalar.getMin().isBlank();
-      maxLegacyComplete &= scalar.hasMax() && !scalar.getMax().isBlank();
-      min = pickEncoded(decodedLogicalType, min, scalar.hasMin() ? scalar.getMin() : null, true);
-      max = pickEncoded(decodedLogicalType, max, scalar.hasMax() ? scalar.getMax() : null, false);
-      minValue = pickValue(decodedLogicalType, minValue, candidateMin, true);
-      maxValue = pickValue(decodedLogicalType, maxValue, candidateMax, false);
+      min.add(decodedLogicalType, lower, mayHoldValues);
+      max.add(decodedLogicalType, upper, mayHoldValues);
       mergeNdv(scalar);
       /* Guard > 0: files with avg_width_bytes=0 (e.g. all-null columns or zero-row files)
        * are excluded from the weighted average to prevent them from pulling the result toward 0. */
@@ -538,25 +592,21 @@ public final class FileGroupTargetStatsRollup {
             .setLogicalType(logicalType)
             .setType(LogicalTypeProtoAdapter.parseToProto(logicalType));
       }
-      if (nullCount != null) {
-        builder.setNullCount(nullCount);
-      }
-      if (nanCount != null) {
-        builder.setNanCount(nanCount);
-      }
-      if (minLegacyComplete && min != null) {
-        builder.setMin(min);
-      }
-      if (maxLegacyComplete && max != null) {
-        builder.setMax(max);
-      }
-      if (decodedLogicalType != null && minComplete && minValue != null) {
-        LogicalTypeProtoAdapter.tryEncodeTypedValue(decodedLogicalType, minValue)
-            .ifPresent(builder::setMinValue);
-      }
-      if (decodedLogicalType != null && maxComplete && maxValue != null) {
-        LogicalTypeProtoAdapter.tryEncodeTypedValue(decodedLogicalType, maxValue)
-            .ifPresent(builder::setMaxValue);
+      if (everyContributorReported) {
+        setIfPresent(nullCount.value(), builder::setNullCount);
+        setIfPresent(nanCount.value(), builder::setNanCount);
+        Object lower = min.value();
+        Object upper = max.value();
+        if (decodedLogicalType != null && lower != null) {
+          LogicalTypeProtoAdapter.tryEncodeTypedValue(decodedLogicalType, lower)
+              .ifPresent(builder::setMinValue);
+          legacy(lower).ifPresent(builder::setMin);
+        }
+        if (decodedLogicalType != null && upper != null) {
+          LogicalTypeProtoAdapter.tryEncodeTypedValue(decodedLogicalType, upper)
+              .ifPresent(builder::setMaxValue);
+          legacy(upper).ifPresent(builder::setMax);
+        }
       }
       Ndv aggregatedNdv = aggregateNdv();
       if (aggregatedNdv != null) {
@@ -576,6 +626,31 @@ public final class FileGroupTargetStatsRollup {
 
     String columnIdentityFingerprint() {
       return columnIdentityFingerprint;
+    }
+
+    /** The legacy spelling of a bound, when it has one: none for a -0.0. */
+    private Optional<String> legacy(Object bound) {
+      if (LogicalComparators.isNegativeZero(bound)) {
+        return Optional.empty();
+      }
+      try {
+        return Optional.of(LogicalTypeProtoAdapter.encodeValue(decodedLogicalType, bound));
+      } catch (RuntimeException unencodable) {
+        return Optional.empty();
+      }
+    }
+
+    /**
+     * Drops the counts and bounds, and marks the column partial, when fewer than {@code expected}
+     * contributors (data files, or partial aggregates) reported it: those that did not may hold
+     * anything.
+     */
+    void requireEvery(long expected) {
+      if (contributors < expected) {
+        everyContributorReported = false;
+        soleSource = null;
+        metadata.markPartial();
+      }
     }
 
     private void mergeNdv(ScalarStats scalar) {
@@ -699,7 +774,7 @@ public final class FileGroupTargetStatsRollup {
                 ai.floedb.floecat.catalog.rpc.SketchPayload.newBuilder()
                     .setRole(ai.floedb.floecat.catalog.rpc.SketchRole.SKETCH_ROLE_NDV)
                     .setCapturedAtMs(System.currentTimeMillis())
-                    .setCompleteness(StatsCompleteness.SC_COMPLETE)
+                    .setCompleteness(metadata.completeness())
                     .setSketchType(sketch.type == null ? "" : sketch.type)
                     .setData(
                         sketch.data == null ? ByteString.EMPTY : ByteString.copyFrom(sketch.data));
@@ -717,7 +792,7 @@ public final class FileGroupTargetStatsRollup {
                   .setSketchType(HLL_SKETCH_TYPE)
                   .setData(ByteString.copyFrom(hllResult.toCompactByteArray()))
                   .putParams("lg_k", Integer.toString(hllLgK == null ? DEFAULT_HLL_LG_K : hllLgK))
-                  .setCompleteness(StatsCompleteness.SC_COMPLETE));
+                  .setCompleteness(metadata.completeness()));
         }
         if (tupleResult != null) {
           builder.addSketches(
@@ -727,7 +802,7 @@ public final class FileGroupTargetStatsRollup {
                   .setData(ByteString.copyFrom(tupleResult))
                   .putParams("nominal_entries", Integer.toString(tupleNominalEntries))
                   .putParams("version", "2")
-                  .setCompleteness(StatsCompleteness.SC_COMPLETE));
+                  .setCompleteness(metadata.completeness()));
         }
         return builder.build();
       }
@@ -739,43 +814,6 @@ public final class FileGroupTargetStatsRollup {
         return Ndv.newBuilder().setApprox(approx).build();
       }
       return null;
-    }
-
-    /**
-     * Picks the lower ({@code wantLower}) or higher encoded value of {@code current}/{@code
-     * candidate}.
-     */
-    private static String pickEncoded(
-        LogicalType type, String current, String candidate, boolean wantLower) {
-      if (candidate == null || candidate.isBlank()) return current;
-      if (current == null || current.isBlank()) return candidate;
-      if (type == null || !LogicalComparators.isStatsOrderable(type)) return current;
-      try {
-        int cmp = LogicalTypeProtoAdapter.compareEncoded(type, candidate, current);
-        return (wantLower ? cmp < 0 : cmp > 0) ? candidate : current;
-      } catch (RuntimeException ignored) {
-        return current;
-      }
-    }
-
-    private static Object pickValue(
-        LogicalType type, Object current, Object candidate, boolean wantLower) {
-      if (candidate == null) return current;
-      if (current == null) return candidate;
-      if (type == null || !LogicalComparators.isStatsOrderable(type)) return current;
-      try {
-        int cmp = LogicalComparators.compare(type, candidate, current);
-        return (wantLower ? cmp < 0 : cmp > 0) ? candidate : current;
-      } catch (RuntimeException ignored) {
-        return current;
-      }
-    }
-
-    /**
-     * Accumulates a nullable running sum: starts at null (absent), then sums non-negative values.
-     */
-    private static Long accumulate(Long current, long incoming) {
-      return (current == null ? 0L : current) + Math.max(0L, incoming);
     }
 
     /**

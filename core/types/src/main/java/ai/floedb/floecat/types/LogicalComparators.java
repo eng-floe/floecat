@@ -60,6 +60,15 @@ public final class LogicalComparators {
   }
 
   /**
+   * Whether {@code v} is a -0.0, which the legacy string spelling of a bound writes as 0: a -0.0
+   * minimum spelled so would exclude the -0.0 values it covers.
+   */
+  public static boolean isNegativeZero(Object v) {
+    return v instanceof Double d && Double.doubleToRawLongBits(d) == Long.MIN_VALUE
+        || v instanceof Float f && Float.floatToRawIntBits(f) == Integer.MIN_VALUE;
+  }
+
+  /**
    * Compares two values of the given type after normalisation.
    *
    * <p>Both values are normalised to their canonical Java representation (via {@link
@@ -183,6 +192,9 @@ public final class LogicalComparators {
         return (v instanceof UUID u) ? u : UUID.fromString(v.toString());
 
       case BINARY:
+        if (v instanceof ByteArrayComparable normalized) {
+          return normalized;
+        }
         byte[] bytes;
         if (v instanceof byte[] arr) {
           bytes = arr;

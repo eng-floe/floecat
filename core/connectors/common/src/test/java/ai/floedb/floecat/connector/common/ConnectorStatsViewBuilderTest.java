@@ -162,6 +162,28 @@ class ConnectorStatsViewBuilderTest {
 
     assertEquals(ScalarValue.newBuilder().setI64(1).build(), out.get(0).min());
     assertEquals(ScalarValue.newBuilder().setI64(5).build(), out.get(0).max());
+
+    // A maximum the type cannot hold is rounded up.
+    double aboveFloat = Math.nextUp((double) 0.1f);
+    cols.put("col", new Agg(10L, 0L, 0L, aboveFloat, aboveFloat, null, null));
+    var floats =
+        ConnectorStatsViewBuilder.toColumnStatsView(
+            cols, k -> k, k -> k, k -> 1, k -> 0, k -> LogicalType.of(LogicalKind.FLOAT), 10L);
+    assertEquals((double) Math.nextUp(0.1f), floats.get(0).max().getF64());
+  }
+
+  @Test
+  void toColumnStatsView_countsNullsOnlyBesideTheColumnsValueCount() {
+    Map<String, StatsEngine.ColumnAgg> cols = new LinkedHashMap<>();
+    cols.put("col", new Agg(null, 2L, 0L, null, null, null, null));
+
+    var out =
+        ConnectorStatsViewBuilder.toColumnStatsView(
+            cols, k -> k, k -> k, k -> 1, k -> 0, k -> LogicalType.of(LogicalKind.INT), 10L);
+
+    assertEquals(10L, out.get(0).rowCount());
+    assertNull(out.get(0).nullCount());
+    assertNull(out.get(0).nanCount());
   }
 
   @Test

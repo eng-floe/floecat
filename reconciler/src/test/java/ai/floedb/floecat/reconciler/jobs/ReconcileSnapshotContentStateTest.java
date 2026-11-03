@@ -191,7 +191,10 @@ class ReconcileSnapshotContentStateTest {
                 new ReconcileScope.ScopedCaptureRequest("table-1", 7L, "column:202", List.of())),
             policy);
 
-    List<String> coverage = ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope);
+    List<String> coverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope).stream()
+            .filter(atom -> atom.startsWith("COLUMN_STATS|"))
+            .toList();
 
     assertThat(coverage).hasSize(2);
     assertThat(coverage).anyMatch(atom -> atom.contains("10:column:101|0:|"));
@@ -443,7 +446,9 @@ class ReconcileSnapshotContentStateTest {
         ReconcileSnapshotContentState.materializedCoverage(
             requested, List.of("customer_name"), List.of(), 1);
 
-    assertThat(materialized).doesNotContainAnyElementsOf(requested);
+    assertThat(materialized)
+        .doesNotContainAnyElementsOf(
+            requested.stream().filter(atom -> atom.startsWith("COLUMN_STATS|")).toList());
     assertThat(
             ReconcileSnapshotContentState.missingCoverage(
                 ReconcileSnapshotContentState.coverage(

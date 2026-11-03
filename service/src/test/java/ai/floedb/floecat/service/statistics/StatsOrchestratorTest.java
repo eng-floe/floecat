@@ -394,6 +394,7 @@ class StatsOrchestratorTest {
             scopeCaptor.capture());
     assertThat(scopeCaptor.getValue().capturePolicy().outputs())
         .containsExactlyInAnyOrder(
+            ReconcileCapturePolicy.Output.TABLE_STATS,
             ReconcileCapturePolicy.Output.COLUMN_STATS,
             ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
     assertThat(scopeCaptor.getValue().capturePolicy().selectorsForStats()).containsExactly("#9");

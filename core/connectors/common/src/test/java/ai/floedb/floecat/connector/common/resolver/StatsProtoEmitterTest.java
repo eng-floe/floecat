@@ -157,6 +157,33 @@ public class StatsProtoEmitterTest {
     assertEquals(2L, scalar.getMinValue().getI64());
     assertEquals(2L, Long.parseLong(scalar.getMin()));
     assertEquals(9L, Long.parseLong(scalar.getMax()));
+
+    // A -0.0 minimum has no legacy spelling: "0" would exclude the -0.0 values it covers.
+    var negativeZero =
+        StatsProtoEmitter.toTargetColumnStats(
+                rid("t1"),
+                1L,
+                1700000000000L,
+                ConnectorFormat.CF_ICEBERG,
+                ColumnIdAlgorithm.CID_FIELD_ID,
+                schema,
+                List.of(
+                    new FloecatConnector.ColumnStatsView(
+                        ref("value", "value", 1, 7),
+                        "DOUBLE",
+                        10L,
+                        null,
+                        null,
+                        ScalarValue.newBuilder().setF64(-0.0).build(),
+                        ScalarValue.newBuilder().setF64(1.0).build(),
+                        null,
+                        null,
+                        Map.of())))
+            .get(0)
+            .getScalar();
+    assertTrue(negativeZero.hasMinValue());
+    assertFalse(negativeZero.hasMin());
+    assertTrue(negativeZero.hasMax());
   }
 
   @Test

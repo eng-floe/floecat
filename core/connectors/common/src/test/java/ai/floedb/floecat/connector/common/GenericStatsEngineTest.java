@@ -135,6 +135,58 @@ class GenericStatsEngineTest {
   }
 
   @Test
+  void aStatisticHoldsForTheSnapshotOnlyWhenEveryFileWithValuesGivesIt() {
+    var cols = Set.of(1, 2);
+    var names = Map.of(1, "given", 2, "missing");
+    var types = Map.of(1, LogicalType.of(LogicalKind.INT), 2, LogicalType.of(LogicalKind.INT));
+    var everything =
+        new PlannedFile<>(
+            "s3://bucket/a.parquet",
+            "PARQUET",
+            10L,
+            1024L,
+            Map.of(1, 10L, 2, 10L),
+            Map.of(1, 0L, 2, 0L),
+            null,
+            Map.<Integer, Object>of(1, 1L, 2, 1L),
+            Map.<Integer, Object>of(1, 5L, 2, 5L),
+            null,
+            0,
+            null,
+            "");
+    // Column 1 holds only NULLs here, so it has no bound to give; column 2 holds values but gives
+    // neither a count nor a bound.
+    var sparse =
+        new PlannedFile<>(
+            "s3://bucket/b.parquet",
+            "PARQUET",
+            10L,
+            1024L,
+            Map.of(1, 10L, 2, 10L),
+            Map.of(1, 10L),
+            null,
+            Map.<Integer, Object>of(),
+            Map.<Integer, Object>of(),
+            null,
+            0,
+            null,
+            "");
+
+    var columns =
+        new GenericStatsEngine<>(
+                planner(cols, names, types, List.of(everything, sparse)), null, null, names, types)
+            .compute()
+            .columns();
+
+    assertEquals(10L, columns.get(1).nullCount());
+    assertEquals(1L, columns.get(1).min());
+    assertEquals(5L, columns.get(1).max());
+    assertNull(columns.get(2).nullCount());
+    assertNull(columns.get(2).min());
+    assertNull(columns.get(2).max());
+  }
+
+  @Test
   void perFileStats_preservesMetricsColumns_whenAllColumnsHaveMetrics() {
     // Regression: dense input should still work correctly
     var cols = Set.of(1, 2);
