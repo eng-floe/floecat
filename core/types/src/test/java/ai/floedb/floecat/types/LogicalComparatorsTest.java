@@ -18,12 +18,15 @@ package ai.floedb.floecat.types;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.math.BigInteger;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class LogicalComparatorsTest {
@@ -89,5 +92,45 @@ class LogicalComparatorsTest {
         () ->
             LogicalComparators.normalize(
                 intType, BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE)));
+  }
+
+  @Test
+  void stringsAndUuidsOrderAsTheirUnsignedBytes() {
+    LogicalType string = LogicalType.of(LogicalKind.STRING);
+    LogicalType uuid = LogicalType.of(LogicalKind.UUID);
+
+    // U+E000 is below U+1F600 in UTF-8, though its UTF-16 unit is above the surrogate's.
+    assertTrue(LogicalComparators.compare(string, "\uE000", "\uD83D\uDE00") < 0);
+    // 8000... is above 7fff... unsigned, though below it as a signed long.
+    assertTrue(
+        LogicalComparators.compare(
+                uuid,
+                UUID.fromString("7fffffff-ffff-ffff-ffff-ffffffffffff"),
+                UUID.fromString("80000000-0000-0000-0000-000000000000"))
+            < 0);
+  }
+
+  @Test
+  void anUpperBoundFinerThanItsTypeIsRoundedUp() {
+    LogicalType micros = LogicalType.temporal(LogicalKind.TIMESTAMP, 6);
+    LocalDateTime nanos = LocalDateTime.of(2026, 1, 1, 0, 0, 0, 1_500);
+
+    assertEquals(
+        LocalDateTime.of(2026, 1, 1, 0, 0, 0, 2_000),
+        LogicalComparators.normalizeUpper(micros, nanos));
+    assertEquals(
+        LocalDateTime.of(2026, 1, 1, 0, 0, 0, 1_000), LogicalComparators.normalize(micros, nanos));
+    assertEquals(
+        LocalDateTime.of(2026, 1, 1, 0, 0, 0, 2_000),
+        LogicalComparators.normalizeUpper(micros, "2026-01-01T00:00:00.0000015"));
+    // A nanosecond column keeps every digit, whatever the value's spelling.
+    assertEquals(
+        LocalDateTime.of(2026, 1, 1, 0, 0, 0, 1_500),
+        LogicalComparators.normalize(
+            LogicalType.temporal(LogicalKind.TIMESTAMP, 9), "2026-01-01T00:00:00.0000015"));
+    // Rounding up past midnight leaves TIME's range.
+    assertNull(
+        LogicalComparators.normalizeUpper(
+            LogicalType.temporal(LogicalKind.TIME, 6), LocalTime.of(23, 59, 59, 999_999_500)));
   }
 }

@@ -28,9 +28,16 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
+import java.util.Set;
+import org.apache.parquet.column.statistics.Statistics;
+import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
+import org.apache.parquet.hadoop.metadata.ColumnPath;
+import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.LogicalTypeAnnotation.TimeUnit;
+import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
+import org.apache.parquet.schema.Types;
 import org.junit.jupiter.api.Test;
 
 class ParquetFooterStatsTest {
@@ -40,13 +47,10 @@ class ParquetFooterStatsTest {
     ParquetFooterStats.ColAgg agg = new ParquetFooterStats.ColAgg();
     LogicalType interval = LogicalType.of(LogicalKind.INTERVAL);
 
-    agg.mergeMin("a", interval);
-    agg.mergeMax("z", interval);
-    agg.mergeMin("b", interval);
-    agg.mergeMax("y", interval);
+    agg.addRowGroup(10, intStats(0), "a", "z", interval);
 
-    assertThat(agg.min).isNull();
-    assertThat(agg.max).isNull();
+    assertThat(agg.min()).isNull();
+    assertThat(agg.max()).isNull();
   }
 
   @Test
@@ -54,13 +58,55 @@ class ParquetFooterStatsTest {
     ParquetFooterStats.ColAgg agg = new ParquetFooterStats.ColAgg();
     LogicalType intType = LogicalType.of(LogicalKind.INT);
 
-    agg.mergeMin(9L, intType);
-    agg.mergeMax(9L, intType);
-    agg.mergeMin(2L, intType);
-    agg.mergeMax(12L, intType);
+    agg.addRowGroup(10, intStats(0), 9L, 9L, intType);
+    agg.addRowGroup(10, intStats(0), 2L, 12L, intType);
 
-    assertThat(agg.min).isEqualTo(2L);
-    assertThat(agg.max).isEqualTo(12L);
+    assertThat(agg.min()).isEqualTo(2L);
+    assertThat(agg.max()).isEqualTo(12L);
+  }
+
+  @Test
+  void aRowGroupWithoutStatisticsLeavesTheFileWithoutThem() {
+    ParquetFooterStats.ColAgg agg = new ParquetFooterStats.ColAgg();
+    LogicalType intType = LogicalType.of(LogicalKind.INT);
+
+    agg.addRowGroup(10, null, null, null, intType);
+    agg.addRowGroup(10, intStats(0), 1L, 5L, intType);
+
+    assertThat(agg.nulls()).isNull();
+    assertThat(agg.min()).isNull();
+    assertThat(agg.max()).isNull();
+  }
+
+  @Test
+  void aStatisticWithoutValuesHasNoBounds() {
+    // Parquet reads a row group with a null count but no min/max (all NULL, or bounds it drops) as
+    // the type's default, 0.
+    var stats = intStats(3);
+    var chunk =
+        ColumnChunkMetaData.get(
+            ColumnPath.get("c"),
+            PrimitiveTypeName.INT64,
+            CompressionCodecName.UNCOMPRESSED,
+            null,
+            Set.of(),
+            stats,
+            0,
+            0,
+            3,
+            0,
+            0);
+
+    assertThat(stats.genericGetMin()).isEqualTo(0L);
+    assertThat(ParquetFooterStats.boundOf(stats, chunk, LogicalType.of(LogicalKind.INT), true))
+        .isNull();
+  }
+
+  /** INT64 statistics with {@code nulls} NULLs and no bounds set. */
+  private static Statistics<?> intStats(long nulls) {
+    var stats = Statistics.createStats(Types.required(PrimitiveTypeName.INT64).named("c"));
+    stats.setNumNulls(nulls);
+    return stats;
   }
 
   @Test

@@ -74,8 +74,7 @@ final class AppendOnlySnapshotBaseLoader {
         || !base.statsGenerationId().equals("full-rescan-" + manifest.getParentJobId())
         || (base.indexArtifactCount() > 0
             && !base.indexGenerationId().equals("full-rescan-" + manifest.getParentJobId()))
-        || !RemoteSnapshotPlanningReconcileExecutor.capturePolicyMatches(
-            policy, manifest.getCapturePolicy())) {
+        || !RemoteSnapshotPlanningReconcileExecutor.appendOnlyBaseMatches(policy, manifest)) {
       throw new AppendOnlyBaseCompatibilityException(
           "append-only snapshot base manifest identity mismatch");
     }

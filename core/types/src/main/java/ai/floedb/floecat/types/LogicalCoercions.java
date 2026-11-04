@@ -135,6 +135,9 @@ public final class LogicalCoercions {
         if (v instanceof byte[] b) {
           return b;
         }
+        if (v instanceof LogicalComparators.ByteArrayComparable normalized) {
+          return normalized.copy();
+        }
         if (v instanceof ByteBuffer bb) {
           ByteBuffer dup = bb.duplicate();
           byte[] out = new byte[dup.remaining()];

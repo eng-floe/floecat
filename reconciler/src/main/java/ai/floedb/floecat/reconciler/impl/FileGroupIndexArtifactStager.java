@@ -243,7 +243,8 @@ public final class FileGroupIndexArtifactStager {
     var coverage = IndexCoverage.newBuilder();
     if (fileStats.getRowCount() > 0L) {
       coverage.setRowsIndexed(fileStats.getRowCount());
-      coverage.setLiveRowsIndexed(fileStats.getRowCount());
+      coverage.setLiveRowsIndexed(
+          fileStats.hasLiveRowCount() ? fileStats.getLiveRowCount() : fileStats.getRowCount());
     }
     if (fileStats.getSizeBytes() > 0L) {
       coverage.setBytesScanned(fileStats.getSizeBytes());

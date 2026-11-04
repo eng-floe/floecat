@@ -144,6 +144,17 @@ class FileArtifactReuseTest {
   }
 
   @Test
+  void statisticsOfAnotherMeaningAreNotReused() {
+    var policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#1", true, false)),
+            Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS));
+
+    assertThat(FileArtifactReuse.statsCaptureSignature(policy, "stats-v1"))
+        .isNotEqualTo(FileArtifactReuse.statsCaptureSignature(policy, "stats-v2"));
+  }
+
+  @Test
   void indexSignatureIncludesExecutionSchemaForDefaultAndExplicitSelection() {
     var defaultIndex =
         ReconcileCapturePolicy.of(

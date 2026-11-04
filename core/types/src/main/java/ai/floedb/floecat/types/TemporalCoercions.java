@@ -298,6 +298,11 @@ public final class TemporalCoercions {
     return precision;
   }
 
+  /** The nanoseconds in one unit of {@code precision} fractional digits. */
+  public static long temporalUnitNanos(Integer precision) {
+    return POW10[9 - normalizeTemporalPrecision(precision)];
+  }
+
   private static int truncateNanos(int nanos, int precision) {
     int factor = POW10[9 - precision];
     return (nanos / factor) * factor;

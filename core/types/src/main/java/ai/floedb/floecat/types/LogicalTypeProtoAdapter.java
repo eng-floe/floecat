@@ -565,20 +565,4 @@ public final class LogicalTypeProtoAdapter {
     int nano = (int) Math.multiplyExact(Math.floorMod(units, unitsPerSecond), scale);
     return Instant.ofEpochSecond(seconds, nano);
   }
-
-  /**
-   * Compares two encoded stat value strings by decoding both and delegating to {@link
-   * LogicalComparators#compare}.
-   *
-   * @param type the logical type governing comparison semantics
-   * @param a first encoded value (null treated as less than everything)
-   * @param b second encoded value (null treated as less than everything)
-   * @return negative, zero, or positive per {@link Comparable#compareTo} contract
-   * @throws IllegalArgumentException if the type is not stats-orderable
-   */
-  public static int compareEncoded(LogicalType type, String a, String b) {
-    Object va = decodeValue(type, a);
-    Object vb = decodeValue(type, b);
-    return LogicalComparators.compare(type, va, vb);
-  }
 }

@@ -53,7 +53,7 @@ public final class ConnectorStatsViewBuilder {
 
     return TableValueStats.newBuilder()
         .setUpstream(upstream)
-        .setRowCount(result.totalRowCount())
+        .setRowCount(result.liveRowCount())
         .setDataFileCount(result.fileCount())
         .setTotalSizeBytes(result.totalSizeBytes())
         .build();
@@ -118,7 +118,7 @@ public final class ConnectorStatsViewBuilder {
           min = LogicalTypeProtoAdapter.tryEncodeTypedValue(lt, agg.min()).orElse(null);
         }
         if (agg.max() != null) {
-          max = LogicalTypeProtoAdapter.tryEncodeTypedValue(lt, agg.max()).orElse(null);
+          max = encodeUpperBound(lt, agg.max());
         }
       }
 
@@ -173,15 +173,18 @@ public final class ConnectorStatsViewBuilder {
         if (hasPayload) ndv = ndvBuilder.build();
       }
 
-      long rowCount = agg.rowCount() != null ? agg.rowCount() : Math.max(0L, tableTotalRows);
+      // A count of NULLs or NaNs means nothing against a row count filled in from the file's or
+      // table's, which is not the column's value count for a list's elements.
+      boolean countedRows = agg.rowCount() != null;
+      long rowCount = countedRows ? agg.rowCount() : Math.max(0L, tableTotalRows);
 
       out.add(
           new FloecatConnector.ColumnStatsView(
               ref,
               logicalTypeStr,
               rowCount,
-              agg.nullCount(),
-              agg.nanCount(),
+              countedRows ? agg.nullCount() : null,
+              countedRows ? agg.nanCount() : null,
               min,
               max,
               ndv,
@@ -189,6 +192,18 @@ public final class ConnectorStatsViewBuilder {
               Map.of()));
     }
     return out;
+  }
+
+  /** A maximum, rounded up to what the type can hold; null when it cannot be encoded. */
+  private static ScalarValue encodeUpperBound(LogicalType lt, Object max) {
+    try {
+      Object upper = LogicalComparators.normalizeUpper(lt, max);
+      return upper == null
+          ? null
+          : LogicalTypeProtoAdapter.tryEncodeTypedValue(lt, upper).orElse(null);
+    } catch (RuntimeException unencodable) {
+      return null;
+    }
   }
 
   /**
@@ -269,7 +284,9 @@ public final class ConnectorStatsViewBuilder {
               // delete files in Iceberg.
               fa.equalityFieldIds() == null ? List.of() : fa.equalityFieldIds(),
               fa.sequenceNumber(),
-              java.util.Collections.unmodifiableList(cols)));
+              java.util.Collections.unmodifiableList(cols),
+              null,
+              fa.liveRowCount()));
     }
 
     return out;

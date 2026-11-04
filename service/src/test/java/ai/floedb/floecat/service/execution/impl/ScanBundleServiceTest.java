@@ -29,14 +29,19 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.AppliedDeletes;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.FileContent;
+import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.query.rpc.DeleteRef;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.query.rpc.TablePin;
@@ -354,6 +359,56 @@ class ScanBundleServiceTest {
     assertEquals(0, data.size());
     verify(statsStore, never()).activeStatsGeneration(any(), anyLong());
     verify(statsStore, never()).listTargetStats(any(), anyLong(), any(), anyInt(), any());
+  }
+
+  @Test
+  void aDataFileGetsTheDeletesItsRecordNamesOrAllWhenItDoesNotSay() {
+    when(statsStore.listTargetStatsInGeneration(
+            eq(TABLE_ID), eq(42L), eq("gen-1"), any(), anyInt(), any()))
+        .thenReturn(
+            new StatsStorePage(
+                java.util.List.of(
+                    file("d1", FileContent.FC_POSITION_DELETES, null),
+                    file("d2", FileContent.FC_POSITION_DELETES, null),
+                    file("named", FileContent.FC_DATA, java.util.List.of("d2")),
+                    file("none", FileContent.FC_DATA, java.util.List.of()),
+                    file("unstreamed", FileContent.FC_DATA, java.util.List.of("d1", "gone")),
+                    file("unknown", FileContent.FC_DATA, null)),
+                ""));
+
+    var session = session("gen-1");
+    var deletes =
+        service.streamDeleteFiles(session, "corr").collect().asList().await().indefinitely();
+    var data = service.streamDataFiles(session, "corr").collect().asList().await().indefinitely();
+
+    var deleteIds = new java.util.HashMap<String, Integer>();
+    deletes.forEach(
+        batch ->
+            batch
+                .getItemsList()
+                .forEach(d -> deleteIds.put(d.getFile().getFilePath(), d.getDeleteId())));
+    var byPath = new java.util.HashMap<String, DeleteRef>();
+    data.forEach(
+        batch ->
+            batch
+                .getItemsList()
+                .forEach(d -> byPath.put(d.getFile().getFilePath(), d.getDeletes())));
+    assertEquals(
+        java.util.List.of(deleteIds.get("d2")), byPath.get("named").getDeleteIds().getIdsList());
+    assertEquals(java.util.List.of(), byPath.get("none").getDeleteIds().getIdsList());
+    assertTrue(byPath.get("none").hasDeleteIds(), "a record naming no deletes says none apply");
+    assertTrue(byPath.get("unknown").getAllDeletes());
+    assertTrue(byPath.get("unstreamed").getAllDeletes(), "a delete it names was not streamed");
+  }
+
+  private static TargetStatsRecord file(
+      String path, FileContent content, java.util.List<String> deletes) {
+    FileTargetStats.Builder file =
+        FileTargetStats.newBuilder().setFilePath(path).setFileContent(content).setRowCount(1);
+    if (deletes != null) {
+      file.setAppliedDeletes(AppliedDeletes.newBuilder().addAllFilePaths(deletes));
+    }
+    return TargetStatsRecord.newBuilder().setFile(file).build();
   }
 
   @Test

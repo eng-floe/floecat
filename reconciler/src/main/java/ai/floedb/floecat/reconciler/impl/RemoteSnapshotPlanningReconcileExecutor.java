@@ -558,7 +558,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     if (historical == null
         || historical.base() == null
         || (!capturePolicy.requestsStats() && !capturePolicy.requestsIndexes())
-        || !capturePolicyMatches(capturePolicy, historical.manifest().getCapturePolicy())) {
+        || !appendOnlyBaseMatches(capturePolicy, historical.manifest())) {
       return Optional.empty();
     }
     SnapshotPlanBlobStore.AppendOnlyBase base = historical.base();
@@ -873,6 +873,18 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       }
       return List.copyOf(selected);
     }
+  }
+
+  /**
+   * Whether a snapshot captured with {@code policy} may inherit the statistics of the base {@code
+   * manifest} describes: captured with the same policy, and, when it captures statistics, meaning
+   * what its own do.
+   */
+  static boolean appendOnlyBaseMatches(
+      ReconcileCapturePolicy policy, SnapshotCaptureManifest manifest) {
+    return (!policy.requestsStats()
+            || ReconcileCapturePolicy.STATS_SEMANTICS.equals(manifest.getStatsSemantics()))
+        && capturePolicyMatches(policy, manifest.getCapturePolicy());
   }
 
   static boolean capturePolicyMatches(

@@ -22,6 +22,8 @@ import ai.floedb.floecat.connector.common.ndv.ParquetAvgWidthProvider;
 import ai.floedb.floecat.types.LogicalCoercions;
 import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.MergedBound;
+import ai.floedb.floecat.types.MergedCount;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -31,7 +33,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.function.BiConsumer;
 import org.jboss.logging.Logger;
 
 public final class GenericStatsEngine<K> implements StatsEngine<K> {
@@ -109,7 +110,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
           new ColAcc(logicalTypeFor(column).orElse(null), columnNameFor(column).orElse(null)));
     }
 
-    long files = 0, rows = 0, bytes = 0;
+    long files = 0, rows = 0, liveRows = 0, bytes = 0;
 
     // Column names are not unique across a nested schema: Iceberg exposes leaf names, so struct
     // fields such as a.name and b.name collide. The NDV/avg-width providers are name-keyed, so a
@@ -192,13 +193,12 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     for (PlannedFile<K> file : planner) {
       files++;
       rows += file.rowCount();
+      liveRows += file.rowsAfterDeletes();
       bytes += file.sizeBytes();
 
-      mergeCounts(acc.columns, file.rowCounts(), ColAcc::addRowCount);
-      mergeCounts(acc.columns, file.nullCounts(), ColAcc::addNullCount);
-      mergeCounts(acc.columns, file.nanCounts(), ColAcc::addNanCount);
-      mergeBounds(acc.columns, file.lowerBounds(), true);
-      mergeBounds(acc.columns, file.upperBounds(), false);
+      for (var column : acc.columns.entrySet()) {
+        column.getValue().add(file, column.getKey());
+      }
 
       /*
        * Per-file NDV: fresh ColumnNdv accumulators per file; merge serialized theta
@@ -288,7 +288,8 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
               fileCols,
               file.partitionDataJson(),
               file.partitionSpecId(),
-              file.sequenceNumber()));
+              file.sequenceNumber(),
+              file.liveRowCount()));
     }
 
     final Map<K, ColumnAgg> out = new LinkedHashMap<>(acc.columns.size());
@@ -302,6 +303,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
     return new ResultImpl<>(
         rows,
+        liveRows,
         bytes,
         files,
         Collections.unmodifiableMap(out),
@@ -316,11 +318,11 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     final LogicalType type;
     final String name;
 
-    Long rowCount;
-    Long nullCount;
-    Long nanCount;
-    Object min;
-    Object max;
+    final MergedCount rowCount = new MergedCount();
+    final MergedCount nullCount = new MergedCount();
+    final MergedCount nanCount = new MergedCount();
+    final MergedBound min = MergedBound.lower();
+    final MergedBound max = MergedBound.upper();
     Long ndvExact;
     ColumnNdv ndv;
     ParquetAvgWidthProvider.AvgWidthAcc avgWidthAcc;
@@ -330,104 +332,50 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       this.name = name;
     }
 
-    void addRowCount(long value) {
-      rowCount = sum(rowCount, value);
+    /** Folds in what {@code file} gives for column {@code key}. */
+    <K> void add(PlannedFile<K> file, K key) {
+      Long rows = valueOf(file.rowCounts(), key);
+      rowCount.add(rows);
+      Long nulls = valueOf(file.nullCounts(), key);
+      Long nans = valueOf(file.nanCounts(), key);
+      nullCount.add(nulls);
+      nanCount.add(nans);
+      // Only the column's own value count can show it holds nothing but NULLs and NaNs: the file's
+      // row count is not its value count for a list's elements.
+      boolean mayHoldValues = MergedBound.mayHoldValues(rows, nulls, nans);
+      min.add(type, ordered(valueOf(file.lowerBounds(), key)), mayHoldValues);
+      max.add(type, ordered(valueOf(file.upperBounds(), key)), mayHoldValues);
     }
 
-    void addNullCount(long value) {
-      nullCount = sum(nullCount, value);
-    }
-
-    void addNanCount(long value) {
-      nanCount = sum(nanCount, value);
-    }
-
-    void minWith(Object value) {
-      if (value == null) {
-        return;
-      }
-      Object normalized = canonical(value);
-      if (normalized == null) {
-        return;
-      }
-      if (min == null) {
-        min = normalized;
-        return;
-      }
-      Object current = canonical(min);
-      if (type == null) {
-        if (normalized instanceof Comparable<?> c
-            && current != null
-            && current.getClass().isInstance(normalized)) {
-          @SuppressWarnings("unchecked")
-          int cmp = ((Comparable<Object>) c).compareTo(current);
-          if (cmp < 0) {
-            min = normalized;
-          }
-        }
-      } else if (LogicalComparators.compare(type, normalized, current) < 0) {
-        min = normalized;
-      }
-    }
-
-    void maxWith(Object value) {
-      if (value == null) {
-        return;
-      }
-      Object normalized = canonical(value);
-      if (normalized == null) {
-        return;
-      }
-      if (max == null) {
-        max = normalized;
-        return;
-      }
-      Object current = canonical(max);
-      if (type == null) {
-        if (normalized instanceof Comparable<?> c
-            && current != null
-            && current.getClass().isInstance(normalized)) {
-          @SuppressWarnings("unchecked")
-          int cmp = ((Comparable<Object>) c).compareTo(current);
-          if (cmp > 0) {
-            max = normalized;
-          }
-        }
-      } else if (LogicalComparators.compare(type, normalized, current) > 0) {
-        max = normalized;
-      }
-    }
-
-    private Object canonical(Object value) {
-      if (value == null) {
-        return null;
-      }
-      if (type == null) {
-        return value;
+    /** {@code bound} as the type orders it, coerced when its source spelled it otherwise. */
+    private Object ordered(Object bound) {
+      if (bound == null || type == null) {
+        return bound;
       }
       try {
-        return LogicalComparators.normalize(type, value);
+        LogicalComparators.normalize(type, bound);
+        return bound;
       } catch (RuntimeException e) {
         try {
-          return LogicalCoercions.coerceStatValue(type, value);
-        } catch (RuntimeException ignore) {
-          return value;
+          return LogicalCoercions.coerceStatValue(type, bound);
+        } catch (RuntimeException unordered) {
+          return null;
         }
       }
     }
 
-    private static Long sum(Long a, long b) {
-      return a == null ? b : a + b;
+    private static <K, V> V valueOf(Map<K, V> values, K key) {
+      return values == null ? null : values.get(key);
     }
 
     ColumnAgg freeze() {
       final Long fExact = ndvExact;
       final ColumnNdv fNdv = ndv;
-      final Long fRow = rowCount;
-      final Long fNull = nullCount;
-      final Long fNan = nanCount;
-      final Object fMin = min;
-      final Object fMax = max;
+      final Long fRow = rowCount.value();
+      final Long fNull = nullCount.value();
+      final Long fNan = nanCount.value();
+      final Object fMin = min.value();
+      final Object fMax = max.value();
       final Long fAvgWidth = avgWidthAcc != null ? avgWidthAcc.avgWidthBytes() : null;
 
       return new ColumnAgg() {
@@ -483,6 +431,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     private final String partitionDataJson;
     private final int partitionSpecId;
     private final Long sequenceNumber;
+    private final Long liveRowCount;
 
     FileAggImpl(
         String path,
@@ -492,7 +441,8 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
         Map<K, ColumnAgg> columns,
         String partitionDataJson,
         int partitionSpecId,
-        Long sequenceNumber) {
+        Long sequenceNumber,
+        Long liveRowCount) {
       this.path = path;
       this.format = format;
       this.rowCount = rowCount;
@@ -501,6 +451,12 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       this.partitionDataJson = partitionDataJson;
       this.partitionSpecId = partitionSpecId;
       this.sequenceNumber = sequenceNumber;
+      this.liveRowCount = liveRowCount;
+    }
+
+    @Override
+    public Long liveRowCount() {
+      return liveRowCount;
     }
 
     @Override
@@ -662,14 +618,21 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
   private static final class ResultImpl<K> implements Result<K> {
     private final long rows;
+    private final long liveRows;
     private final long bytes;
     private final long files;
     private final Map<K, ColumnAgg> cols;
     private final List<FileAgg<K>> fileAggs;
 
     ResultImpl(
-        long rows, long bytes, long files, Map<K, ColumnAgg> cols, List<FileAgg<K>> fileAggs) {
+        long rows,
+        long liveRows,
+        long bytes,
+        long files,
+        Map<K, ColumnAgg> cols,
+        List<FileAgg<K>> fileAggs) {
       this.rows = rows;
+      this.liveRows = liveRows;
       this.bytes = bytes;
       this.files = files;
       this.cols = cols;
@@ -679,6 +642,11 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     @Override
     public long totalRowCount() {
       return rows;
+    }
+
+    @Override
+    public long liveRowCount() {
+      return liveRows;
     }
 
     @Override
@@ -699,41 +667,6 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     @Override
     public List<FileAgg<K>> files() {
       return fileAggs;
-    }
-  }
-
-  private static <K> void mergeCounts(
-      Map<K, ColAcc> columnAggs, Map<K, Long> files, BiConsumer<ColAcc, Long> apply) {
-    if (files == null || files.isEmpty()) {
-      return;
-    }
-
-    for (var file : files.entrySet()) {
-      final ColAcc columnAgg = columnAggs.get(file.getKey());
-      final Long value = file.getValue();
-      if (columnAgg != null && value != null) {
-        apply.accept(columnAgg, value);
-      }
-    }
-  }
-
-  private static <K> void mergeBounds(
-      Map<K, ColAcc> columnAggs, Map<K, Object> files, boolean isLower) {
-    if (files == null || files.isEmpty()) {
-      return;
-    }
-
-    for (var file : files.entrySet()) {
-      final ColAcc columnAgg = columnAggs.get(file.getKey());
-      if (columnAgg == null) {
-        continue;
-      }
-
-      if (isLower) {
-        columnAgg.minWith(file.getValue());
-      } else {
-        columnAgg.maxWith(file.getValue());
-      }
     }
   }
 }

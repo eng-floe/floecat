@@ -61,6 +61,7 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -78,7 +79,11 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     executor.blobStore = blobStore;
     String uri = "/reuse/manifest.pb";
     SnapshotCaptureManifest manifest =
-        SnapshotCaptureManifest.newBuilder().setFormatVersion(1).setSnapshotId(54L).build();
+        SnapshotCaptureManifest.newBuilder()
+            .setStatsSemantics(ReconcileCapturePolicy.STATS_SEMANTICS)
+            .setFormatVersion(1)
+            .setSnapshotId(54L)
+            .build();
     byte[] bytes = manifest.toByteArray();
     byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
     when(blobStore.get(uri)).thenReturn(bytes);
@@ -147,6 +152,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   void reuseManifestIdentityRequiresAccountAndConnector() {
     SnapshotCaptureManifest valid =
         SnapshotCaptureManifest.newBuilder()
+            .setStatsSemantics(ReconcileCapturePolicy.STATS_SEMANTICS)
             .setFormatVersion(1)
             .setAccountId("acct")
             .setConnectorId("connector-1")
@@ -209,6 +215,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                     List.of(snapshotFile("file-1", 10L)), List.of())));
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
+            .setStatsSemantics(ReconcileCapturePolicy.STATS_SEMANTICS)
             .setFormatVersion(1)
             .setAccountId("acct")
             .setConnectorId("connector-1")
@@ -435,6 +442,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     long baseSnapshotId = 7L;
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
+            .setStatsSemantics(ReconcileCapturePolicy.STATS_SEMANTICS)
             .setFormatVersion(1)
             .setAccountId("acct")
             .setConnectorId("connector-1")
@@ -621,6 +629,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     var baseIndex = persistArtifactIndex(blobStore, List.of(baseBundle));
     byte[] baseManifest =
         SnapshotCaptureManifest.newBuilder()
+            .setStatsSemantics(ReconcileCapturePolicy.STATS_SEMANTICS)
             .setFormatVersion(1)
             .setAccountId("acct")
             .setConnectorId("connector-1")
@@ -652,6 +661,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     var currentIndex = persistArtifactIndex(blobStore, List.of(baseBundle, deltaBundle));
     byte[] currentManifest =
         SnapshotCaptureManifest.newBuilder()
+            .setStatsSemantics(ReconcileCapturePolicy.STATS_SEMANTICS)
             .setFormatVersion(1)
             .setAccountId("acct")
             .setConnectorId("connector-1")
@@ -787,6 +797,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     String uri = "/reuse/missing-9001.pb";
     SnapshotCaptureManifest.Builder manifest =
         SnapshotCaptureManifest.newBuilder()
+            .setStatsSemantics(ReconcileCapturePolicy.STATS_SEMANTICS)
             .setFormatVersion(1)
             .setAccountId("acct")
             .setConnectorId("connector-1")
@@ -1790,6 +1801,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     }
     var manifestBuilder =
         SnapshotCaptureManifest.newBuilder()
+            .setStatsSemantics(ReconcileCapturePolicy.STATS_SEMANTICS)
             .setFormatVersion(1)
             .setAccountId("acct")
             .setConnectorId("connector-1")
@@ -1901,6 +1913,33 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
               any());
       verify(backend).fetchSnapshotFilePlan(any(), any(), eq(55L));
     }
+  }
+
+  @Test
+  void aBaseCapturedUnderEarlierStatisticsIsNotInherited() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS));
+    SnapshotCaptureManifest current =
+        SnapshotCaptureManifest.newBuilder()
+            .setStatsSemantics(ReconcileCapturePolicy.STATS_SEMANTICS)
+            .setCapturePolicy(toProtoCapturePolicy(policy))
+            .build();
+
+    assertTrue(RemoteSnapshotPlanningReconcileExecutor.appendOnlyBaseMatches(policy, current));
+    assertFalse(
+        RemoteSnapshotPlanningReconcileExecutor.appendOnlyBaseMatches(
+            policy, current.toBuilder().clearStatsSemantics().build()));
+    // A capture of page indexes alone inherits no statistics, so any base's meaning does.
+    ReconcileCapturePolicy indexes =
+        ReconcileCapturePolicy.of(
+            List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    assertTrue(
+        RemoteSnapshotPlanningReconcileExecutor.appendOnlyBaseMatches(
+            indexes,
+            current.toBuilder()
+                .clearStatsSemantics()
+                .setCapturePolicy(toProtoCapturePolicy(indexes))
+                .build()));
   }
 
   private static ai.floedb.floecat.reconciler.rpc.CapturePolicy toProtoCapturePolicy(

@@ -1652,6 +1652,7 @@ class GrpcRemoteReconcileExecutorClient
             .setLeaseEpoch(leasedJob.leaseEpoch)
             .setResultId(stableResultId)
             .setCapturePolicy(toProtoCapturePolicy(capturePolicy))
+            .setStatsSemantics(ReconcileCapturePolicy.STATS_SEMANTICS)
             .addAllFinalStats(finalStatsObjects)
             .setSourceFileCount(sourceFileCount)
             .setFileStatsRecordCount(totalFileStats)

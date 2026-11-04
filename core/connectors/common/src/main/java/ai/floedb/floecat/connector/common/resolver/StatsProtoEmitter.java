@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.common.resolver;
 
+import ai.floedb.floecat.catalog.rpc.AppliedDeletes;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
@@ -38,6 +39,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import ai.floedb.floecat.types.rpc.ScalarValue;
@@ -338,6 +340,12 @@ public final class StatsProtoEmitter {
       if (fv.sequenceNumber() != null && fv.sequenceNumber() > 0) {
         file.setSequenceNumber(fv.sequenceNumber());
       }
+      if (fv.appliedDeletes() != null) {
+        file.setAppliedDeletes(AppliedDeletes.newBuilder().addAllFilePaths(fv.appliedDeletes()));
+      }
+      if (fv.liveRowCount() != null) {
+        file.setLiveRowCount(fv.liveRowCount());
+      }
       FileTargetStats fileStats = file.build();
 
       out.add(
@@ -455,6 +463,13 @@ public final class StatsProtoEmitter {
       if (fileView.sequenceNumber() != null && fileView.sequenceNumber() > 0) {
         file.setSequenceNumber(fileView.sequenceNumber());
       }
+      if (fileView.appliedDeletes() != null) {
+        file.setAppliedDeletes(
+            AppliedDeletes.newBuilder().addAllFilePaths(fileView.appliedDeletes()));
+      }
+      if (fileView.liveRowCount() != null) {
+        file.setLiveRowCount(fileView.liveRowCount());
+      }
 
       out.add(
           TargetStatsRecord.newBuilder()
@@ -535,7 +550,7 @@ public final class StatsProtoEmitter {
       ScalarStats.Builder scalar, boolean minimum, LogicalType type, ScalarValue encoded) {
     try {
       Object value = LogicalTypeProtoAdapter.decodeValue(type, encoded);
-      if (value != null) {
+      if (value != null && !LogicalComparators.isNegativeZero(value)) {
         String legacy = LogicalTypeProtoAdapter.encodeValue(type, value);
         if (minimum) {
           scalar.setMin(legacy);

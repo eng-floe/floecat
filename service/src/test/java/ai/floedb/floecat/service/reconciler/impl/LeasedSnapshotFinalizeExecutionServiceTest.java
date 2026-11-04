@@ -941,6 +941,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .setResultId("result-1")
             .setCapturePolicy(
                 ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+                    .addOutputs(CaptureOutput.CO_TABLE_STATS)
                     .addOutputs(CaptureOutput.CO_COLUMN_STATS)
                     .setDefaultColumnScope(
                         ai.floedb.floecat.reconciler.rpc.DefaultColumnScope.DCS_EXPLICIT_ONLY)
@@ -1473,6 +1474,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 .setCaptureManifestPointerVersion(4L))
         .setCapturePolicy(
             ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+                .addOutputs(CaptureOutput.CO_TABLE_STATS)
                 .addOutputs(CaptureOutput.CO_COLUMN_STATS)
                 .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX)
                 .addColumns(

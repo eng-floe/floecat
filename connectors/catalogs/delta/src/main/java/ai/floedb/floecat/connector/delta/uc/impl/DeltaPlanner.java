@@ -174,6 +174,7 @@ final class DeltaPlanner implements Planner<String> {
             long sizeBytes = fs.getSize();
 
             long rowCount = 0L;
+            boolean rowCountKnown = false;
             Map<String, Long> rowCounts = null;
             Map<String, Long> nullCounts = null;
             Map<String, Long> nanCounts = null;
@@ -214,6 +215,7 @@ final class DeltaPlanner implements Planner<String> {
                 DataFileStatistics stats = optStats.get();
 
                 rowCount = stats.getNumRecords();
+                rowCountKnown = true;
 
                 Map<Column, Long> nc = stats.getNullCount();
                 if (nc != null && !nc.isEmpty()) {
@@ -255,7 +257,7 @@ final class DeltaPlanner implements Planner<String> {
                     if (colName != null) {
                       var lt = nameToLogical.get(colName);
                       Object raw = (e.getValue() == null) ? null : e.getValue().getValue();
-                      raw = canonicalizeStatValue(lt, raw);
+                      raw = widenTruncatedMax(canonicalizeStatValue(lt, raw));
                       Object typed = (lt == null) ? raw : LogicalComparators.normalize(lt, raw);
                       maxs.put(colName, typed);
                     }
@@ -279,6 +281,7 @@ final class DeltaPlanner implements Planner<String> {
                                 parquetPath, fieldId, deltaSchema, columnSet));
 
                 rowCount = bfs.rowCount;
+                rowCountKnown = true;
                 nullCounts = new LinkedHashMap<>();
                 mins = new LinkedHashMap<>();
                 maxs = new LinkedHashMap<>();
@@ -287,15 +290,15 @@ final class DeltaPlanner implements Planner<String> {
                 for (var e : bfs.cols.entrySet()) {
                   String name = e.getKey();
                   var c = e.getValue();
-                  nullCounts.put(name, c.nulls);
+                  nullCounts.put(name, c.nulls());
                   if (rowCount > 0) rowCounts.put(name, rowCount);
                   var lt = nameToLogical.get(name);
                   if (lt != null) {
-                    if (c.min != null) {
-                      mins.put(name, LogicalCoercions.coerceStatValue(lt, c.min));
+                    if (c.min() != null) {
+                      mins.put(name, LogicalCoercions.coerceStatValue(lt, c.min()));
                     }
-                    if (c.max != null) {
-                      maxs.put(name, LogicalCoercions.coerceStatValue(lt, c.max));
+                    if (c.max() != null) {
+                      maxs.put(name, LogicalCoercions.coerceStatValue(lt, c.max()));
                     }
                   }
                 }
@@ -319,7 +322,10 @@ final class DeltaPlanner implements Planner<String> {
                     contentIdentity(
                         add.getModificationTime(),
                         add.getBaseRowId().orElse(null),
-                        add.getDefaultRowCommitVersion().orElse(null))));
+                        add.getDefaultRowCommitVersion().orElse(null)),
+                    rowCountKnown
+                        ? liveRows(rowCount, add.getDeletionVector().orElse(null))
+                        : null));
           }
         }
       }
@@ -382,8 +388,20 @@ final class DeltaPlanner implements Planner<String> {
     return Collections.unmodifiableList(diskDeletionVectors);
   }
 
+  /** The rows a data file of {@code rowCount} rows keeps once its deletion vector applies. */
+  static long liveRows(long rowCount, DeletionVectorDescriptor deletionVector) {
+    return deletionVector == null
+        ? rowCount
+        : Math.max(0L, rowCount - deletionVector.getCardinality());
+  }
+
   DeletionVectorDescriptor deletionVectorForFile(String filePath) {
     return deletionVectorsByFile.get(filePath);
+  }
+
+  /** The paths of the planned data files that have a deletion vector. */
+  Set<String> filesWithDeletionVectors() {
+    return Collections.unmodifiableSet(deletionVectorsByFile.keySet());
   }
 
   StructType schema() {
@@ -832,6 +850,20 @@ final class DeltaPlanner implements Planner<String> {
       return instantFromMicros(n.longValue());
     }
     return raw;
+  }
+
+  /**
+   * Delta writes a timestamp's statistics truncated to milliseconds, so the true maximum may lie up
+   * to a millisecond above the written one; Delta's own readers widen it by that millisecond.
+   */
+  static Object widenTruncatedMax(Object max) {
+    if (max instanceof Instant instant) {
+      return instant.plusMillis(1);
+    }
+    if (max instanceof LocalDateTime timestamp) {
+      return timestamp.plusNanos(1_000_000L);
+    }
+    return max;
   }
 
   private static Instant instantFromMicros(long micros) {

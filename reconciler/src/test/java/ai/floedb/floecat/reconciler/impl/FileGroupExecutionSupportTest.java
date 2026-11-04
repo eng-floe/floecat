@@ -46,7 +46,9 @@ class FileGroupExecutionSupportTest {
 
     assertThat(FileGroupExecutionSupport.requestedFileGroupStatsTargetKinds(capturePolicy))
         .containsExactlyInAnyOrder(
-            FloecatConnector.StatsTargetKind.COLUMN, FloecatConnector.StatsTargetKind.FILE);
+            FloecatConnector.StatsTargetKind.TABLE,
+            FloecatConnector.StatsTargetKind.COLUMN,
+            FloecatConnector.StatsTargetKind.FILE);
   }
 
   @Test

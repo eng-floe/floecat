@@ -110,18 +110,28 @@ public final class FileArtifactReuse {
   }
 
   public static String statsCaptureSignature(ReconcileCapturePolicy policy) {
-    return captureSignature(policy, true, "");
+    return statsCaptureSignature(policy, ReconcileCapturePolicy.STATS_SEMANTICS);
+  }
+
+  /** The stats capture signature of statistics meaning {@code statsSemantics}. */
+  static String statsCaptureSignature(ReconcileCapturePolicy policy, String statsSemantics) {
+    return captureSignature(policy, statsSemantics, "");
   }
 
   public static String indexCaptureSignature(
       ReconcileCapturePolicy policy, String executionSchemaJson) {
-    return captureSignature(policy, false, executionSchemaJson);
+    return captureSignature(policy, null, executionSchemaJson);
   }
 
+  /** A stats capture signature when {@code statsSemantics} is set, else an index one. */
   private static String captureSignature(
-      ReconcileCapturePolicy policy, boolean stats, String executionSchemaJson) {
+      ReconcileCapturePolicy policy, String statsSemantics, String executionSchemaJson) {
+    boolean stats = statsSemantics != null;
     ReconcileCapturePolicy effective = policy == null ? ReconcileCapturePolicy.empty() : policy;
     DigestBuilder digest = new DigestBuilder(stats ? "stats-capture" : "index-capture");
+    if (stats) {
+      digest.add(statsSemantics);
+    }
     digest.add("default-column-scope");
     digest.add(effective.defaultColumnScope().name());
     digest.add("max-default-columns");

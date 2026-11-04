@@ -69,6 +69,44 @@ class GenericStatsEngineTest {
   }
 
   @Test
+  void theSnapshotCountsTheRowsTheDeletesLeaveWhereAFileKnowsThem() {
+    var names = Map.of(1, "c");
+    var types = Map.of(1, LogicalType.of(LogicalKind.INT));
+    var withDeletes =
+        new PlannedFile<Integer>(
+            "s3://b/a.parquet",
+            "PARQUET",
+            10L,
+            1L,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            0,
+            null,
+            "",
+            7L);
+    var unknown =
+        new PlannedFile<Integer>(
+            "s3://b/b.parquet", "PARQUET", 5L, 1L, null, null, null, null, null, null, 0, null, "");
+
+    var result =
+        new GenericStatsEngine<>(
+                planner(Set.of(1), names, types, List.of(withDeletes, unknown)),
+                null,
+                null,
+                names,
+                types)
+            .compute();
+
+    assertEquals(15L, result.totalRowCount());
+    assertEquals(12L, result.liveRowCount());
+    assertEquals(7L, result.files().get(0).liveRowCount());
+  }
+
+  @Test
   void perFileStats_includesAllPlannerColumns_evenWhenMetricsAreSparse() {
     // Planner knows 3 columns: int (1), date (2), timestamp (3)
     var cols = Set.of(1, 2, 3);
@@ -132,6 +170,58 @@ class GenericStatsEngineTest {
     assertNull(tsAgg.nullCount(), "timestamp nullCount should be null when no metrics");
     assertNull(tsAgg.min(), "timestamp min should be null when no metrics");
     assertNull(tsAgg.max(), "timestamp max should be null when no metrics");
+  }
+
+  @Test
+  void aStatisticHoldsForTheSnapshotOnlyWhenEveryFileWithValuesGivesIt() {
+    var cols = Set.of(1, 2);
+    var names = Map.of(1, "given", 2, "missing");
+    var types = Map.of(1, LogicalType.of(LogicalKind.INT), 2, LogicalType.of(LogicalKind.INT));
+    var everything =
+        new PlannedFile<>(
+            "s3://bucket/a.parquet",
+            "PARQUET",
+            10L,
+            1024L,
+            Map.of(1, 10L, 2, 10L),
+            Map.of(1, 0L, 2, 0L),
+            null,
+            Map.<Integer, Object>of(1, 1L, 2, 1L),
+            Map.<Integer, Object>of(1, 5L, 2, 5L),
+            null,
+            0,
+            null,
+            "");
+    // Column 1 holds only NULLs here, so it has no bound to give; column 2 holds values but gives
+    // neither a count nor a bound.
+    var sparse =
+        new PlannedFile<>(
+            "s3://bucket/b.parquet",
+            "PARQUET",
+            10L,
+            1024L,
+            Map.of(1, 10L, 2, 10L),
+            Map.of(1, 10L),
+            null,
+            Map.<Integer, Object>of(),
+            Map.<Integer, Object>of(),
+            null,
+            0,
+            null,
+            "");
+
+    var columns =
+        new GenericStatsEngine<>(
+                planner(cols, names, types, List.of(everything, sparse)), null, null, names, types)
+            .compute()
+            .columns();
+
+    assertEquals(10L, columns.get(1).nullCount());
+    assertEquals(1L, columns.get(1).min());
+    assertEquals(5L, columns.get(1).max());
+    assertNull(columns.get(2).nullCount());
+    assertNull(columns.get(2).min());
+    assertNull(columns.get(2).max());
   }
 
   @Test

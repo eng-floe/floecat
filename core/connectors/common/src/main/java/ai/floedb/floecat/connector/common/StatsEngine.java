@@ -37,6 +37,11 @@ public interface StatsEngine<K> {
   interface Result<K> {
     long totalRowCount();
 
+    /** The rows the files' deletes leave, each file's when known, else its rows. */
+    default long liveRowCount() {
+      return totalRowCount();
+    }
+
     long totalSizeBytes();
 
     long fileCount();
@@ -82,6 +87,11 @@ public interface StatsEngine<K> {
     long sizeBytes();
 
     Map<K, ColumnAgg> columns();
+
+    /** The rows its deletes leave, or null when unknown. */
+    default Long liveRowCount() {
+      return null;
+    }
 
     default String partitionDataJson() {
       return null;

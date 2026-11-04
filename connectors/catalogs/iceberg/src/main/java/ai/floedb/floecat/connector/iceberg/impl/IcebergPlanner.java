@@ -42,6 +42,7 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.PartitionSpec;
@@ -111,7 +112,7 @@ final class IcebergPlanner implements Planner<Integer> {
         for (FileScanTask task : tasks) {
           String dataPath = task.file().location().toString();
           if (this.plannedFilePaths.isEmpty() || this.plannedFilePaths.contains(dataPath)) {
-            files.add(toPlanned(task.file()));
+            files.add(toPlanned(task.file(), liveRows(task.file(), task.deletes())));
             deleteFilesByDataFile.put(
                 dataPath, task.deletes().stream().map(IcebergPlanner::toDeleteFileStat).toList());
             for (var deleteFile : task.deletes()) {
@@ -156,6 +157,29 @@ final class IcebergPlanner implements Planner<Integer> {
     return deleteFilesByDataFile.getOrDefault(dataFilePath, List.of());
   }
 
+  /** The locations of the delete files Iceberg applies to each planned data file, by its path. */
+  Map<String, List<String>> deleteLocationsByDataFile() {
+    Map<String, List<String>> out = new HashMap<>();
+    deleteFilesByDataFile.forEach(
+        (path, deletes) -> {
+          List<String> locations = appliedDeleteLocations(deletes);
+          if (locations != null) {
+            out.put(path, locations);
+          }
+        });
+    return out;
+  }
+
+  /**
+   * The locations of a data file's {@code deletes}, or null when one is a deletion vector: a Puffin
+   * file holds the vectors of many data files, so its location alone does not name this file's.
+   */
+  private static List<String> appliedDeleteLocations(List<DeleteFileStat> deletes) {
+    return deletes.stream().anyMatch(DeleteFileStat::deletionVector)
+        ? null
+        : deletes.stream().map(DeleteFileStat::location).toList();
+  }
+
   Schema schema() {
     return schema;
   }
@@ -190,7 +214,8 @@ final class IcebergPlanner implements Planner<Integer> {
       org.apache.iceberg.FileContent content,
       int partitionSpecId,
       Long fileSequenceNumber,
-      List<Integer> equalityFieldIds) {}
+      List<Integer> equalityFieldIds,
+      boolean deletionVector) {}
 
   private static DeleteFileStat toDeleteFileStat(org.apache.iceberg.DeleteFile deleteFile) {
     List<Integer> equalityFieldIds =
@@ -204,7 +229,8 @@ final class IcebergPlanner implements Planner<Integer> {
         deleteFile.content(),
         deleteFile.specId(),
         deleteFile.fileSequenceNumber(),
-        equalityFieldIds);
+        equalityFieldIds,
+        deleteFile.format() == org.apache.iceberg.FileFormat.PUFFIN);
   }
 
   private void collectFieldMetadata(Types.NestedField field) {
@@ -228,7 +254,22 @@ final class IcebergPlanner implements Planner<Integer> {
     }
   }
 
-  private PlannedFile<Integer> toPlanned(DataFile dataFile) {
+  /**
+   * The rows {@code dataFile} keeps once {@code deletes} apply, or null when a position or equality
+   * delete file applies: only a deletion vector counts exactly the rows it removes.
+   */
+  static Long liveRows(DataFile dataFile, List<DeleteFile> deletes) {
+    long removed = 0L;
+    for (DeleteFile delete : deletes) {
+      if (delete.format() != org.apache.iceberg.FileFormat.PUFFIN) {
+        return null;
+      }
+      removed += delete.recordCount();
+    }
+    return Math.max(0L, dataFile.recordCount() - removed);
+  }
+
+  private PlannedFile<Integer> toPlanned(DataFile dataFile, Long liveRowCount) {
     Map<Integer, Long> rowCounts = dataFile.valueCounts();
     Map<Integer, Long> nullCounts = dataFile.nullValueCounts();
     Map<Integer, Long> nanCounts = dataFile.nanValueCounts();
@@ -256,7 +297,8 @@ final class IcebergPlanner implements Planner<Integer> {
         partJson,
         spec == null ? 0 : spec.specId(),
         sequenceNumber,
-        dataContentIdentity(sequenceNumber, dataFile.recordCount()));
+        dataContentIdentity(sequenceNumber, dataFile.recordCount()),
+        liveRowCount);
   }
 
   static String dataContentIdentity(Long sequenceNumber, long recordCount) {

@@ -27,6 +27,19 @@ import java.util.Set;
 
 /** Output and column policy for reconcile-time capture execution. */
 public final class ReconcileCapturePolicy {
+  /**
+   * What captured statistics mean. Changing it captures every snapshot's statistics again, rather
+   * than keeping or reusing ones captured under an earlier meaning. stats-v2: each statistic holds
+   * for every row it describes, a data file names the deletes that apply to it and the rows they
+   * leave, and a table counts the rows its deletes leave.
+   *
+   * <p>It is stamped by the planner (coverage atoms and the stats capture signature) and by the
+   * finalizer (the capture manifest), not by the executor that computes the statistics. Statistics
+   * a file group executor older than its planner computes are stamped with this meaning, and are
+   * reused until a full rescan: upgrade file group executors before planners and finalizers.
+   */
+  public static final String STATS_SEMANTICS = "stats-v2";
+
   public enum DefaultColumnScope {
     FIRST_N,
     ALL,
@@ -86,7 +99,13 @@ public final class ReconcileCapturePolicy {
                 .filter(Column::enabled)
                 .distinct()
                 .toList();
-    this.outputs = outputs == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(outputs));
+    LinkedHashSet<Output> requested =
+        outputs == null ? new LinkedHashSet<>() : new LinkedHashSet<>(outputs);
+    // Merging column statistics across file groups counts the groups by their table records.
+    if (requested.contains(Output.COLUMN_STATS)) {
+      requested.add(Output.TABLE_STATS);
+    }
+    this.outputs = Set.copyOf(requested);
     this.defaultColumnScope =
         defaultColumnScope == null ? DefaultColumnScope.FIRST_N : defaultColumnScope;
     if (this.outputs.contains(Output.PARQUET_PAGE_INDEX)

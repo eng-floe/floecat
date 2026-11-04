@@ -28,8 +28,10 @@ import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.SketchPayload;
 import ai.floedb.floecat.catalog.rpc.SketchRole;
+import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
 import ai.floedb.floecat.catalog.rpc.StatsCoverage;
 import ai.floedb.floecat.catalog.rpc.StatsMetadata;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -114,7 +116,7 @@ class FileGroupTargetStatsRollupSketchTest {
   }
 
   @Test
-  void fileRecordRollup_requiresLegacyBoundsFromEveryContributor() {
+  void fileRecordRollup_spellsLegacyBoundsFromTheMergedTypedBounds() {
     ScalarStats legacy =
         ScalarStats.newBuilder()
             .setDisplayName("col")
@@ -141,10 +143,10 @@ class FileGroupTargetStatsRollupSketchTest {
                 Set.of(FloecatConnector.StatsTargetKind.COLUMN),
                 List.of(fileRecord(1L, legacy), fileRecord(1L, typedOnly))));
 
-    assertFalse(merged.hasMin());
-    assertFalse(merged.hasMax());
-    assertTrue(merged.hasMinValue());
-    assertTrue(merged.hasMaxValue());
+    assertEquals(1L, merged.getMinValue().getI64());
+    assertEquals(10L, merged.getMaxValue().getI64());
+    assertEquals("1", merged.getMin());
+    assertEquals("10", merged.getMax());
   }
 
   @Test
@@ -413,6 +415,44 @@ class FileGroupTargetStatsRollupSketchTest {
     // consumes for range/MCV selectivity — dropping it was the missing_quantile_sketch downgrade.
     ScalarStats merged = onlyScalar(result);
     assertEquals(List.of(tdigest, mcv), merged.getSketchesList());
+
+    // A second data file without the column: the one that has it no longer describes the column.
+    ScalarStats withEveryNdvSketch =
+        sole.toBuilder()
+            .setNdv(
+                sole.getNdv().toBuilder()
+                    .addSketches(
+                        ndvPayload(
+                                "apache-datasketches-hll-v1",
+                                SketchRole.SKETCH_ROLE_NDV,
+                                hllBytes("a", "b"))
+                            .toBuilder()
+                            .putParams("lg_k", "12"))
+                    .addSketches(
+                        ndvPayload(
+                                "floedb-tuple-v2", SketchRole.SKETCH_ROLE_TUPLE_NDV, tupleBytes(1L))
+                            .toBuilder()
+                            .putParams("nominal_entries", "4096")
+                            .putParams("version", "2")))
+            .build();
+    ScalarStats partial =
+        FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+                TABLE,
+                1L,
+                Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+                List.of(
+                    complete(fileRecord(1L, withEveryNdvSketch)), complete(fileRecord(2L, sole))))
+            .stream()
+            .filter(
+                record -> record.hasScalar() && record.getTarget().getColumn().getColumnId() == 1L)
+            .findFirst()
+            .orElseThrow()
+            .getScalar();
+    assertEquals(List.of(), partial.getSketchesList());
+    assertEquals(3, partial.getNdv().getSketchesCount(), "theta, HLL and tuple");
+    assertTrue(
+        partial.getNdv().getSketchesList().stream()
+            .allMatch(sketch -> sketch.getCompleteness() == StatsCompleteness.SC_PARTIAL));
   }
 
   @Test
@@ -423,9 +463,19 @@ class FileGroupTargetStatsRollupSketchTest {
         TargetStatsRecords.columnRecord(
             TABLE, 1L, 1L, scalarWithSketches(120, null, tdigest), null);
 
+    TargetStatsRecord groupTable =
+        TargetStatsRecords.tableRecord(
+            TABLE,
+            1L,
+            TableValueStats.newBuilder().setRowCount(120).setDataFileCount(1).build(),
+            null);
+
     List<TargetStatsRecord> result =
         FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
-            TABLE, 1L, Set.of(FloecatConnector.StatsTargetKind.COLUMN), List.of(solePartial));
+            TABLE,
+            1L,
+            Set.of(FloecatConnector.StatsTargetKind.TABLE, FloecatConnector.StatsTargetKind.COLUMN),
+            List.of(groupTable, solePartial));
 
     // The full-rescan final stage merges per-group partials; a single group must not lose the
     // sketches its file rollup carried.
@@ -684,6 +734,14 @@ class FileGroupTargetStatsRollupSketchTest {
                 1L,
                 Set.of(FloecatConnector.StatsTargetKind.COLUMN),
                 List.of(current, stale)));
+  }
+
+  /** {@code record}, claiming every row it describes. */
+  private static TargetStatsRecord complete(TargetStatsRecord record) {
+    return record.toBuilder()
+        .setMetadata(
+            record.getMetadata().toBuilder().setCompleteness(StatsCompleteness.SC_COMPLETE))
+        .build();
   }
 
   private static TargetStatsRecord fileRecord(long columnId, ScalarStats scalar) {
