@@ -19,9 +19,13 @@ package ai.floedb.floecat.service.statistics.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.rpc.AppliedDeletes;
+import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class TableStatisticsServiceImplFingerprintTest {
@@ -98,5 +102,25 @@ class TableStatisticsServiceImplFingerprintTest {
     assertThat(StatsCanonicalizer.canonicalFingerprint(none))
         .isNotEqualTo(
             StatsCanonicalizer.canonicalFingerprint(none.toBuilder().setLiveRowCount(3).build()));
+  }
+
+  @Test
+  void scalarFingerprintsTellAnAbsentCountOrBoundFromAZeroOrEmptyOne() {
+    ScalarStats absent = ScalarStats.newBuilder().setLogicalType("DOUBLE").setRowCount(2L).build();
+    TargetStatsRecord.Builder record =
+        TargetStatsRecord.newBuilder()
+            .setTarget(
+                StatsTarget.newBuilder().setColumn(ColumnStatsTarget.newBuilder().setColumnId(1L)));
+    for (ScalarStats explicit :
+        List.of(
+            absent.toBuilder().setNullCount(0L).build(),
+            absent.toBuilder().setNanCount(0L).build(),
+            absent.toBuilder().setMin("").build(),
+            absent.toBuilder().setMax("").build())) {
+      assertThat(StatsCanonicalizer.canonicalFingerprint(explicit))
+          .isNotEqualTo(StatsCanonicalizer.canonicalFingerprint(absent));
+      assertThat(StatsCanonicalizer.canonicalFingerprint(record.setScalar(explicit).build()))
+          .isNotEqualTo(StatsCanonicalizer.canonicalFingerprint(record.setScalar(absent).build()));
+    }
   }
 }

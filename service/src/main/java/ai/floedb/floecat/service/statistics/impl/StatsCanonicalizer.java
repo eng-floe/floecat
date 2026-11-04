@@ -70,11 +70,12 @@ final class StatsCanonicalizer {
             g.scalar("logical_type", LogicalTypeProtoAdapter.columnLogicalTypeString(scalar));
             canonicalUpstream(g, "upstream", scalar.hasUpstream() ? scalar.getUpstream() : null);
             g.scalar("row_count", scalar.getRowCount());
-            g.scalar("null_count", scalar.getNullCount());
-            g.scalar("nan_count", scalar.getNanCount());
+            // An absent count or bound is unknown, unlike a zero or empty one.
+            if (scalar.hasNullCount()) g.scalar("null_count", scalar.getNullCount());
+            if (scalar.hasNanCount()) g.scalar("nan_count", scalar.getNanCount());
             canonicalNdv(g, "ndv", scalar.hasNdv() ? scalar.getNdv() : null);
-            g.scalar("min", scalar.getMin());
-            g.scalar("max", scalar.getMax());
+            if (scalar.hasMin()) g.scalar("min", scalar.getMin());
+            if (scalar.hasMax()) g.scalar("max", scalar.getMax());
             if (scalar.hasMinValue()) {
               g.scalar("min_value", scalar.getMinValue().toByteArray());
             }
@@ -110,11 +111,12 @@ final class StatsCanonicalizer {
     c.scalar("logical_type", LogicalTypeProtoAdapter.columnLogicalTypeString(stats));
     canonicalUpstream(c, "upstream", stats.hasUpstream() ? stats.getUpstream() : null);
     c.scalar("row_count", stats.getRowCount());
-    c.scalar("null_count", stats.getNullCount());
-    c.scalar("nan_count", stats.getNanCount());
+    // An absent count or bound is unknown, unlike a zero or empty one.
+    if (stats.hasNullCount()) c.scalar("null_count", stats.getNullCount());
+    if (stats.hasNanCount()) c.scalar("nan_count", stats.getNanCount());
     canonicalNdv(c, "ndv", stats.hasNdv() ? stats.getNdv() : null);
-    c.scalar("min", stats.getMin());
-    c.scalar("max", stats.getMax());
+    if (stats.hasMin()) c.scalar("min", stats.getMin());
+    if (stats.hasMax()) c.scalar("max", stats.getMax());
     if (stats.hasMinValue()) {
       c.scalar("min_value", stats.getMinValue().toByteArray());
     }
