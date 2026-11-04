@@ -604,7 +604,7 @@ public class Shell implements Runnable {
          overlay update <name|id> [--display <name>]
              [--include ns[,ns...]] [--exclude ns[,ns...]] [--etag <etag>]
          overlay reconcile <name|id> [--etag <etag>]
-         overlay delete <name|id> [--etag <etag>]
+         overlay delete <name|id> [--cascade] [--etag <etag>]
          connectors
          connector list [--kind <KIND>]
          connector get <display_name|id>

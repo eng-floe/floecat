@@ -302,6 +302,23 @@ public class CatalogOverlayReconciler {
     }
   }
 
+  /** Whether the target contains a namespace or relation not materialized by this Overlay. */
+  boolean hasUnmanagedContent(CatalogOverlay overlay) {
+    for (Namespace namespace : listNamespaces(overlay.getCatalogId())) {
+      throwIfCancelled();
+      if (!ownedBy(namespace.getPropertiesMap(), overlay)) return true;
+      for (Table table : listTables(namespace)) {
+        throwIfCancelled();
+        if (!ownedBy(table.getPropertiesMap(), overlay)) return true;
+      }
+      for (View view : listViews(namespace)) {
+        throwIfCancelled();
+        if (!ownedBy(view.getPropertiesMap(), overlay)) return true;
+      }
+    }
+    return false;
+  }
+
   private void advanceCommittedTablePurge(ResourceId tableId) {
     try {
       relationPurge.purgeTableState(tableId);
@@ -819,7 +836,10 @@ public class CatalogOverlayReconciler {
                   .createWhilePointersMatch(
                       desired,
                       fence.and(
-                          orRetry(() -> markerStore.relationCreateFence(desired.getNamespaceId()))))
+                          orRetry(
+                              () ->
+                                  markerStore.relationCreateFence(
+                                      desired.getCatalogId(), desired.getNamespaceId()))))
                   .orElseThrow(CatalogOverlayReconciler::lostFence);
           result.tablesCreated++;
         } else if (!current.equals(desired)) {
@@ -836,6 +856,7 @@ public class CatalogOverlayReconciler {
                           orRetry(
                               () ->
                                   markerStore.relationMoveFence(
+                                      desired.getCatalogId(),
                                       current.getNamespaceId(),
                                       desired.getNamespaceId(),
                                       !current
@@ -936,7 +957,11 @@ public class CatalogOverlayReconciler {
       if (current == null) {
         if (!views.createWhilePointersMatch(
             desired,
-            fence.and(orRetry(() -> markerStore.relationCreateFence(desired.getNamespaceId()))))) {
+            fence.and(
+                orRetry(
+                    () ->
+                        markerStore.relationCreateFence(
+                            desired.getCatalogId(), desired.getNamespaceId()))))) {
           throw lostFence();
         }
         result.viewsCreated++;
@@ -951,6 +976,7 @@ public class CatalogOverlayReconciler {
                     orRetry(
                         () ->
                             markerStore.relationMoveFence(
+                                desired.getCatalogId(),
                                 current.getNamespaceId(),
                                 desired.getNamespaceId(),
                                 !current

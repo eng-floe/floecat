@@ -28,6 +28,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -95,11 +96,11 @@ class TableServiceImplSystemTableTest {
     svc.relationPurge = mock(RelationPurge.class);
     // Every relation write resolves a fence, so the update paths reach markerStore.
     svc.markerStore = mock(MarkerStore.class);
-    when(svc.markerStore.relationMoveFence(any(), any(), anyBoolean()))
+    when(svc.markerStore.relationMoveFence(any(), any(), any(), anyBoolean()))
         .thenReturn(GenericResourceRepository.PointerConditions.none());
     when(svc.markerStore.relationsFence(any(ResourceId[].class)))
         .thenReturn(GenericResourceRepository.PointerConditions.none());
-    when(svc.markerStore.relationCreateFence(any()))
+    when(svc.markerStore.relationCreateFence(any(), any()))
         .thenReturn(GenericResourceRepository.PointerConditions.none());
 
     // Minimal principal + authz behavior
@@ -345,6 +346,62 @@ class TableServiceImplSystemTableTest {
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
 
+    verifyNoInteractions(tableRepo);
+  }
+
+  @Test
+  void createTable_rejectsCatalogIntegrationManagedProperties() {
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat_user_managed_properties")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns_user_managed_properties")
+            .build();
+    graphView.addNode(
+        new CatalogNode(
+            catalogId,
+            "blob://test/v1",
+            "catalog",
+            Map.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of()));
+    graphView.addNode(
+        new NamespaceNode(
+            namespaceId,
+            "blob://test/v1",
+            catalogId,
+            List.of(),
+            "public",
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Map.of()));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.createTable(
+                        CreateTableRequest.newBuilder()
+                            .setSpec(
+                                TableSpec.newBuilder()
+                                    .setCatalogId(catalogId)
+                                    .setNamespaceId(namespaceId)
+                                    .setDisplayName("orders")
+                                    .setSchemaJson("{}")
+                                    .putProperties("floecat.catalog-overlay.id", "spoofed-overlay"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
     verifyNoInteractions(tableRepo);
   }
 

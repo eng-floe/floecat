@@ -314,6 +314,29 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void unmanagedContentDetectionDistinguishesOverlayMaterializationsFromLocalContent() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+
+    reconcile();
+
+    assertFalse(reconciler.hasUnmanagedContent(overlay));
+    Namespace managed = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    namespaces.create(
+        Namespace.newBuilder()
+            .setResourceId(id("local-child", ResourceKind.RK_NAMESPACE))
+            .setCatalogId(managed.getCatalogId())
+            .setDisplayName("local")
+            .addParents("sales")
+            .build());
+
+    assertTrue(reconciler.hasUnmanagedContent(overlay));
+  }
+
+  @Test
   void rejectsNonPositiveParallelLoadConfigurationAtStartup() {
     reconciler.maxParallelLoads = 0;
 

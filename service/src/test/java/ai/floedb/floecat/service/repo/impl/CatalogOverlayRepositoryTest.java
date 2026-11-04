@@ -18,6 +18,7 @@ import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -114,6 +115,59 @@ class CatalogOverlayRepositoryTest {
   }
 
   @Test
+  void deletionFenceReportsWhichRequestInstalledIt() {
+    var overlays =
+        new CatalogOverlayRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var overlay = overlay("overlay", "integration", "catalog");
+    overlays.create(overlay);
+
+    var first = overlays.acquireDeletionFence(overlay.getResourceId(), 1L).orElseThrow();
+    var second = overlays.acquireDeletionFence(overlay.getResourceId(), 1L).orElseThrow();
+
+    assertTrue(first.newlyInstalled());
+    assertFalse(second.newlyInstalled());
+    assertEquals(first.version(), second.version());
+  }
+
+  @Test
+  void ownedCatalogIsCreatedAndDeletedAtomicallyWithItsOverlay() {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var overlays = new CatalogOverlayRepository(pointers, blobs);
+    var catalogs = new CatalogRepository(pointers, blobs);
+    var catalogId = id("catalog", ResourceKind.RK_CATALOG);
+    var catalog = Catalog.newBuilder().setResourceId(catalogId).setDisplayName("sales").build();
+    var overlay =
+        overlay("overlay", "integration", "catalog").toBuilder().setOwnsCatalog(true).build();
+
+    assertTrue(
+        overlays
+            .createAttachedWithMetaAndCompanions(
+                overlay,
+                Map.of(),
+                Set.of(),
+                Map.of(
+                    Keys.catalogIntegrationOverlaysMarker("account", "integration"), 0L,
+                    Keys.catalogOverlaysMarker("account", "catalog"), 0L),
+                ignored -> catalogs.prepareCreateOps(catalog))
+            .isPresent());
+    assertTrue(catalogs.getById(catalogId).isPresent());
+
+    var fence = overlays.acquireDeletionFence(overlay.getResourceId(), 1L).orElseThrow();
+    assertTrue(
+        overlays.deleteWithFenceAndCompanions(
+            overlay.getResourceId(),
+            1L,
+            fence.version(),
+            PointerConditions.none(),
+            Map.of(Keys.catalogOverlaysMarker("account", "catalog"), 1L),
+            catalogs.prepareDeleteOps(catalogId)));
+
+    assertTrue(overlays.getById(overlay.getResourceId()).isEmpty());
+    assertTrue(catalogs.getById(catalogId).isEmpty());
+  }
+
+  @Test
   void replacementMayRebindBothParents() {
     var pointers = new InMemoryPointerStore();
     var overlays = new CatalogOverlayRepository(pointers, new InMemoryBlobStore());
@@ -140,7 +194,9 @@ class CatalogOverlayRepositoryTest {
                     Keys.catalogIntegrationOverlaysMarker("account", "old-integration"), 1L,
                     Keys.catalogIntegrationOverlaysMarker("account", "new-integration"), 0L,
                     Keys.catalogOverlaysMarker("account", "old-catalog"), 1L,
-                    Keys.catalogOverlaysMarker("account", "new-catalog"), 0L))
+                    Keys.catalogOverlaysMarker("account", "new-catalog"), 0L),
+                Map.of(),
+                java.util.List.of())
             .isPresent());
 
     assertTrue(overlays.getById(current.getResourceId()).isEmpty());

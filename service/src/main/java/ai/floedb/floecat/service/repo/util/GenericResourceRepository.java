@@ -1495,6 +1495,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                   replacementCanonical, replacementBlobUri, replacementBlobExistedBefore);
               throw accountDeletionInProgress(currentKey);
             }
+            classifyCompanionConflict(companions);
             return Optional.empty();
           }
           healCanonicalBlobIfMissing(replacementBlobUri, replacementValue);
@@ -1573,11 +1574,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         key, expectedCanonicalVersion, conditions, pointerVersionsToDelete, List.of());
   }
 
-  /**
-   * Deletes the resource and supplied external pointers while publishing companion operations in
-   * the same atomic pointer transaction.
-   */
-  public boolean deleteWithPreconditionWhilePointersMatchAndMutatePointers(
+  /** Deletes the resource, caller-selected pointers, and companion resources in one transaction. */
+  public boolean deleteWithPreconditionWhilePointersMatchAndCompanions(
       K key,
       long expectedCanonicalVersion,
       PointerConditions conditions,

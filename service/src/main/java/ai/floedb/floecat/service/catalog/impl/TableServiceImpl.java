@@ -45,6 +45,7 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.FenceRetry;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
+import ai.floedb.floecat.service.common.ManagedCatalogIntegrationProperties;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.common.ResourceIds;
@@ -178,6 +179,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var rawName = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
                   var normName = normalizeName(rawName);
                   PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                      spec.getPropertiesMap(), corr, "spec.properties");
+                  ManagedCatalogIntegrationProperties.validateUserProperties(
                       spec.getPropertiesMap(), corr, "spec.properties");
 
                   var explicitKey =
@@ -377,6 +380,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   if (maskTargets(mask, "properties")) {
                     PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
                         spec.getPropertiesMap(), corr, "spec.properties");
+                    ManagedCatalogIntegrationProperties.validateUserProperties(
+                        spec.getPropertiesMap(), corr, "spec.properties");
                   }
 
                   var meta = tableRepo.metaFor(tableId);
@@ -400,6 +405,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   // is reported by the fence, whose message is internal.
                   final var fromNamespace = current.getNamespaceId();
                   final var toNamespace = desired.getNamespaceId();
+                  final var toCatalog = desired.getCatalogId();
                   // A catalog-only change still re-keys the relation, because its by-name key and
                   // the count behind the fence both carry the catalog.
                   final boolean changesCatalog =
@@ -410,7 +416,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           toNamespace,
                           () ->
                               markerStore.relationMoveFence(
-                                  fromNamespace, toNamespace, changesCatalog));
+                                  toCatalog, fromNamespace, toNamespace, changesCatalog));
                   var writePolicy = catalogSurfaceWritePolicy();
                   var desiredNamespace =
                       writePolicy.requireWritableNamespace(
@@ -952,7 +958,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         namespaceFenceOrNotFound(
             corr,
             table.getNamespaceId(),
-            () -> markerStore.relationCreateFence(table.getNamespaceId()));
+            () -> markerStore.relationCreateFence(table.getCatalogId(), table.getNamespaceId()));
     var ns = writePolicy.requireWritableNamespace(spec.getNamespaceId(), "spec.namespace_id", corr);
     writePolicy.requireNamespaceInCatalog(ns, spec.getNamespaceId(), spec.getCatalogId(), corr);
     return fence;

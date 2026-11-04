@@ -186,7 +186,8 @@ message UpdateCatalogIntegrationAuthenticationResponse {
 message DeleteCatalogIntegrationRequest {
   ai.floedb.floecat.common.ResourceId integration_id = 1;
   ai.floedb.floecat.common.Precondition precondition = 2;
-  // Deletes dependent catalog overlays under a durable integration-deletion fence.
+  // Deletes dependent catalog overlays under a durable integration-deletion fence, including any
+  // content in Catalogs owned by those Overlays.
   // Cascade additionally requires catalog-overlay.write permission.
   bool cascade = 3;
 }

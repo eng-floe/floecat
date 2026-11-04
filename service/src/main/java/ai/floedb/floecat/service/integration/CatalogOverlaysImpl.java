@@ -7,6 +7,7 @@
 package ai.floedb.floecat.service.integration;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG;
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_ALREADY_EXISTS;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_INTEGRATION;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_OVERLAY;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_OVERLAY_ALREADY_EXISTS;
@@ -15,6 +16,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.SELECTOR_REQUIRED;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.UPDATE_MASK_REQUIRED;
 
+import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.CreateMode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -36,6 +38,7 @@ import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayResponse;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.catalog.impl.CatalogCascadeAuthorization;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -49,20 +52,25 @@ import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -74,6 +82,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
   @Inject CatalogOverlayRepository overlays;
   @Inject CatalogIntegrationRepository integrations;
   @Inject CatalogRepository catalogs;
+  @Inject CatalogOverlayLifecycle lifecycle;
   @Inject MarkerStore markerStore;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -220,26 +229,35 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                   }
                   ResourceId integrationId =
                       scopedIntegrationId(pc.getAccountId(), spec.getIntegrationId());
-                  ResourceId catalogId = scopedCatalogId(pc.getAccountId(), spec.getCatalogId());
-                  catalogSurfaceWritePolicy().requireWritableCatalog(catalogId, "catalog_id", corr);
+                  ResourceId requestedCatalogId =
+                      spec.hasCatalogId()
+                          ? scopedCatalogId(pc.getAccountId(), spec.getCatalogId())
+                          : null;
+                  if (requestedCatalogId != null)
+                    catalogSurfaceWritePolicy()
+                        .requireWritableCatalog(requestedCatalogId, "catalog_id", corr);
                   List<NamespacePath> includes =
                       normalizePaths(spec.getIncludeNamespacesList(), "include_namespaces", corr);
                   List<NamespacePath> excludes =
                       normalizePaths(spec.getExcludeNamespacesList(), "exclude_namespaces", corr);
                   byte[] fingerprint =
-                      canonicalFingerprint(name, integrationId, catalogId, includes, excludes);
+                      canonicalFingerprint(
+                          name, integrationId, requestedCatalogId, includes, excludes);
                   var now = nowTs();
 
                   if (key.isEmpty()) {
+                    ResourceId overlayId =
+                        randomResourceId(pc.getAccountId(), ResourceKind.RK_CATALOG_OVERLAY);
                     var created =
                         createOrReplace(
-                            randomResourceId(pc.getAccountId(), ResourceKind.RK_CATALOG_OVERLAY),
+                            overlayId,
                             name,
                             integrationId,
-                            catalogId,
+                            requestedCatalogId,
                             includes,
                             excludes,
                             mode,
+                            request.getCascade(),
                             false,
                             null,
                             now,
@@ -268,10 +286,11 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                                     reservedId,
                                     name,
                                     integrationId,
-                                    catalogId,
+                                    requestedCatalogId,
                                     includes,
                                     excludes,
                                     CreateMode.CM_ERROR_IF_EXISTS,
+                                    false,
                                     true,
                                     completion,
                                     now,
@@ -302,10 +321,11 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
           ResourceId overlayId,
           String name,
           ResourceId integrationId,
-          ResourceId catalogId,
+          ResourceId requestedCatalogId,
           List<NamespacePath> includes,
           List<NamespacePath> excludes,
           CreateMode mode,
+          boolean cascade,
           boolean reservedIdentity,
           IdempotencyGuard.SuccessCommitter<CatalogOverlay> completion,
           com.google.protobuf.Timestamp now,
@@ -318,16 +338,42 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                 () ->
                     GrpcErrors.notFound(
                         corr, CATALOG_INTEGRATION, Map.of("id", integrationId.getId())));
+    var existing = overlays.getByNameWithMeta(accountId, name);
+    if (existing.isPresent()) {
+      var current = existing.get();
+      if (reservedIdentity && current.value().getResourceId().equals(overlayId)) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "overlay exists before its idempotency receipt committed");
+      }
+      if (mode == CreateMode.CM_RETURN_EXISTING) return current;
+      if (mode != CreateMode.CM_REPLACE)
+        throw GrpcErrors.alreadyExists(
+            corr, CATALOG_OVERLAY_ALREADY_EXISTS, Map.of("display_name", name));
+    }
+    CatalogTarget target =
+        resolveCatalogTarget(
+            overlayId,
+            name,
+            requestedCatalogId,
+            existing.map(row -> row.value()).orElse(null),
+            now,
+            corr);
+    ResourceId catalogId = target.catalogId();
     var catalog =
-        catalogs
-            .getByIdWithMeta(catalogId)
-            .orElseThrow(() -> GrpcErrors.notFound(corr, CATALOG, Map.of("id", catalogId.getId())));
+        target.createdCatalog() == null
+            ? catalogs
+                .getByIdWithMeta(catalogId)
+                .orElseThrow(
+                    () -> GrpcErrors.notFound(corr, CATALOG, Map.of("id", catalogId.getId())))
+            : null;
     Map<String, Long> requiredVersions = new java.util.HashMap<>();
     requiredVersions.put(
         Keys.catalogIntegrationPointerById(accountId, integrationId.getId()),
         integration.meta().getPointerVersion());
-    requiredVersions.put(
-        Keys.catalogPointerById(accountId, catalogId.getId()), catalog.meta().getPointerVersion());
+    if (catalog != null)
+      requiredVersions.put(
+          Keys.catalogPointerById(accountId, catalogId.getId()),
+          catalog.meta().getPointerVersion());
     Set<String> requiredAbsent =
         new java.util.HashSet<>(
             Set.of(
@@ -341,18 +387,8 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
     markerVersions.put(
         Keys.catalogOverlaysMarker(accountId, catalogId.getId()),
         markerStore.catalogOverlaysMarkerVersion(catalogId));
-    var existing = overlays.getByNameWithMeta(accountId, name);
     if (existing.isPresent()) {
       var current = existing.get();
-      if (reservedIdentity && current.value().getResourceId().equals(overlayId)) {
-        throw new BaseResourceRepository.AbortRetryableException(
-            "overlay exists before its idempotency receipt committed");
-      }
-      if (mode == CreateMode.CM_RETURN_EXISTING) return current;
-      if (mode != CreateMode.CM_REPLACE)
-        throw GrpcErrors.alreadyExists(
-            corr, CATALOG_OVERLAY_ALREADY_EXISTS, Map.of("display_name", name));
-
       Map<String, Long> parentVersions = new java.util.HashMap<>(requiredVersions);
       ResourceId oldIntegrationId = current.value().getIntegrationId();
       if (!oldIntegrationId.equals(integrationId)) {
@@ -376,8 +412,9 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
             markerStore.catalogIntegrationOverlaysMarkerVersion(oldIntegrationId));
       }
       ResourceId oldCatalogId = current.value().getCatalogId();
+      ResourceWithMeta<Catalog> oldCatalog = null;
       if (!oldCatalogId.equals(catalogId)) {
-        var oldCatalog =
+        oldCatalog =
             catalogs
                 .getByIdWithMeta(oldCatalogId)
                 .orElseThrow(
@@ -397,33 +434,70 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
               .setCatalogId(catalogId)
               .setDisplayName(name)
               .setIntegrationId(integrationId)
+              .setOwnsCatalog(target.ownsCatalog())
               .addAllIncludeNamespaces(includes)
               .addAllExcludeNamespaces(excludes)
               .setCreatedAt(now)
               .setUpdatedAt(now)
               .build();
-      Map<String, Long> replacementParents = Map.copyOf(parentVersions);
-      Set<String> replacementRequiredAbsent = Set.copyOf(requiredAbsent);
-      Map<String, Long> replacementMarkers = Map.copyOf(markerVersions);
-      if (overlays
-          .acquireDeletionFence(current.value().getResourceId(), current.meta().getPointerVersion())
-          .isEmpty()) {
-        throw new BaseResourceRepository.AbortRetryableException(
-            "overlay changed while replacement fenced its old identity");
+      boolean deletesOwnedCatalog =
+          current.value().getOwnsCatalog() && !oldCatalogId.equals(catalogId);
+      if (deletesOwnedCatalog) {
+        CatalogCascadeAuthorization.require(authz, principal.get());
+        lifecycle.preflightOwnedCatalogRemoval(current.value(), cascade, corr);
       }
-      reconciler.retireMaterializedResources(current.value());
-      return overlays
-          .replaceIdentityAttachedWithMeta(
-              current.value(),
-              current.meta().getPointerVersion(),
-              replacement,
-              replacementParents,
-              replacementRequiredAbsent,
-              replacementMarkers)
-          .orElseThrow(
-              () ->
-                  new BaseResourceRepository.AbortRetryableException(
-                      "overlay, integration, or catalog changed during replacement"));
+      var replacementFence =
+          overlays
+              .acquireDeletionFence(
+                  current.value().getResourceId(), current.meta().getPointerVersion())
+              .orElseThrow(
+                  () ->
+                      new BaseResourceRepository.AbortRetryableException(
+                          "overlay changed while replacement fenced its old identity"));
+      if (!deletesOwnedCatalog) reconciler.retireMaterializedResources(current.value());
+      var replacementConditions =
+          new PointerConditions(parentVersions, requiredAbsent, markerVersions);
+      var replacementDeletePointers = Map.<String, Long>of();
+      var replacementCompanions = new ArrayList<PointerStore.CasOp>();
+      if (target.createdCatalog() != null)
+        replacementCompanions.addAll(catalogs.prepareCreateOps(target.createdCatalog()));
+      if (deletesOwnedCatalog) {
+        var removal =
+            lifecycle.prepareOwnedCatalogRemoval(
+                current.value(), oldCatalog, replacementFence, cascade, corr);
+        replacementConditions = removal.alongside(replacementConditions);
+        replacementDeletePointers = removal.deletes();
+        replacementCompanions.addAll(removal.companions());
+      }
+      try {
+        var replaced =
+            overlays.replaceIdentityAttachedWithMeta(
+                current.value(),
+                current.meta().getPointerVersion(),
+                replacement,
+                replacementConditions.requiredVersions(),
+                replacementConditions.requiredAbsent(),
+                replacementConditions.markerVersions(),
+                replacementDeletePointers,
+                List.copyOf(replacementCompanions));
+        return replaced.orElseThrow(
+            () ->
+                new BaseResourceRepository.AbortRetryableException(
+                    "overlay, integration, or catalog changed during replacement"));
+      } catch (BaseResourceRepository.NameConflictException conflict) {
+        if (target.createdCatalog() != null && catalogs.getByName(accountId, name).isPresent()) {
+          // Terminal, so no retry resumes this fence. Withdraw it unless an earlier attempt
+          // installed it: the old overlay stays bound to its catalog and its next reconcile
+          // restores the contributions retired above.
+          if (replacementFence.newlyInstalled()) {
+            overlays.releaseDeletionFence(
+                current.value().getResourceId(), replacementFence.version());
+          }
+          throw GrpcErrors.alreadyExists(
+              corr, CATALOG_ALREADY_EXISTS, Map.of("display_name", name));
+        }
+        throw conflict;
+      }
     }
     CatalogOverlay overlay =
         CatalogOverlay.newBuilder()
@@ -431,36 +505,44 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
             .setDisplayName(name)
             .setIntegrationId(integrationId)
             .setCatalogId(catalogId)
+            .setOwnsCatalog(target.ownsCatalog())
             .addAllIncludeNamespaces(includes)
             .addAllExcludeNamespaces(excludes)
             .setCreatedAt(now)
             .setUpdatedAt(now)
             .build();
     try {
+      List<PointerStore.CasOp> catalogOps =
+          target.createdCatalog() == null
+              ? List.of()
+              : catalogs.prepareCreateOps(target.createdCatalog());
       return overlays
           .createAttachedWithMetaAndCompanions(
               overlay,
               Map.copyOf(requiredVersions),
               requiredAbsent,
               Map.copyOf(markerVersions),
-              completion == null
-                  ? null
-                  : row ->
+              row -> {
+                var companions = new ArrayList<PointerStore.CasOp>(catalogOps);
+                if (completion != null)
+                  companions.addAll(
                       completion.prepareSuccessOps(
                           new IdempotencyGuard.CommittedCreate<>(
-                              row.value(), row.value().getResourceId(), row.meta())))
+                              row.value(), row.value().getResourceId(), row.meta())));
+                return List.copyOf(companions);
+              })
           .orElseThrow(
               () ->
                   new BaseResourceRepository.AbortRetryableException(
                       "overlay parent changed during creation"));
     } catch (BaseResourceRepository.NameConflictException e) {
+      var nameOwner = overlays.getByNameWithMeta(accountId, name);
       if (reservedIdentity) {
         var recovered = overlays.getByIdWithMeta(overlayId);
         if (recovered.isPresent())
           throw new BaseResourceRepository.AbortRetryableException(
               "overlay exists before its idempotency receipt committed");
-        var owner = overlays.getByNameWithMeta(accountId, name);
-        if (owner.isPresent() && owner.get().value().getResourceId().equals(overlayId)) {
+        if (nameOwner.isPresent() && nameOwner.get().value().getResourceId().equals(overlayId)) {
           throw new BaseResourceRepository.AbortRetryableException(
               "overlay exists before its idempotency receipt committed");
         }
@@ -472,6 +554,11 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
       if (mode != CreateMode.CM_ERROR_IF_EXISTS)
         throw new BaseResourceRepository.AbortRetryableException(
             "overlay name owner changed during create");
+      if (nameOwner.isEmpty()
+          && target.createdCatalog() != null
+          && catalogs.getByName(accountId, name).isPresent()) {
+        throw GrpcErrors.alreadyExists(corr, CATALOG_ALREADY_EXISTS, Map.of("display_name", name));
+      }
       throw GrpcErrors.alreadyExists(
           corr, CATALOG_OVERLAY_ALREADY_EXISTS, Map.of("display_name", name));
     }
@@ -627,18 +714,28 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                   var meta = current.get().meta();
                   MutationOps.BaseServiceChecks.enforcePreconditions(
                       corr, meta, request.getPrecondition());
-                  var fence =
+                  if (current.get().value().getOwnsCatalog()) {
+                    CatalogCascadeAuthorization.require(authz, pc);
+                    lifecycle.preflightOwnedCatalogRemoval(
+                        current.get().value(), request.getCascade(), corr);
+                  }
+                  var deletionFence =
                       overlays
                           .acquireDeletionFence(id, meta.getPointerVersion())
                           .orElseThrow(
                               () ->
                                   new BaseResourceRepository.AbortRetryableException(
                                       "overlay changed while deletion was fenced"));
-                  reconciler.retireMaterializedResources(current.get().value());
-                  // Managed descendants retire behind the fence first. The final transaction
-                  // removes
-                  // only the overlay, its dependencies, and the fence; the target catalog remains.
-                  if (!overlays.deleteWithFence(id, meta.getPointerVersion(), fence.version()))
+                  if (!current.get().value().getOwnsCatalog())
+                    reconciler.retireMaterializedResources(current.get().value());
+                  boolean deleted =
+                      lifecycle.deleteFenced(
+                          current.get().value(),
+                          meta.getPointerVersion(),
+                          deletionFence,
+                          request.getCascade(),
+                          corr);
+                  if (!deleted)
                     throw new BaseResourceRepository.AbortRetryableException(
                         "overlay changed during deletion");
                   return DeleteCatalogOverlayResponse.newBuilder().setMeta(meta).build();
@@ -653,6 +750,40 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
     return new CatalogSurfaceWritePolicy(graphView, catalogContext());
   }
+
+  private CatalogTarget resolveCatalogTarget(
+      ResourceId overlayId,
+      String overlayName,
+      ResourceId requestedCatalogId,
+      CatalogOverlay existing,
+      com.google.protobuf.Timestamp now,
+      String corr) {
+    if (requestedCatalogId != null) return new CatalogTarget(requestedCatalogId, false, null);
+    if (existing != null && existing.getOwnsCatalog())
+      return new CatalogTarget(existing.getCatalogId(), true, null);
+    if (catalogs.getByName(overlayId.getAccountId(), overlayName).isPresent())
+      throw GrpcErrors.alreadyExists(
+          corr, CATALOG_ALREADY_EXISTS, Map.of("display_name", overlayName));
+
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId(overlayId.getAccountId())
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId(
+                UUID.nameUUIDFromBytes(
+                        ("overlay-catalog:" + overlayId.getId()).getBytes(StandardCharsets.UTF_8))
+                    .toString())
+            .build();
+    Catalog catalog =
+        Catalog.newBuilder()
+            .setResourceId(catalogId)
+            .setDisplayName(overlayName)
+            .setCreatedAt(now)
+            .build();
+    return new CatalogTarget(catalogId, true, catalog);
+  }
+
+  private record CatalogTarget(ResourceId catalogId, boolean ownsCatalog, Catalog createdCatalog) {}
 
   private List<NamespacePath> normalizePaths(List<NamespacePath> paths, String field, String corr) {
     LinkedHashMap<String, NamespacePath> unique = new LinkedHashMap<>();
@@ -723,7 +854,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
         new Canonicalizer()
             .scalar("display_name", name)
             .scalar("integration_id", integrationId.getId())
-            .scalar("catalog_id", catalogId.getId());
+            .scalar("catalog_id", catalogId == null ? "<automatic>" : catalogId.getId());
     includes.forEach(
         path -> canonical.scalar("include_namespaces[]", canonicalNamespacePath(path)));
     excludes.forEach(

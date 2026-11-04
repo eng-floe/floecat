@@ -56,7 +56,38 @@ public class CascadeDeletion {
   /** Runs the complete synchronous portion of a catalog cascade behind one durable fence. */
   public MutationMeta deleteCatalog(
       ResourceId catalogId, MutationMeta catalogMeta, Runnable requireOverlayDelete) {
-    boolean hadOverlays = overlays.countByCatalog(catalogId.getAccountId(), catalogId.getId()) > 0;
+    PreparedCatalogDeletion prepared =
+        prepareCatalogDeletion(catalogId, catalogMeta, requireOverlayDelete, null, () -> {});
+    if (!catalogRepo.deleteForCascade(
+        catalogId,
+        catalogMeta.getPointerVersion(),
+        prepared.fence().version(),
+        prepared.childMarkers())) {
+      throw BaseResourceRepository.AbortRetryableException.lostFence("catalog cascade deletion");
+    }
+    return catalogMeta;
+  }
+
+  /**
+   * Fences a catalog and removes its overlays and namespace tree, leaving final deletion to the
+   * caller.
+   *
+   * <p>An owning overlay uses this form so its own row can remain as the transactional driver: the
+   * final batch removes that overlay, the emptied catalog, both fences and the catalog markers
+   * together. All other callers pass no retained overlay and use {@link #deleteCatalog}.
+   *
+   * <p>{@code requireOverlayDelete} runs before anything is removed. {@code validateBeforeDelete}
+   * runs after the Catalog fence is installed but before cleanup begins; a rejection releases a
+   * fence installed by this attempt. A caller may therefore treat either rejection as leaving the
+   * catalog and its overlays intact.
+   */
+  public PreparedCatalogDeletion prepareCatalogDeletion(
+      ResourceId catalogId,
+      MutationMeta catalogMeta,
+      Runnable requireOverlayDelete,
+      ResourceId retainedOverlayId,
+      Runnable validateBeforeDelete) {
+    boolean hadOverlays = hasDeletableOverlays(catalogId, retainedOverlayId);
     if (hadOverlays) requireOverlayDelete.run();
 
     DurableDeletionFence.Fence fence =
@@ -67,7 +98,16 @@ public class CascadeDeletion {
                     new BaseResourceRepository.AbortRetryableException(
                         "catalog changed while cascade deletion was fenced"));
 
-    if (overlays.countByCatalog(catalogId.getAccountId(), catalogId.getId()) > 0) {
+    try {
+      validateBeforeDelete.run();
+    } catch (RuntimeException rejected) {
+      if (fence.newlyInstalled()) {
+        catalogRepo.releaseCascadeDeletionFence(catalogId, fence.version());
+      }
+      throw rejected;
+    }
+
+    if (hasDeletableOverlays(catalogId, retainedOverlayId)) {
       if (!hadOverlays) {
         try {
           requireOverlayDelete.run();
@@ -78,12 +118,12 @@ public class CascadeDeletion {
           throw denied;
         }
       }
-      deleteCatalogOverlays(catalogId);
+      deleteCatalogOverlays(catalogId, retainedOverlayId);
     }
     deleteDescendantNamespaces(catalogId, List.of());
 
     MarkerStore.MarkerRemoval childMarkers = markerStore.catalogChildSetMarkers(catalogId);
-    if (overlays.countByCatalog(catalogId.getAccountId(), catalogId.getId()) > 0) {
+    if (!onlyRetainedOverlayRemains(catalogId, retainedOverlayId)) {
       throw new BaseResourceRepository.AbortRetryableException(
           "overlay created during catalog cascade deletion");
     }
@@ -91,11 +131,7 @@ public class CascadeDeletion {
       throw new BaseResourceRepository.AbortRetryableException(
           "namespace created during catalog cascade deletion");
     }
-    if (!catalogRepo.deleteForCascade(
-        catalogId, catalogMeta.getPointerVersion(), fence.version(), childMarkers)) {
-      throw BaseResourceRepository.AbortRetryableException.lostFence("catalog cascade deletion");
-    }
-    return catalogMeta;
+    return new PreparedCatalogDeletion(fence, childMarkers);
   }
 
   /** Runs the complete synchronous portion of a namespace cascade behind one durable fence. */
@@ -173,21 +209,26 @@ public class CascadeDeletion {
   }
 
   /**
-   * Deletes every overlay of the catalog without retiring what it materialized.
+   * Deletes every overlay of the catalog, except {@code retainedOverlayId} when given, without
+   * retiring what it materialized.
    *
    * <p>Retiring would walk every relation in the catalog to find the overlay's own, and the
    * namespace cascade that follows deletes all of them anyway. The deletion fence still goes in
    * first, so the overlay reconciler stops materializing before the row goes.
    */
-  public void deleteCatalogOverlays(ResourceId catalogId) {
+  private void deleteCatalogOverlays(ResourceId catalogId, ResourceId retainedOverlayId) {
     while (true) {
       var dependents =
           overlays.listByCatalogWithMetaConsistent(
               catalogId.getAccountId(), catalogId.getId(), PAGE_SIZE, "", new StringBuilder());
-      if (dependents.isEmpty()) {
+      var deletable =
+          dependents.stream()
+              .filter(row -> !row.value().getResourceId().equals(retainedOverlayId))
+              .toList();
+      if (deletable.isEmpty()) {
         return;
       }
-      for (var dependent : dependents) {
+      for (var dependent : deletable) {
         ResourceId overlayId = dependent.value().getResourceId();
         long version = dependent.meta().getPointerVersion();
         DurableDeletionFence.Fence fence =
@@ -203,6 +244,27 @@ public class CascadeDeletion {
         }
       }
     }
+  }
+
+  private boolean hasDeletableOverlays(ResourceId catalogId, ResourceId retainedOverlayId) {
+    int count = overlays.countByCatalog(catalogId.getAccountId(), catalogId.getId());
+    if (retainedOverlayId == null) return count > 0;
+    boolean retained =
+        overlays
+            .getById(retainedOverlayId)
+            .map(overlay -> overlay.getCatalogId().equals(catalogId))
+            .orElse(false);
+    return count > (retained ? 1 : 0);
+  }
+
+  private boolean onlyRetainedOverlayRemains(ResourceId catalogId, ResourceId retainedOverlayId) {
+    int count = overlays.countByCatalog(catalogId.getAccountId(), catalogId.getId());
+    if (retainedOverlayId == null) return count == 0;
+    return count == 1
+        && overlays
+            .getById(retainedOverlayId)
+            .map(overlay -> overlay.getCatalogId().equals(catalogId))
+            .orElse(false);
   }
 
   /**
@@ -236,4 +298,7 @@ public class CascadeDeletion {
 
   private record FencedNamespace(
       ResourceWithMeta<Namespace> namespace, DurableDeletionFence.Fence fence) {}
+
+  public record PreparedCatalogDeletion(
+      DurableDeletionFence.Fence fence, MarkerStore.MarkerRemoval childMarkers) {}
 }

@@ -98,12 +98,12 @@ integration delete <name|id> [--cascade] [--etag <etag>]
 overlays [--integration <name|id>]
 overlay list [--integration <name|id>]
 overlay get <name|id>
-overlay create <name> <integration-name|id> <catalog-name|id>
+overlay create <name> <integration-name|id> [catalog-name|id]
     [--include ns[,ns...]] [--exclude ns[,ns...]]
 overlay update <name|id> [--display <name>]
     [--include ns[,ns...]] [--exclude ns[,ns...]] [--etag <etag>]
 overlay reconcile <name|id> [--etag <etag>]
-overlay delete <name|id> [--etag <etag>]
+overlay delete <name|id> [--cascade] [--etag <etag>]
 
 connectors
 connector list [--kind <KIND>]

@@ -163,7 +163,7 @@ public class NamespaceRepository {
     String purgeKey =
         Keys.relationPurgePointer(
             namespaceId.getAccountId(), catalogId.getId(), namespaceId.getId());
-    return repo.deleteWithPreconditionWhilePointersMatchAndMutatePointers(
+    return repo.deleteWithPreconditionWhilePointersMatchAndCompanions(
         new NamespaceKey(namespaceId.getAccountId(), namespaceId.getId()),
         expectedPointerVersion,
         markers.conditions(),

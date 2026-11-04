@@ -5,6 +5,7 @@
  */
 package ai.floedb.floecat.service.integration;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -36,11 +37,14 @@ import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.catalog.impl.CascadeDeletion;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -63,6 +67,7 @@ import org.mockito.ArgumentCaptor;
 
 class CatalogOverlaysImplTest {
   private CatalogOverlaysImpl service;
+  private CascadeDeletion cascadeDeletion;
 
   @BeforeEach
   void setUp() {
@@ -70,6 +75,8 @@ class CatalogOverlaysImplTest {
     service.overlays = mock(CatalogOverlayRepository.class);
     service.integrations = mock(CatalogIntegrationRepository.class);
     service.catalogs = mock(CatalogRepository.class);
+    cascadeDeletion = mock(CascadeDeletion.class);
+    service.lifecycle = mock(CatalogOverlayLifecycle.class);
     service.markerStore = mock(MarkerStore.class);
     service.principal = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
@@ -85,6 +92,8 @@ class CatalogOverlaysImplTest {
     when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId()))
         .thenReturn(2L);
     when(service.markerStore.catalogOverlaysMarkerVersion(catalogId())).thenReturn(3L);
+    when(service.lifecycle.deleteFenced(any(), anyLong(), any(), anyBoolean(), any()))
+        .thenReturn(true);
     when(service.overlays.createAttachedWithMetaAndCompanions(any(), any(), any(), any(), any()))
         .thenAnswer(
             invocation -> {
@@ -125,6 +134,115 @@ class CatalogOverlaysImplTest {
     assertEquals(
         2L, markers.getValue().get(Keys.catalogIntegrationOverlaysMarker("acct", "integration")));
     assertEquals(3L, markers.getValue().get(Keys.catalogOverlaysMarker("acct", "catalog")));
+    assertFalse(response.getOverlay().getOwnsCatalog());
+  }
+
+  @Test
+  void createWithoutCatalogAtomicallyCreatesOwnedCatalogWithOverlayName() {
+    var response =
+        service
+            .createCatalogOverlay(
+                CreateCatalogOverlayRequest.newBuilder()
+                    .setSpec(
+                        CatalogOverlaySpec.newBuilder()
+                            .setDisplayName("sales")
+                            .setIntegrationId(integrationId()))
+                    .build())
+            .await()
+            .indefinitely();
+
+    var catalog = ArgumentCaptor.forClass(Catalog.class);
+    verify(service.catalogs).prepareCreateOps(catalog.capture());
+    assertEquals("sales", catalog.getValue().getDisplayName());
+    assertEquals(catalog.getValue().getResourceId(), response.getOverlay().getCatalogId());
+    assertEquals(ResourceKind.RK_CATALOG, response.getOverlay().getCatalogId().getKind());
+    assertEquals(true, response.getOverlay().getOwnsCatalog());
+    verify(service.graphView, never()).resolve(eq(response.getOverlay().getCatalogId()), any());
+  }
+
+  @Test
+  void existingOverlayWinsBeforeAutomaticCatalogNameResolution() {
+    var current =
+        overlay(
+            id("existing", ResourceKind.RK_CATALOG_OVERLAY), integrationId(), catalogId(), "sales");
+    when(service.overlays.getByNameWithMeta("acct", "sales"))
+        .thenReturn(Optional.of(row(current, 3L)));
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createCatalogOverlay(
+                        CreateCatalogOverlayRequest.newBuilder()
+                            .setSpec(
+                                CatalogOverlaySpec.newBuilder()
+                                    .setDisplayName("sales")
+                                    .setIntegrationId(integrationId()))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.ALREADY_EXISTS, error.getStatus().getCode());
+    verify(service.catalogs, never()).getByName("acct", "sales");
+  }
+
+  @Test
+  void automaticCatalogCreationRejectsAnUnownedCatalogNameCollision() {
+    when(service.catalogs.getByName("acct", "sales"))
+        .thenReturn(
+            Optional.of(
+                Catalog.newBuilder().setResourceId(catalogId()).setDisplayName("sales").build()));
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createCatalogOverlay(
+                        CreateCatalogOverlayRequest.newBuilder()
+                            .setSpec(
+                                CatalogOverlaySpec.newBuilder()
+                                    .setDisplayName("sales")
+                                    .setIntegrationId(integrationId()))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.ALREADY_EXISTS, error.getStatus().getCode());
+    verify(service.overlays, never()).acquireDeletionFence(any(), anyLong());
+  }
+
+  @Test
+  void concurrentAutomaticCreateRetriesToReturnWinningOverlay() {
+    var winner =
+        overlay(
+                id("winner", ResourceKind.RK_CATALOG_OVERLAY),
+                integrationId(),
+                id("winner-catalog", ResourceKind.RK_CATALOG),
+                "sales")
+            .toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByNameWithMeta("acct", "sales"))
+        .thenReturn(Optional.empty(), Optional.of(row(winner, 2L)));
+    when(service.overlays.createAttachedWithMetaAndCompanions(any(), any(), any(), any(), any()))
+        .thenThrow(new BaseResourceRepository.NameConflictException("concurrent create"));
+
+    var response =
+        service
+            .createCatalogOverlay(
+                CreateCatalogOverlayRequest.newBuilder()
+                    .setCreateMode(CreateMode.CM_RETURN_EXISTING)
+                    .setSpec(
+                        CatalogOverlaySpec.newBuilder()
+                            .setDisplayName("sales")
+                            .setIntegrationId(integrationId()))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(winner, response.getOverlay());
   }
 
   @Test
@@ -211,7 +329,7 @@ class CatalogOverlaysImplTest {
             Optional.of(
                 new ai.floedb.floecat.service.repo.util.DurableDeletionFence.Fence(1L, true)));
     when(service.overlays.replaceIdentityAttachedWithMeta(
-            any(), eq(9L), any(), any(), any(), any()))
+            any(), eq(9L), any(), any(), any(), any(), any(), any()))
         .thenAnswer(invocation -> Optional.of(row(invocation.getArgument(2), 1L)));
 
     var response =
@@ -230,9 +348,237 @@ class CatalogOverlaysImplTest {
     @SuppressWarnings("unchecked")
     var markers = ArgumentCaptor.forClass(Map.class);
     verify(service.overlays)
-        .replaceIdentityAttachedWithMeta(any(), eq(9L), any(), any(), any(), markers.capture());
+        .replaceIdentityAttachedWithMeta(
+            any(), eq(9L), any(), any(), any(), markers.capture(), any(), any());
     verify(service.reconciler).retireMaterializedResources(current);
     assertEquals(4, markers.getValue().size());
+  }
+
+  @Test
+  void replacingOwnedOverlayWithoutCatalogReusesItsOwnedCatalog() {
+    var oldOverlayId = id("old-overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(oldOverlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByNameWithMeta("acct", "sales"))
+        .thenReturn(Optional.of(row(current, 9L)));
+    when(service.overlays.acquireDeletionFence(oldOverlayId, 9L))
+        .thenReturn(Optional.of(fence(1L, true)));
+    when(service.overlays.replaceIdentityAttachedWithMeta(
+            any(), eq(9L), any(), any(), any(), any(), any(), any()))
+        .thenAnswer(invocation -> Optional.of(row(invocation.getArgument(2), 1L)));
+
+    var response =
+        service
+            .createCatalogOverlay(
+                CreateCatalogOverlayRequest.newBuilder()
+                    .setCreateMode(CreateMode.CM_REPLACE)
+                    .setSpec(
+                        CatalogOverlaySpec.newBuilder()
+                            .setDisplayName("sales")
+                            .setIntegrationId(integrationId()))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(catalogId(), response.getOverlay().getCatalogId());
+    assertTrue(response.getOverlay().getOwnsCatalog());
+    verify(service.catalogs, never()).prepareCreateOps(any());
+    verify(service.catalogs, never()).prepareDeleteOps(any());
+    verify(service.lifecycle, never()).preflightOwnedCatalogRemoval(any(), anyBoolean(), any());
+  }
+
+  @Test
+  void replacingOwnedOverlayWithExplicitCatalogDeletesOldOwnedCatalog() {
+    installRealLifecycle();
+    var oldOverlayId = id("old-overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var oldCatalogId = id("old-catalog", ResourceKind.RK_CATALOG);
+    var current =
+        overlay(oldOverlayId, integrationId(), oldCatalogId, "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    var oldCatalog =
+        Catalog.newBuilder().setResourceId(oldCatalogId).setDisplayName("sales").build();
+    when(service.overlays.getByNameWithMeta("acct", "sales"))
+        .thenReturn(Optional.of(row(current, 9L)));
+    when(service.catalogs.getByIdWithMeta(oldCatalogId))
+        .thenReturn(Optional.of(row(oldCatalog, 13L)));
+    when(service.overlays.countByCatalog("acct", "old-catalog")).thenReturn(1);
+    when(service.reconciler.hasUnmanagedContent(current)).thenReturn(true);
+    when(service.markerStore.catalogOverlaysMarkerVersion(oldCatalogId)).thenReturn(6L);
+    var childMarkers =
+        new MarkerStore.MarkerRemoval(
+            new PointerConditions(Map.of(), Set.of(), Map.of()), Map.of());
+    when(cascadeDeletion.prepareCatalogDeletion(
+            eq(oldCatalogId), any(), any(Runnable.class), eq(oldOverlayId), any(Runnable.class)))
+        .thenReturn(new CascadeDeletion.PreparedCatalogDeletion(fence(17L, true), childMarkers));
+    when(service.catalogs.prepareDeleteOps(oldCatalogId)).thenReturn(List.of());
+    when(service.overlays.acquireDeletionFence(oldOverlayId, 9L))
+        .thenReturn(Optional.of(fence(1L, true)));
+    when(service.overlays.replaceIdentityAttachedWithMeta(
+            any(), eq(9L), any(), any(), any(), any(), any(), any()))
+        .thenAnswer(invocation -> Optional.of(row(invocation.getArgument(2), 1L)));
+
+    var response =
+        service
+            .createCatalogOverlay(
+                CreateCatalogOverlayRequest.newBuilder()
+                    .setCreateMode(CreateMode.CM_REPLACE)
+                    .setCascade(true)
+                    .setSpec(baseSpec())
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertFalse(response.getOverlay().getOwnsCatalog());
+    assertEquals(catalogId(), response.getOverlay().getCatalogId());
+    verify(service.catalogs).prepareDeleteOps(oldCatalogId);
+  }
+
+  @Test
+  void replacingOwnedOverlayRejectsUnmanagedContentWithoutCascade() {
+    installRealLifecycle();
+    var oldOverlayId = id("old-overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var oldCatalogId = id("old-catalog", ResourceKind.RK_CATALOG);
+    var current =
+        overlay(oldOverlayId, integrationId(), oldCatalogId, "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByNameWithMeta("acct", "sales"))
+        .thenReturn(Optional.of(row(current, 9L)));
+    when(service.catalogs.getByIdWithMeta(oldCatalogId))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder()
+                        .setResourceId(oldCatalogId)
+                        .setDisplayName("sales")
+                        .build(),
+                    13L)));
+    when(service.overlays.countByCatalog("acct", "old-catalog")).thenReturn(1);
+    when(service.reconciler.hasUnmanagedContent(current)).thenReturn(true);
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createCatalogOverlay(
+                        CreateCatalogOverlayRequest.newBuilder()
+                            .setCreateMode(CreateMode.CM_REPLACE)
+                            .setSpec(baseSpec())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.ABORTED, error.getStatus().getCode());
+    verify(service.overlays, never()).acquireDeletionFence(any(), anyLong());
+  }
+
+  @Test
+  void replacingExplicitOverlayWithoutCatalogCreatesOwnedCatalog() {
+    var oldOverlayId = id("old-overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var oldCatalogId = id("old-catalog", ResourceKind.RK_CATALOG);
+    var current = overlay(oldOverlayId, integrationId(), oldCatalogId, "sales");
+    when(service.overlays.getByNameWithMeta("acct", "sales"))
+        .thenReturn(Optional.of(row(current, 9L)));
+    when(service.catalogs.getByIdWithMeta(oldCatalogId))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder()
+                        .setResourceId(oldCatalogId)
+                        .setDisplayName("external")
+                        .build(),
+                    13L)));
+    when(service.markerStore.catalogOverlaysMarkerVersion(oldCatalogId)).thenReturn(6L);
+    when(service.overlays.acquireDeletionFence(oldOverlayId, 9L))
+        .thenReturn(Optional.of(fence(1L, true)));
+    when(service.overlays.replaceIdentityAttachedWithMeta(
+            any(), eq(9L), any(), any(), any(), any(), any(), any()))
+        .thenAnswer(invocation -> Optional.of(row(invocation.getArgument(2), 1L)));
+
+    var response =
+        service
+            .createCatalogOverlay(
+                CreateCatalogOverlayRequest.newBuilder()
+                    .setCreateMode(CreateMode.CM_REPLACE)
+                    .setSpec(
+                        CatalogOverlaySpec.newBuilder()
+                            .setDisplayName("sales")
+                            .setIntegrationId(integrationId()))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getOverlay().getOwnsCatalog());
+    assertNotEquals(oldCatalogId, response.getOverlay().getCatalogId());
+    verify(service.catalogs).prepareCreateOps(any());
+    verify(service.catalogs, never()).prepareDeleteOps(oldCatalogId);
+  }
+
+  @Test
+  void automaticCatalogNameRaceDuringReplaceReturnsCatalogConflict() {
+    var oldOverlayId = id("old-overlay", ResourceKind.RK_CATALOG_OVERLAY);
+
+    var error = replaceLosingAutomaticCatalogName(oldOverlayId, true);
+
+    assertEquals(Status.Code.ALREADY_EXISTS, error.getStatus().getCode());
+    // The conflict is terminal, so the fence this attempt installed must not outlive it.
+    verify(service.overlays).releaseDeletionFence(oldOverlayId, 1L);
+  }
+
+  @Test
+  void automaticCatalogNameRaceDuringReplaceKeepsAFenceAnEarlierAttemptInstalled() {
+    var oldOverlayId = id("old-overlay", ResourceKind.RK_CATALOG_OVERLAY);
+
+    var error = replaceLosingAutomaticCatalogName(oldOverlayId, false);
+
+    assertEquals(Status.Code.ALREADY_EXISTS, error.getStatus().getCode());
+    verify(service.overlays, never()).releaseDeletionFence(any(), anyLong());
+  }
+
+  private StatusRuntimeException replaceLosingAutomaticCatalogName(
+      ResourceId oldOverlayId, boolean fenceNewlyInstalled) {
+    var oldCatalogId = id("old-catalog", ResourceKind.RK_CATALOG);
+    var current = overlay(oldOverlayId, integrationId(), oldCatalogId, "sales");
+    when(service.overlays.getByNameWithMeta("acct", "sales"))
+        .thenReturn(Optional.of(row(current, 9L)));
+    when(service.catalogs.getByName("acct", "sales"))
+        .thenReturn(
+            Optional.empty(),
+            Optional.of(
+                Catalog.newBuilder().setResourceId(catalogId()).setDisplayName("sales").build()));
+    when(service.catalogs.getByIdWithMeta(oldCatalogId))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder()
+                        .setResourceId(oldCatalogId)
+                        .setDisplayName("external")
+                        .build(),
+                    13L)));
+    when(service.overlays.acquireDeletionFence(oldOverlayId, 9L))
+        .thenReturn(Optional.of(fence(1L, fenceNewlyInstalled)));
+    when(service.overlays.replaceIdentityAttachedWithMeta(
+            any(), eq(9L), any(), any(), any(), any(), any(), any()))
+        .thenThrow(new BaseResourceRepository.NameConflictException("catalog name claimed"));
+
+    return assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .createCatalogOverlay(
+                    CreateCatalogOverlayRequest.newBuilder()
+                        .setCreateMode(CreateMode.CM_REPLACE)
+                        .setSpec(
+                            CatalogOverlaySpec.newBuilder()
+                                .setDisplayName("sales")
+                                .setIntegrationId(integrationId()))
+                        .build())
+                .await()
+                .indefinitely());
   }
 
   @Test
@@ -395,7 +741,6 @@ class CatalogOverlaysImplTest {
         .thenReturn(
             Optional.of(
                 new ai.floedb.floecat.service.repo.util.DurableDeletionFence.Fence(1L, true)));
-    when(service.overlays.deleteWithFence(overlayId, 7L, 1L)).thenReturn(true);
 
     service
         .deleteCatalogOverlay(
@@ -405,8 +750,496 @@ class CatalogOverlaysImplTest {
 
     verify(service.overlays).acquireDeletionFence(overlayId, 7L);
     verify(service.reconciler).retireMaterializedResources(current);
-    verify(service.overlays).deleteWithFence(overlayId, 7L, 1L);
+    verify(service.lifecycle).deleteFenced(current, 7L, fence(1L, true), false, "corr");
     verify(service.catalogs, never()).delete(any());
+  }
+
+  @Test
+  void deleteOwnedOverlayDeletesItsCatalogInTheSameFencedMutation() {
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+    when(service.overlays.acquireDeletionFence(overlayId, 7L))
+        .thenReturn(Optional.of(fence(1L, true)));
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1);
+    when(service.catalogs.getByIdWithMeta(catalogId()))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder().setResourceId(catalogId()).setDisplayName("sales").build(),
+                    5L)));
+    when(service.markerStore.catalogChildSetMarkers(catalogId()))
+        .thenReturn(
+            new MarkerStore.MarkerRemoval(
+                new PointerConditions(Map.of(), Set.of(), Map.of()), Map.of()));
+    when(service.catalogs.prepareDeleteOps(catalogId())).thenReturn(List.of());
+
+    service
+        .deleteCatalogOverlay(
+            DeleteCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+        .await()
+        .indefinitely();
+
+    verify(service.lifecycle).preflightOwnedCatalogRemoval(current, false, "corr");
+    verify(service.lifecycle).deleteFenced(current, 7L, fence(1L, true), false, "corr");
+    verify(service.reconciler, never()).retireMaterializedResources(current);
+  }
+
+  @Test
+  void ownedDeleteRejectsUnmanagedContentWithoutCascadeBeforeFencing() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1);
+    when(service.catalogs.getByIdWithMeta(catalogId()))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder().setResourceId(catalogId()).setDisplayName("sales").build(),
+                    5L)));
+    when(service.reconciler.hasUnmanagedContent(current)).thenReturn(true);
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .deleteCatalogOverlay(
+                        DeleteCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.ABORTED, error.getStatus().getCode());
+    verify(service.overlays, never()).acquireDeletionFence(any(), anyLong());
+  }
+
+  @Test
+  void cascadeConsentAllowsOwnedDeleteWithUnmanagedContent() {
+    installRealLifecycle();
+    var current =
+        overlay(
+                id("overlay", ResourceKind.RK_CATALOG_OVERLAY),
+                integrationId(),
+                catalogId(),
+                "sales")
+            .toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    stubCatalog(catalogId(), 5L);
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1);
+    when(service.reconciler.hasUnmanagedContent(current)).thenReturn(true);
+
+    assertDoesNotThrow(() -> service.lifecycle.preflightOwnedCatalogRemoval(current, true, "corr"));
+  }
+
+  @Test
+  void ownedDeleteRejectsSharingBeforeFencingOrRetiringContent() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(2);
+    when(service.catalogs.getByIdWithMeta(catalogId()))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder().setResourceId(catalogId()).setDisplayName("sales").build(),
+                    5L)));
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .deleteCatalogOverlay(
+                    DeleteCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+                .await()
+                .indefinitely());
+
+    verify(service.overlays, never()).acquireDeletionFence(any(), anyLong());
+    verify(service.reconciler, never()).retireMaterializedResources(any());
+  }
+
+  @Test
+  void integrationCascadeAllowsCatalogDependentsFromTheSameIntegration() {
+    installRealLifecycle();
+    var owner =
+        overlay(id("owner", ResourceKind.RK_CATALOG_OVERLAY), integrationId(), catalogId(), "sales")
+            .toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    var sibling =
+        overlay(
+            id("sibling", ResourceKind.RK_CATALOG_OVERLAY),
+            integrationId(),
+            catalogId(),
+            "sales-copy");
+    when(service.catalogs.getByIdWithMeta(catalogId()))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder().setResourceId(catalogId()).setDisplayName("sales").build(),
+                    5L)));
+    when(service.overlays.listByCatalogWithMetaConsistent(
+            eq("acct"), eq("catalog"), eq(100), eq(""), any()))
+        .thenReturn(List.of(row(owner, 7L), row(sibling, 8L)));
+
+    assertDoesNotThrow(
+        () -> service.lifecycle.preflightOwnedCatalogRemoval(owner, "corr", integrationId()));
+  }
+
+  @Test
+  void integrationCascadeRejectsCatalogDependentsFromAnotherIntegration() {
+    installRealLifecycle();
+    var owner =
+        overlay(id("owner", ResourceKind.RK_CATALOG_OVERLAY), integrationId(), catalogId(), "sales")
+            .toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    var external =
+        overlay(
+            id("external", ResourceKind.RK_CATALOG_OVERLAY),
+            id("other-integration", ResourceKind.RK_CATALOG_INTEGRATION),
+            catalogId(),
+            "external");
+    when(service.catalogs.getByIdWithMeta(catalogId()))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder().setResourceId(catalogId()).setDisplayName("sales").build(),
+                    5L)));
+    when(service.overlays.listByCatalogWithMetaConsistent(
+            eq("acct"), eq("catalog"), eq(100), eq(""), any()))
+        .thenReturn(List.of(row(owner, 7L), row(external, 8L)));
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> service.lifecycle.preflightOwnedCatalogRemoval(owner, "corr", integrationId()));
+  }
+
+  @Test
+  void ownedOverlayCanBeDeletedWhenItsCatalogIsAlreadyMissing() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+    when(service.overlays.acquireDeletionFence(overlayId, 7L))
+        .thenReturn(Optional.of(fence(1L, true)));
+    when(service.overlays.deleteWithFence(overlayId, 7L, 1L)).thenReturn(true);
+    when(service.catalogs.getByIdWithMeta(catalogId())).thenReturn(Optional.empty());
+
+    service
+        .deleteCatalogOverlay(
+            DeleteCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+        .await()
+        .indefinitely();
+
+    verify(service.overlays).deleteWithFence(overlayId, 7L, 1L);
+    verify(cascadeDeletion, never()).prepareCatalogDeletion(any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void ownedDeleteRequiresEveryCatalogCascadePermissionBeforeFencing() {
+    service.authz = new Authorizer();
+    when(service.principal.get())
+        .thenReturn(
+            PrincipalContext.newBuilder()
+                .setAccountId("acct")
+                .setCorrelationId("corr")
+                .addPermissions("catalog-overlay.delete")
+                .addPermissions("catalog.write")
+                .addPermissions("table.write")
+                .addPermissions("view.write")
+                .build());
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .deleteCatalogOverlay(
+                        DeleteCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, error.getStatus().getCode());
+    verify(service.overlays, never()).acquireDeletionFence(any(), anyLong());
+  }
+
+  @Test
+  void ownedFinalDeleteRaceKeepsDurableFencesForRetry() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    var catalog = Catalog.newBuilder().setResourceId(catalogId()).setDisplayName("sales").build();
+    when(service.catalogs.getByIdWithMeta(catalogId())).thenReturn(Optional.of(row(catalog, 5L)));
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1);
+    var childMarkers =
+        new MarkerStore.MarkerRemoval(
+            new PointerConditions(Map.of(), Set.of(), Map.of()), Map.of());
+    when(cascadeDeletion.prepareCatalogDeletion(
+            eq(catalogId()), any(), any(Runnable.class), eq(overlayId), any(Runnable.class)))
+        .thenReturn(new CascadeDeletion.PreparedCatalogDeletion(fence(2L, true), childMarkers));
+    when(service.catalogs.prepareDeleteOps(catalogId())).thenReturn(List.of());
+    when(service.overlays.deleteWithFenceAndCompanions(
+            eq(overlayId), eq(7L), eq(1L), any(), any(), any()))
+        .thenReturn(false);
+
+    assertFalse(service.lifecycle.deleteFenced(current, 7L, fence(1L, true), false, "corr"));
+  }
+
+  @Test
+  void failedCatalogCascadeLeavesOverlayFenceInPlace() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.catalogs.getByIdWithMeta(catalogId()))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder().setResourceId(catalogId()).setDisplayName("sales").build(),
+                    5L)));
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1);
+    when(cascadeDeletion.prepareCatalogDeletion(
+            eq(catalogId()), any(), any(Runnable.class), eq(overlayId), any(Runnable.class)))
+        .thenThrow(new BaseResourceRepository.AbortRetryableException("namespace changed"));
+
+    assertThrows(
+        BaseResourceRepository.AbortRetryableException.class,
+        () -> service.lifecycle.deleteFenced(current, 7L, fence(1L, true), false, "corr"));
+    verify(service.overlays, never()).releaseDeletionFence(any(), anyLong());
+  }
+
+  @Test
+  void ownedDeleteReleasesItsNewFenceWhenSharingAppearsBeforeTheCatalogFence() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+    when(service.overlays.acquireDeletionFence(overlayId, 7L))
+        .thenReturn(Optional.of(fence(1L, true)));
+    stubCatalog(catalogId(), 5L);
+    // Unshared at preflight; another overlay attaches before the cascade fences the catalog.
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1, 2);
+    runsSharingCheckBeforeRemovingAnything(catalogId(), overlayId);
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .deleteCatalogOverlay(
+                        DeleteCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.ABORTED, error.getStatus().getCode());
+    verify(service.overlays).releaseDeletionFence(overlayId, 1L);
+    verify(service.overlays, never())
+        .deleteWithFenceAndCompanions(any(), anyLong(), anyLong(), any(), any(), any());
+  }
+
+  @Test
+  void ownedDeleteRechecksUnmanagedContentUnderCatalogFence() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+    when(service.overlays.acquireDeletionFence(overlayId, 7L))
+        .thenReturn(Optional.of(fence(1L, true)));
+    stubCatalog(catalogId(), 5L);
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(1);
+    when(service.reconciler.hasUnmanagedContent(current)).thenReturn(false, true);
+    when(cascadeDeletion.prepareCatalogDeletion(
+            eq(catalogId()), any(), any(Runnable.class), eq(overlayId), any(Runnable.class)))
+        .thenAnswer(
+            invocation -> {
+              invocation.<Runnable>getArgument(4).run();
+              throw new AssertionError("validation should have rejected unmanaged content");
+            });
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .deleteCatalogOverlay(
+                        DeleteCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.ABORTED, error.getStatus().getCode());
+    verify(service.overlays).releaseDeletionFence(overlayId, 1L);
+    verify(service.overlays, never())
+        .deleteWithFenceAndCompanions(any(), anyLong(), anyLong(), any(), any(), any());
+  }
+
+  @Test
+  void ownedReplacementReleasesItsNewFenceWhenSharingAppearsBeforeTheCatalogFence() {
+    installRealLifecycle();
+    var oldOverlayId = id("old-overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var oldCatalogId = id("old-catalog", ResourceKind.RK_CATALOG);
+    var current =
+        overlay(oldOverlayId, integrationId(), oldCatalogId, "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    when(service.overlays.getByNameWithMeta("acct", "sales"))
+        .thenReturn(Optional.of(row(current, 9L)));
+    when(service.catalogs.getByIdWithMeta(oldCatalogId))
+        .thenReturn(
+            Optional.of(
+                row(
+                    Catalog.newBuilder()
+                        .setResourceId(oldCatalogId)
+                        .setDisplayName("sales")
+                        .build(),
+                    13L)));
+    when(service.overlays.countByCatalog("acct", "old-catalog")).thenReturn(1, 2);
+    when(service.overlays.acquireDeletionFence(oldOverlayId, 9L))
+        .thenReturn(Optional.of(fence(1L, true)));
+    runsSharingCheckBeforeRemovingAnything(oldCatalogId, oldOverlayId);
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .createCatalogOverlay(
+                    CreateCatalogOverlayRequest.newBuilder()
+                        .setCreateMode(CreateMode.CM_REPLACE)
+                        .setSpec(baseSpec())
+                        .build())
+                .await()
+                .indefinitely());
+
+    verify(service.overlays).releaseDeletionFence(oldOverlayId, 1L);
+    verify(service.overlays, never())
+        .replaceIdentityAttachedWithMeta(
+            any(), anyLong(), any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void integrationCascadeReleasesTheOwnersNewFenceWhenAnotherIntegrationAttaches() {
+    installRealLifecycle();
+    var overlayId = id("owner", ResourceKind.RK_CATALOG_OVERLAY);
+    var owner =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    var external =
+        overlay(
+            id("external", ResourceKind.RK_CATALOG_OVERLAY),
+            id("other-integration", ResourceKind.RK_CATALOG_INTEGRATION),
+            catalogId(),
+            "external");
+    stubCatalog(catalogId(), 5L);
+    when(service.overlays.listByCatalogWithMetaConsistent(
+            eq("acct"), eq("catalog"), eq(100), eq(""), any()))
+        .thenReturn(List.of(row(owner, 7L), row(external, 8L)));
+    runsSharingCheckBeforeRemovingAnything(catalogId(), overlayId);
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> service.lifecycle.deleteFenced(owner, 7L, fence(1L, true), "corr", integrationId()));
+
+    verify(service.overlays).releaseDeletionFence(overlayId, 1L);
+  }
+
+  @Test
+  void sharingRejectionKeepsAFenceAnEarlierAttemptInstalled() {
+    installRealLifecycle();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .setOwnsCatalog(true)
+            .build();
+    stubCatalog(catalogId(), 5L);
+    when(service.overlays.countByCatalog("acct", "catalog")).thenReturn(2);
+    runsSharingCheckBeforeRemovingAnything(catalogId(), overlayId);
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> service.lifecycle.deleteFenced(current, 7L, fence(1L, false), false, "corr"));
+
+    verify(service.overlays, never()).releaseDeletionFence(any(), anyLong());
+  }
+
+  @Test
+  void ownedCatalogRemovalSupersedesTheCallersConditionsOnKeysItRemoves() {
+    String catalogPointer = Keys.catalogPointerById("acct", "old-catalog");
+    String overlaysMarker = Keys.catalogOverlaysMarker("acct", "old-catalog");
+    String childrenMarker = Keys.catalogChildrenMarker("acct", "old-catalog");
+    String integration = Keys.catalogIntegrationPointerById("acct", "integration");
+    var removal =
+        new CatalogOverlayLifecycle.OwnedCatalogRemoval(
+            new PointerConditions(Map.of(), Set.of(overlaysMarker), Map.of()),
+            Map.of(childrenMarker, 4L),
+            List.of(new PointerStore.CasDelete(catalogPointer, 13L)));
+
+    var merged =
+        removal.alongside(
+            new PointerConditions(
+                Map.of(catalogPointer, 13L, integration, 5L),
+                Set.of(),
+                Map.of(overlaysMarker, 6L, childrenMarker, 4L)));
+
+    assertEquals(Map.of(integration, 5L), merged.requiredVersions());
+    assertEquals(Set.of(overlaysMarker), merged.requiredAbsent());
+    assertEquals(Map.of(), merged.markerVersions());
+  }
+
+  /** Has the mocked cascade run the overlay's sharing check where the real one does. */
+  private void runsSharingCheckBeforeRemovingAnything(ResourceId catalogId, ResourceId overlayId) {
+    when(cascadeDeletion.prepareCatalogDeletion(
+            eq(catalogId), any(), any(Runnable.class), eq(overlayId), any(Runnable.class)))
+        .thenAnswer(
+            invocation -> {
+              invocation.<Runnable>getArgument(2).run();
+              throw new AssertionError("the sharing check should have rejected the delete");
+            });
+  }
+
+  private void installRealLifecycle() {
+    service.lifecycle = new CatalogOverlayLifecycle();
+    service.lifecycle.overlays = service.overlays;
+    service.lifecycle.catalogs = service.catalogs;
+    service.lifecycle.cascadeDeletion = cascadeDeletion;
+    service.lifecycle.reconciler = service.reconciler;
+  }
+
+  private static ai.floedb.floecat.service.repo.util.DurableDeletionFence.Fence fence(
+      long version, boolean newlyInstalled) {
+    return new ai.floedb.floecat.service.repo.util.DurableDeletionFence.Fence(
+        version, newlyInstalled);
   }
 
   @Test

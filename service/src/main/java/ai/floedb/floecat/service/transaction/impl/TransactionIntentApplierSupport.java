@@ -26,6 +26,7 @@ import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.catalog.impl.RelationPurge;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
+import ai.floedb.floecat.service.common.ManagedCatalogIntegrationProperties;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
@@ -616,6 +617,15 @@ public class TransactionIntentApplierSupport {
     if (targetValidation.status != ApplyStatus.APPLIED) {
       return targetValidation;
     }
+    if (ManagedCatalogIntegrationProperties.containsReservedProperty(
+        nextTable.getPropertiesMap())) {
+      return ApplyOutcome.conflict(
+          "TABLE_INTENT_INVALID_PAYLOAD",
+          "table payload contains Catalog Integration managed properties",
+          null,
+          null,
+          null);
+    }
     // The fence refuses to create a dropped table's id; without this the refusal reads as an
     // ordinary CAS loss and the transaction retries a write that can never land.
     if (current == null
@@ -1101,12 +1111,15 @@ public class TransactionIntentApplierSupport {
     }
     try {
       if (currentTable == null) {
-        return new NamespaceJoin(markerStore.relationCreateFence(to), false);
+        return new NamespaceJoin(
+            markerStore.relationCreateFence(nextTable.getCatalogId(), to), false);
       }
       boolean changesCatalog =
           !currentTable.getCatalogId().getId().equals(nextTable.getCatalogId().getId());
       return new NamespaceJoin(
-          markerStore.relationMoveFence(currentTable.getNamespaceId(), to, changesCatalog), false);
+          markerStore.relationMoveFence(
+              nextTable.getCatalogId(), currentTable.getNamespaceId(), to, changesCatalog),
+          false);
     } catch (BaseResourceRepository.NotFoundException gone) {
       return NamespaceJoin.GONE;
     }

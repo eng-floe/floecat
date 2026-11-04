@@ -41,6 +41,7 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.FenceRetry;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
+import ai.floedb.floecat.service.common.ManagedCatalogIntegrationProperties;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
@@ -148,6 +149,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   var spec = request.getSpec();
                   PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                      spec.getPropertiesMap(), correlationId, "spec.properties");
+                  ManagedCatalogIntegrationProperties.validateUserProperties(
                       spec.getPropertiesMap(), correlationId, "spec.properties");
                   var writePolicy = catalogSurfaceWritePolicy();
                   var catalog =
@@ -424,6 +427,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       .requireNamespacePathWriteEligible(desired.getCatalogId(), desiredPath, corr);
                   if (maskTargets(mask, "properties")) {
                     PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
+                        request.getSpec().getPropertiesMap(), corr, "spec.properties");
+                    ManagedCatalogIntegrationProperties.validateUserProperties(
                         request.getSpec().getPropertiesMap(), corr, "spec.properties");
                   }
 

@@ -388,6 +388,27 @@ class TransactionIntentApplierSupportTest {
   }
 
   @Test
+  void applyTransactionRejectsCatalogIntegrationManagedProperties() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    String blobUri = "s3://bucket/managed-property";
+    Table tablePayload =
+        table("acct", "cat-1", "ns-1", "table-a", "orders").toBuilder()
+            .putProperties("floecat.catalog-overlay.id", "spoofed-overlay")
+            .build();
+    blobs.put(blobUri, tablePayload.toByteArray(), "application/x-protobuf");
+    TransactionIntent intent = tableCreateIntent("acct", "tx-1", "table-a", blobUri, 1L);
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("TABLE_INTENT_INVALID_PAYLOAD", outcome.errorCode());
+    assertTrue(pointers.get(Keys.tablePointerById("acct", "table-a")).isEmpty());
+  }
+
+  @Test
   void applyTransactionRejectsSystemTablePayloadBeforePointerOps() throws Exception {
     var pointers = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
@@ -462,7 +483,7 @@ class TransactionIntentApplierSupportTest {
   }
 
   @Test
-  void applyTransactionDeletesTablePointerAndOwnedNamePointerWhenDeleteSentinelIsUsed()
+  void applyTransactionDeletesTableWithStoredManagedPropertiesWhenDeleteSentinelIsUsed()
       throws Exception {
     var durable = new InMemoryPointerStore();
     // Through the production seam, so the table row delete leaves the purge marker it owes.
@@ -499,6 +520,7 @@ class TransactionIntentApplierSupportTest {
                     .setId(namespaceId)
                     .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName("orders")
+            .putProperties("floecat.catalog-overlay.id", "overlay-1")
             .build();
     blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
     pointers.compareAndSet(byIdKey, 0L, PointerReferences.blobPointer(byIdKey, blobUri, 1L));

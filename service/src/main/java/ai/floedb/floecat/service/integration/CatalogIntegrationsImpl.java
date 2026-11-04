@@ -52,6 +52,7 @@ import ai.floedb.floecat.integration.rpc.UpstreamObject;
 import ai.floedb.floecat.integration.rpc.UpstreamObjectKind;
 import ai.floedb.floecat.integration.rpc.ValidateCatalogIntegrationRequest;
 import ai.floedb.floecat.integration.rpc.ValidateCatalogIntegrationResponse;
+import ai.floedb.floecat.service.catalog.impl.CatalogCascadeAuthorization;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -786,7 +787,8 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                       corr, meta, request.getPrecondition());
                   if (request.getCascade()) {
                     credentialCleanup.schedule(current.get().value());
-                    cascadeDeletion.delete(id, meta);
+                    cascadeDeletion.delete(
+                        id, meta, corr, () -> CatalogCascadeAuthorization.require(authz, pc));
                     credentialCleanup.cleanIfSuperseded(current.get().value());
                     return DeleteCatalogIntegrationResponse.newBuilder().setMeta(meta).build();
                   }

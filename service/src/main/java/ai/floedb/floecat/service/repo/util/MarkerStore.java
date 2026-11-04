@@ -308,28 +308,28 @@ public class MarkerStore {
    * @param changesCatalog whether the update also re-keys the relation into another catalog
    */
   public PointerConditions relationMoveFence(
-      ResourceId from, ResourceId to, boolean changesCatalog) {
+      ResourceId destinationCatalogId, ResourceId from, ResourceId to, boolean changesCatalog) {
     boolean sameNamespace =
         from.getAccountId().equals(to.getAccountId()) && from.getId().equals(to.getId());
     if (sameNamespace && !changesCatalog) {
       return PointerConditions.none();
     }
-    return relationCreateFence(to);
+    return relationCreateFence(destinationCatalogId, to);
   }
 
   /**
    * The fence for adding a relation to a namespace.
    *
-   * <p>Two conditions, because they exclude different writers. The marker is advanced, which is
-   * what a namespace delete racing this write loses to. The namespace's own pointer version is only
-   * checked, which is what refuses a write against a namespace whose delete already finished -- the
-   * marker cannot catch that one, because a write arriving afterwards samples the post-delete
-   * version and matches it.
+   * <p>The namespace marker excludes a namespace delete racing this write. The namespace's own
+   * pointer version refuses a write against a namespace whose delete already finished. The Catalog
+   * deletion marker refuses a relation after a Catalog cascade has begun but before the namespace
+   * itself has been fenced.
    */
-  public PointerConditions relationCreateFence(ResourceId namespaceId) {
+  public PointerConditions relationCreateFence(ResourceId catalogId, ResourceId namespaceId) {
     return relationsFence(namespaceId)
         .and(namespaceStillExistsFence(namespaceId))
-        .and(namespaceNotDeletingFence(namespaceId));
+        .and(namespaceNotDeletingFence(namespaceId))
+        .and(catalogNotDeletingFence(catalogId));
   }
 
   private PointerConditions fence(

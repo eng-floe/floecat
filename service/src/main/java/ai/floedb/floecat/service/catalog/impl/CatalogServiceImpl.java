@@ -365,13 +365,10 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                 () -> {
                   var principalContext = principal.get();
                   var correlationId = principalContext.getCorrelationId();
-                  authz.require(principalContext, "catalog.write");
                   boolean cascade = request.getCascade();
                   if (cascade) {
-                    authz.require(principalContext, "namespace.write");
-                    authz.require(principalContext, "table.write");
-                    authz.require(principalContext, "view.write");
-                  }
+                    CatalogCascadeAuthorization.require(authz, principalContext);
+                  } else authz.require(principalContext, "catalog.write");
                   var id = request.getCatalogId();
                   catalogSurfaceWritePolicy().requireDeletableCatalog(id, correlationId);
 

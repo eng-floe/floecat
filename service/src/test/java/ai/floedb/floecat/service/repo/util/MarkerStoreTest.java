@@ -133,7 +133,7 @@ class MarkerStoreTest {
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();
 
-    var conditions = markers.relationMoveFence(namespaceId, namespaceId, false);
+    var conditions = markers.relationMoveFence(catalogId("cat-1"), namespaceId, namespaceId, false);
 
     assertTrue(
         conditions.markerVersions().isEmpty() && conditions.requiredVersions().isEmpty(),
@@ -158,7 +158,7 @@ class MarkerStoreTest {
             .build();
     seed(Keys.namespacePointerById("acct", "ns-1"));
 
-    var conditions = markers.relationMoveFence(namespaceId, namespaceId, true);
+    var conditions = markers.relationMoveFence(catalogId("cat-2"), namespaceId, namespaceId, true);
 
     assertEquals(
         java.util.Set.of(Keys.namespaceRelationsMarker("acct", "ns-1")),
@@ -179,18 +179,19 @@ class MarkerStoreTest {
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();
     var to = from.toBuilder().setAccountId("other-acct").build();
+    var destinationCatalog = catalogId("cat-3").toBuilder().setAccountId("other-acct").build();
     seed(Keys.namespacePointerById("other-acct", "ns-same"));
 
-    var conditions = markers.relationMoveFence(from, to, false);
+    var conditions = markers.relationMoveFence(destinationCatalog, from, to, false);
 
     assertEquals(
         java.util.Set.of(Keys.namespaceRelationsMarker("other-acct", "ns-same")),
         conditions.markerVersions().keySet(),
         "only joining the destination can race its deletion; leaving the source makes it emptier");
     assertEquals(
-        3,
+        4,
         conditions.toCasOps().size(),
-        "a destination join advances one marker and checks namespace existence and deletion");
+        "a destination join advances one marker and checks namespace and catalog deletion");
     assertTrue(
         conditions
             .requiredVersions()
@@ -264,6 +265,7 @@ class MarkerStoreTest {
 
   @Test
   void aRelationCreateObservesTheDurableNamespaceFence() {
+    var catalogId = catalogId("cat-live");
     var namespaceId =
         ResourceId.newBuilder()
             .setAccountId("acct")
@@ -272,10 +274,13 @@ class MarkerStoreTest {
             .build();
     seed(Keys.namespacePointerById("acct", "ns-deleting"));
 
-    var conditions = markers.relationCreateFence(namespaceId);
+    var conditions = markers.relationCreateFence(catalogId, namespaceId);
 
     assertTrue(
         conditions.requiredAbsent().contains(Keys.namespaceDeletionMarker("acct", "ns-deleting")));
+    assertTrue(
+        conditions.requiredAbsent().contains(Keys.catalogDeletionMarker("acct", "cat-live")),
+        "a Catalog cascade blocks relations before it reaches the namespace fence");
   }
 
   /** A parent path with no row cannot be joined, and says so rather than fencing on nothing. */

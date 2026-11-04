@@ -95,7 +95,8 @@ class CatalogIntegrationRepositoryTest {
         CatalogIntegration.newBuilder().setResourceId(id).setDisplayName("warehouse").build());
     long version = repo.metaFor(id).getPointerVersion();
 
-    assertTrue(repo.acquireCascadeDeletionFence(id, version).isPresent());
+    var fence = repo.acquireCascadeDeletionFence(id, version).orElseThrow();
+    assertTrue(fence.newlyInstalled());
     assertFalse(repo.deleteWithPreconditionAndOverlayMarker(id, version, 0L));
     assertTrue(repo.getById(id).isPresent());
     assertTrue(
@@ -171,6 +172,26 @@ class CatalogIntegrationRepositoryTest {
         new CatalogIntegrationRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
 
     assertTrue(repo.acquireCascadeDeletionFence(id("integration"), 0L).isEmpty());
+  }
+
+  @Test
+  void cascadeDeletionFenceReportsWhichRequestInstalledIt() {
+    var pointers = new InMemoryPointerStore();
+    var repo = new CatalogIntegrationRepository(pointers, new InMemoryBlobStore());
+    var integrationId = id("integration");
+    repo.create(
+        CatalogIntegration.newBuilder()
+            .setResourceId(integrationId)
+            .setDisplayName("warehouse")
+            .build());
+    long version = repo.metaFor(integrationId).getPointerVersion();
+
+    var first = repo.acquireCascadeDeletionFence(integrationId, version).orElseThrow();
+    var second = repo.acquireCascadeDeletionFence(integrationId, version).orElseThrow();
+
+    assertTrue(first.newlyInstalled());
+    assertFalse(second.newlyInstalled());
+    assertEquals(first.version(), second.version());
   }
 
   @Test
