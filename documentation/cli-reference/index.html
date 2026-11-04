@@ -1679,7 +1679,7 @@ catalog use &lt;catalog-name&gt;
 catalog create &lt;display_name&gt; [--desc &lt;text&gt;] [--connector &lt;id&gt;] [--policy &lt;id&gt;] [--props k=v ...]
 catalog get &lt;display_name|id&gt;
 catalog update &lt;display_name|id&gt; [--display &lt;name&gt;] [--desc &lt;text&gt;] [--connector &lt;id&gt;] [--policy &lt;id&gt;] [--props k=v ...] [--etag &lt;etag&gt;]
-catalog delete &lt;display_name|id&gt; [--require-empty] [--etag &lt;etag&gt;]
+catalog delete &lt;display_name|id&gt; [--cascade] [--etag &lt;etag&gt;]
 namespaces (&lt;catalog | catalog.ns[.ns...]&gt; | &lt;UUID&gt;) [--id &lt;UUID&gt;] [--prefix P] [--recursive]
 namespace create &lt;catalog|catalog.ns[.ns...]&gt; [--display &lt;leaf&gt;] [--path a.b[.c]] [--desc &lt;text&gt;] [--props k=v ...] [--policy &lt;id&gt;]
 namespace get &lt;id | catalog.ns[.ns...]&gt;
@@ -1688,7 +1688,7 @@ namespace update &lt;id|catalog.ns[.ns...]&gt;
     [--policy &lt;ref&gt;] [--props k=v ...]
     [--path a.b[.c]] [--catalog &lt;id|name&gt;]
     [--etag &lt;etag&gt;]
-namespace delete &lt;id|fq&gt; [--require-empty] [--etag &lt;etag&gt;]
+namespace delete &lt;id|fq&gt; [--cascade] [--etag &lt;etag&gt;]
 tables &lt;catalog.ns[.ns...][.prefix]&gt;
 table create &lt;catalog.ns[.ns...].name&gt; [--desc &lt;text&gt;] [--root &lt;uri&gt;] [--schema &lt;json&gt;] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...]
     [--up-connector &lt;id|name&gt;] [--up-ns &lt;a.b[.c]&gt;] [--up-table &lt;name&gt;]
