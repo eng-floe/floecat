@@ -101,8 +101,15 @@ public final class MetaGraph implements CatalogGraphView {
     if (sys.isPresent()) {
       return sys;
     }
+    // A relation whose namespace is gone was cascade-deleted with it and is only waiting for GC.
+    // Listings reach relations through their namespace and already miss it; this closes the by-id
+    // path. One level suffices: a cascade deletes every namespace row in the subtree.
     return userGraph
         .resolve(id)
+        .filter(
+            node ->
+                !(node instanceof RelationNode relation)
+                    || userGraph.exists(relation.namespaceId()))
         .map(
             node ->
                 node instanceof RelationNode relation

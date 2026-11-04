@@ -45,6 +45,18 @@ public class CatalogIntegrationCredentialCleanup {
         integration.getResourceId(), integration.getAuthentication().getCredentialGeneration());
   }
 
+  /** Revokes credentials after the containing account row has been deleted. */
+  public void revokeForDeletedAccount(CatalogIntegration integration) {
+    if (!CatalogIntegrationCredentialStore.hasStoredCredentials(integration)) return;
+    ResourceId integrationId = integration.getResourceId();
+    long generation = integration.getAuthentication().getCredentialGeneration();
+    schedule(integrationId, generation);
+    credentials.deleteImmediately(integrationId, generation);
+    String markerKey = key(integrationId, generation);
+    Pointer marker = pointerStore.get(markerKey).orElse(null);
+    if (marker != null) pointerStore.compareAndDelete(markerKey, marker.getVersion());
+  }
+
   public void cleanPrepared(
       ResourceId integrationId,
       long generation,

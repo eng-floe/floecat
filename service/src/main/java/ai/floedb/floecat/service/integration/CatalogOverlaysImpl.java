@@ -332,6 +332,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
         new java.util.HashSet<>(
             Set.of(
                 Keys.catalogIntegrationDeletionMarker(accountId, integrationId.getId()),
+                Keys.catalogDeletionMarker(accountId, catalogId.getId()),
                 Keys.catalogOverlayDeletionMarker(accountId, overlayId.getId())));
     Map<String, Long> markerVersions = new java.util.HashMap<>();
     markerVersions.put(
@@ -404,8 +405,9 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
       Map<String, Long> replacementParents = Map.copyOf(parentVersions);
       Set<String> replacementRequiredAbsent = Set.copyOf(requiredAbsent);
       Map<String, Long> replacementMarkers = Map.copyOf(markerVersions);
-      if (!overlays.beginDeletion(
-          current.value().getResourceId(), current.meta().getPointerVersion())) {
+      if (overlays
+          .acquireDeletionFence(current.value().getResourceId(), current.meta().getPointerVersion())
+          .isEmpty()) {
         throw new BaseResourceRepository.AbortRetryableException(
             "overlay changed while replacement fenced its old identity");
       }
@@ -625,16 +627,18 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                   var meta = current.get().meta();
                   MutationOps.BaseServiceChecks.enforcePreconditions(
                       corr, meta, request.getPrecondition());
-                  if (!overlays.beginDeletion(id, meta.getPointerVersion()))
-                    throw new BaseResourceRepository.AbortRetryableException(
-                        "overlay changed while deletion was fenced");
+                  var fence =
+                      overlays
+                          .acquireDeletionFence(id, meta.getPointerVersion())
+                          .orElseThrow(
+                              () ->
+                                  new BaseResourceRepository.AbortRetryableException(
+                                      "overlay changed while deletion was fenced"));
                   reconciler.retireMaterializedResources(current.get().value());
                   // Managed descendants retire behind the fence first. The final transaction
                   // removes
                   // only the overlay, its dependencies, and the fence; the target catalog remains.
-                  long fenceVersion = overlays.deletionFenceVersion(id);
-                  if (fenceVersion == 0L
-                      || !overlays.deleteWithFence(id, meta.getPointerVersion(), fenceVersion))
+                  if (!overlays.deleteWithFence(id, meta.getPointerVersion(), fence.version()))
                     throw new BaseResourceRepository.AbortRetryableException(
                         "overlay changed during deletion");
                   return DeleteCatalogOverlayResponse.newBuilder().setMeta(meta).build();

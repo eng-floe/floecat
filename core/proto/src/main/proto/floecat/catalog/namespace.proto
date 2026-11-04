@@ -88,9 +88,13 @@ message UpdateNamespaceResponse {
 }
 
 message DeleteNamespaceRequest {
+  reserved 2;
+  reserved "require_empty";
   ai.floedb.floecat.common.ResourceId namespace_id = 1;
-  bool require_empty = 2;
   ai.floedb.floecat.common.Precondition precondition = 3;
+  // Deletes the namespace's descendant namespaces with it. Without it a non-empty namespace is a
+  // conflict. Tables and views under the deleted namespaces are reclaimed by GC.
+  bool cascade = 4;
 }
 message DeleteNamespaceResponse {
   ai.floedb.floecat.common.MutationMeta meta = 1;

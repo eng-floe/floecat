@@ -20,9 +20,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 
-/** Keeps table-scoped writes atomic with the continued existence of their table row. */
+/**
+ * Keeps table-scoped writes atomic with the continued existence of their table row, and queues the
+ * purge of a table's or view's state atomically with the delete of its row.
+ */
 public final class TableWriteFence {
   private TableWriteFence() {}
 
@@ -133,20 +137,34 @@ public final class TableWriteFence {
     return table != null && table.row().equals(normalize(pointerKey));
   }
 
+  /** Whether {@code pointerKey} is a user view's canonical row. */
+  public static boolean isViewRow(String pointerKey) {
+    return viewPurgeMarker(pointerKey) != null;
+  }
+
+  /** Whether deleting {@code pointerKey} must also write a purge marker (see {@link #fence}). */
+  public static boolean ownsPurgeMarker(String pointerKey) {
+    return purgeMarkerOf(pointerKey) != null;
+  }
+
   /**
-   * The marker operations owed by the table rows {@code operations} creates or deletes.
+   * The lifecycle-marker operations owed by the table and view rows {@code operations} creates or
+   * deletes.
    *
-   * <p>A row delete writes {@link Keys#tablePurgePointer} in the same batch, so the cleanup that
-   * follows it is durable work: the purge removes the marker only once the table-scoped state is
-   * gone, and pointer GC retries any marker a failed or interrupted purge left behind.
+   * <p>A row delete writes {@link Keys#tablePurgePointer} (or {@link Keys#viewPurgePointer}) in the
+   * same batch, so the cleanup that follows it is durable work: the purge removes the marker only
+   * once the relation's state is gone, and pointer GC retries unfinished work. A view create
+   * requires its versioned purge marker absent, so a stale purge cannot delete a recreated view's
+   * state.
    *
    * <p>A row delete also writes {@link Keys#tableRetiredPointer}, which is never removed, and a row
    * create requires it absent. A table id therefore names one table for its whole life. A job,
    * transaction, or purge that captured the id before a drop can only find the row missing, never a
    * later table under the same id that it would publish into or purge.
    *
-   * <p>The purge marker is created once, together with the row deletion. A purge fences its deletes
-   * on that marker, so overlapping purges stop when another purge acknowledges it.
+   * <p>A table purge marker is created once because its id is retired. A view purge marker receives
+   * a fresh version because its id may be reused after cleanup. Every purge fences its deletes on
+   * the marker version it started from.
    */
   static List<PointerStore.CasOp> lifecycleMarkerOps(
       List<? extends PointerStore.CasOp> operations) {
@@ -159,30 +177,46 @@ public final class TableWriteFence {
     }
     Map<String, PointerStore.CasOp> markers = new LinkedHashMap<>();
     for (PointerStore.CasOp operation : operations) {
-      if (!isTableRow(operation.key())) {
+      String marker = purgeMarkerOf(operation.key());
+      if (marker == null) {
         continue;
       }
-      TableRef table = tableOf(operation.key());
-      String purge = table.purgeMarker();
-      String retired = table.retiredMarker();
-      if (operation instanceof PointerStore.CasDelete) {
-        if (!batchKeys.contains(purge)) {
-          markers.put(
-              purge,
-              new PointerStore.CasUpsert(
-                  purge, 0L, PointerReferences.opaqueMarkerPointer(purge, table.row(), 1L)));
+      if (isTableRow(operation.key())) {
+        TableRef table = tableOf(operation.key());
+        String retired = table.retiredMarker();
+        if (operation instanceof PointerStore.CasDelete) {
+          if (!batchKeys.contains(marker)) {
+            markers.put(
+                marker,
+                new PointerStore.CasUpsert(
+                    marker, 0L, PointerReferences.opaqueMarkerPointer(marker, table.row(), 1L)));
+          }
+          if (!batchKeys.contains(retired)) {
+            markers.put(
+                retired,
+                new PointerStore.UnconditionalUpsert(
+                    retired, PointerReferences.opaqueMarkerPointer(retired, table.row(), 1L)));
+          }
+        } else if (((operation instanceof PointerStore.CasUpsert upsert
+                    && upsert.expectedVersion() == 0L)
+                || operation instanceof PointerStore.UnconditionalUpsert)
+            && !batchKeys.contains(retired)) {
+          markers.putIfAbsent(retired, new PointerStore.CasCheckAbsent(retired));
         }
-        if (!batchKeys.contains(retired)) {
+      } else if (!batchKeys.contains(marker)) {
+        if (operation instanceof PointerStore.CasDelete) {
+          long version = ThreadLocalRandom.current().nextLong(1L, Long.MAX_VALUE);
           markers.put(
-              retired,
+              marker,
               new PointerStore.UnconditionalUpsert(
-                  retired, PointerReferences.opaqueMarkerPointer(retired, table.row(), 1L)));
+                  marker,
+                  PointerReferences.opaqueMarkerPointer(
+                      marker, normalize(operation.key()), version)));
+        } else if ((operation instanceof PointerStore.CasUpsert upsert
+                && upsert.expectedVersion() == 0L)
+            || operation instanceof PointerStore.UnconditionalUpsert) {
+          markers.putIfAbsent(marker, new PointerStore.CasCheckAbsent(marker));
         }
-      } else if (((operation instanceof PointerStore.CasUpsert upsert
-                  && upsert.expectedVersion() == 0L)
-              || operation instanceof PointerStore.UnconditionalUpsert)
-          && !batchKeys.contains(retired)) {
-        markers.putIfAbsent(retired, new PointerStore.CasCheckAbsent(retired));
       }
     }
     return List.copyOf(markers.values());
@@ -239,6 +273,32 @@ public final class TableWriteFence {
     if (row != null && !row.equals(normalize(pointerKey))) {
       rows.add(row);
     }
+  }
+
+  /** The purge marker owed by the table or view row {@code pointerKey}, or null if not a row. */
+  private static String purgeMarkerOf(String pointerKey) {
+    if (isTableRow(pointerKey)) {
+      return tableOf(pointerKey).purgeMarker();
+    }
+    return viewPurgeMarker(pointerKey);
+  }
+
+  /** The purge marker of the user view whose canonical row is {@code pointerKey}, or null. */
+  private static String viewPurgeMarker(String pointerKey) {
+    String normalized = normalize(pointerKey);
+    if (normalized == null) return null;
+    String[] parts = normalized.substring(1).split("/", -1);
+    if (parts.length != 5
+        || !"accounts".equals(parts[0])
+        || !"views".equals(parts[2])
+        || !"by-id".equals(parts[3])
+        || parts[4].isBlank()) return null;
+    String account = parts[1];
+    if (account.isBlank()
+        || "by-id".equals(account)
+        || "by-name".equals(account)
+        || SystemNodeRegistry.SYSTEM_ACCOUNT.equals(account)) return null;
+    return Keys.viewPurgePointer(Keys.decodeSegment(account), Keys.decodeSegment(parts[4]));
   }
 
   /** The canonical row of the user table {@code pointerKey} belongs to, or null if none. */

@@ -95,7 +95,7 @@ class CatalogIntegrationRepositoryTest {
         CatalogIntegration.newBuilder().setResourceId(id).setDisplayName("warehouse").build());
     long version = repo.metaFor(id).getPointerVersion();
 
-    assertTrue(repo.beginCascadeDeletion(id, version));
+    assertTrue(repo.acquireCascadeDeletionFence(id, version).isPresent());
     assertFalse(repo.deleteWithPreconditionAndOverlayMarker(id, version, 0L));
     assertTrue(repo.getById(id).isPresent());
     assertTrue(
@@ -170,7 +170,7 @@ class CatalogIntegrationRepositoryTest {
     var repo =
         new CatalogIntegrationRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
 
-    assertFalse(repo.beginCascadeDeletion(id("integration"), 0L));
+    assertTrue(repo.acquireCascadeDeletionFence(id("integration"), 0L).isEmpty());
   }
 
   @Test

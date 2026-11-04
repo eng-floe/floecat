@@ -62,8 +62,12 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
 
   static final String KIND_POINTER = "Pointer";
   static final String GLOBAL_PK = "_ACCOUNT_DIR";
+  static final String ACCOUNT_PURGE_PK = "_ACCOUNT_PURGE";
+  static final String ACCOUNT_PURGE_PREFIX = "account-purge/";
   static final String CREDENTIAL_CLEANUP_PK = "_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP";
   static final String CREDENTIAL_CLEANUP_PREFIX = "catalog-integration-credential-cleanup/";
+  static final String RELATION_PURGE_PK = "_RELATION_PURGE";
+  static final String RELATION_PURGE_PREFIX = "relation-purge/";
   static final String ATTR_BLOB_URI = "blob_uri";
   static final String ATTR_REFERENCE_KIND = "reference_kind";
   static final String ATTR_RESOURCE_ID = "rid";
@@ -92,8 +96,14 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     if (k.startsWith(fencePrefix)) {
       return accountDeletionFenceKey(k, fencePrefix);
     }
+    if (k.startsWith(ACCOUNT_PURGE_PREFIX)) {
+      return new KvStore.Key(ACCOUNT_PURGE_PK, k);
+    }
     if (k.startsWith(CREDENTIAL_CLEANUP_PREFIX)) {
       return new KvStore.Key(CREDENTIAL_CLEANUP_PK, k);
+    }
+    if (k.startsWith(RELATION_PURGE_PREFIX)) {
+      return new KvStore.Key(RELATION_PURGE_PK, k);
     }
     if (!k.startsWith("accounts/")) {
       throw new IllegalArgumentException("unexpected key: " + pointerKey);
@@ -129,9 +139,15 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     if (p.startsWith(fencePrefix)) {
       return accountDeletionFenceKey(p, fencePrefix);
     }
+    if (p.equals("account-purge") || p.startsWith(ACCOUNT_PURGE_PREFIX)) {
+      return new KvStore.Key(ACCOUNT_PURGE_PK, p);
+    }
     if (p.equals("catalog-integration-credential-cleanup")
         || p.startsWith(CREDENTIAL_CLEANUP_PREFIX)) {
       return new KvStore.Key(CREDENTIAL_CLEANUP_PK, p);
+    }
+    if (p.equals("relation-purge") || p.startsWith(RELATION_PURGE_PREFIX)) {
+      return new KvStore.Key(RELATION_PURGE_PK, p);
     }
     if (!p.startsWith("accounts/")) {
       throw new IllegalArgumentException("unexpected prefix: " + prefix);
@@ -435,7 +451,10 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
   // ---- Helpers (testing)
 
   private String keyOf(Key key) {
-    if (key.partitionKey().equals(GLOBAL_PK) || key.partitionKey().equals(CREDENTIAL_CLEANUP_PK)) {
+    if (key.partitionKey().equals(GLOBAL_PK)
+        || key.partitionKey().equals(ACCOUNT_PURGE_PK)
+        || key.partitionKey().equals(CREDENTIAL_CLEANUP_PK)
+        || key.partitionKey().equals(RELATION_PURGE_PK)) {
       return "/" + key.sortKey();
     } else if (key.partitionKey()
         .startsWith(PointerStoreKeys.ACCOUNT_DELETION_FENCE_PARTITION_PREFIX)) {

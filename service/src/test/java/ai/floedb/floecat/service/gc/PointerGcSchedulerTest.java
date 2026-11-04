@@ -60,7 +60,6 @@ class PointerGcSchedulerTest {
                 null,
                 null,
                 ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
-    scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.tablePurges = () -> purges;
     scheduler.observability = observability;
     scheduler.initMeters();
@@ -99,7 +98,6 @@ class PointerGcSchedulerTest {
                 null,
                 null,
                 ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
-    scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.tablePurges = () -> purges;
     scheduler.observability = observability;
     scheduler.initMeters();
@@ -142,7 +140,6 @@ class PointerGcSchedulerTest {
                 null,
                 null,
                 ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
-    scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.tablePurges = () -> purges;
     scheduler.observability = new TestObservability();
     scheduler.initMeters();
@@ -220,6 +217,31 @@ class PointerGcSchedulerTest {
     }
   }
 
+  @Test
+  void deletionQueuesRunOnTheirOwnTick() {
+    PointerGcScheduler scheduler = new PointerGcScheduler();
+    CatalogIntegrationCredentialCleanup credentials = credentialCleanup();
+    AccountPurge accounts = accountPurge();
+    RelationPurgeQueue relations = mock(RelationPurgeQueue.class);
+    when(relations.drain(anyLong(), anyInt())).thenReturn(new RelationPurgeQueue.Result(0, 0, 0));
+    scheduler.credentialCleanup = () -> credentials;
+    scheduler.accountPurge = () -> accounts;
+    scheduler.relationPurge = () -> relations;
+    scheduler.observability = new TestObservability();
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.pointer.enabled", "true");
+    try {
+      scheduler.deletionTick();
+    } finally {
+      System.clearProperty("floecat.gc.pointer.enabled");
+    }
+
+    org.mockito.Mockito.verify(accounts).drain(anyLong(), anyInt());
+    org.mockito.Mockito.verify(credentials).drain(anyLong(), anyInt());
+    org.mockito.Mockito.verify(relations).drain(anyLong(), anyInt());
+  }
+
   private static Account account(String accountId) {
     return Account.newBuilder()
         .setResourceId(
@@ -233,6 +255,12 @@ class PointerGcSchedulerTest {
     when(cleanup.drain(anyLong(), anyInt()))
         .thenReturn(new CatalogIntegrationCredentialCleanup.Result(0, 0));
     return cleanup;
+  }
+
+  private static AccountPurge accountPurge() {
+    AccountPurge purge = mock(AccountPurge.class);
+    when(purge.drain(anyLong(), anyInt())).thenReturn(new AccountPurge.Result(0, 0));
+    return purge;
   }
 
   private static final class RecordingPointerGc extends PointerGc {

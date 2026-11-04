@@ -97,6 +97,18 @@ class UserGraphTest {
   }
 
   @Test
+  void existsRequiresANonzeroPointerVersion() {
+    ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
+    Namespace namespace = Namespace.newBuilder().setResourceId(namespaceId).build();
+
+    namespaceRepository.put(namespace, MutationMeta.getDefaultInstance());
+    assertThat(graph.exists(namespaceId)).isFalse();
+
+    namespaceRepository.put(namespace, mutationMeta(1L, Instant.now()));
+    assertThat(graph.exists(namespaceId)).isTrue();
+  }
+
+  @Test
   void schemaJsonHelperFallsBackToTable() {
     var ids = seedTable("base-schema", "{}");
     UserTableNode node = graph.table(ids.tableId()).orElseThrow();

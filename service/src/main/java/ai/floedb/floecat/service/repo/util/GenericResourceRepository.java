@@ -1574,6 +1574,20 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   /**
+   * Deletes the resource and supplied external pointers while publishing companion operations in
+   * the same atomic pointer transaction.
+   */
+  public boolean deleteWithPreconditionWhilePointersMatchAndMutatePointers(
+      K key,
+      long expectedCanonicalVersion,
+      PointerConditions conditions,
+      Map<String, Long> pointerVersionsToDelete,
+      List<PointerStore.CasOp> companions) {
+    return deleteWithPrecondition(
+        key, expectedCanonicalVersion, conditions, pointerVersionsToDelete, companions);
+  }
+
+  /**
    * Deletes the resource and the caller's companion operations in one atomic pointer transaction.
    * Used to cascade into a resource this one owns, so neither can outlive the other.
    */

@@ -48,6 +48,8 @@ public class PointerGcScheduler {
   @Inject Provider<TablePurgeQueue> tablePurges;
 
   @Inject Provider<CatalogIntegrationCredentialCleanup> credentialCleanup;
+  @Inject Provider<AccountPurge> accountPurge;
+  @Inject Provider<RelationPurgeQueue> relationPurge;
 
   @Inject Observability observability;
 
@@ -92,13 +94,11 @@ public class PointerGcScheduler {
 
     final OwnedAccounts accountRepo;
     final PointerGc gc;
-    final TablePurgeQueue purges;
-    final CatalogIntegrationCredentialCleanup credentials;
+    final TablePurgeQueue tablePurgeQueue;
     try {
       accountRepo = accounts.get();
       gc = pointerGc.get();
-      purges = tablePurges.get();
-      credentials = credentialCleanup.get();
+      tablePurgeQueue = tablePurges.get();
     } catch (Throwable ignored) {
       return;
     }
@@ -150,7 +150,7 @@ public class PointerGcScheduler {
         // Ahead of the pointer sweep, so purges do not starve behind its blob probes; bounded by
         // purgeDeadline, so a large table's purge does not starve the sweep either.
         TablePurgeQueue.Result purged =
-            purges.drainAccount(accountId, purgeDeadline, pointerPageSize);
+            tablePurgeQueue.drainAccount(accountId, purgeDeadline, pointerPageSize);
         gcMetrics.recordCollection(
             purged.purged(), Tag.of(TagKey.RESULT, "table-purges-completed"));
         PointerGc.Result result = gc.runForAccount(accountId, deadline);
@@ -163,12 +163,6 @@ public class PointerGcScheduler {
             Duration.ofNanos(System.nanoTime() - accountStart),
             Tag.of(TagKey.RESULT, "account-run"));
       }
-
-      var credentialResult = credentials.drain(deadline, pointerPageSize);
-      gcMetrics.recordCollection(
-          credentialResult.scanned(), Tag.of(TagKey.RESULT, "credential-scanned"));
-      gcMetrics.recordCollection(
-          credentialResult.deleted(), Tag.of(TagKey.RESULT, "credential-deleted"));
 
       var globalResult = gc.runGlobalAccountPointers(deadline);
       gcMetrics.recordCollection(globalResult.scanned(), Tag.of(TagKey.RESULT, "global-scanned"));
@@ -183,6 +177,62 @@ public class PointerGcScheduler {
       lastTickEndMs.set(nowMillis.getAsLong());
       running.set(0);
     }
+  }
+
+  /**
+   * Runs durable deletion queues on a short cadence with a budget separate from pointer hygiene.
+   */
+  @Scheduled(
+      every = "{floecat.gc.deletion.tick-every}",
+      concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
+      skipExecutionIf = DisabledOrStopping.class)
+  void deletionTick() {
+    if (stopping) return;
+
+    var cfg = ConfigProvider.getConfig();
+    if (!cfg.getOptionalValue("floecat.gc.pointer.enabled", Boolean.class).orElse(true)) return;
+
+    final CatalogIntegrationCredentialCleanup credentials;
+    final AccountPurge accountPurges;
+    final RelationPurgeQueue relationPurges;
+    try {
+      credentials = credentialCleanup.get();
+      accountPurges = accountPurge.get();
+      relationPurges = relationPurge.get();
+    } catch (Throwable ignored) {
+      return;
+    }
+
+    long start = System.currentTimeMillis();
+    long budget =
+        Math.max(
+            3L,
+            cfg.getOptionalValue("floecat.gc.deletion.max-tick-millis", Long.class)
+                .orElse(30_000L));
+    long firstDeadline = start + budget / 3L;
+    long secondDeadline = start + (budget * 2L) / 3L;
+    long finalDeadline = start + budget;
+    int pageSize = cfg.getOptionalValue("floecat.gc.pointer.page-size", Integer.class).orElse(500);
+
+    var accountResult = accountPurges.drain(firstDeadline, pageSize);
+    gcMetrics.recordCollection(
+        accountResult.scanned(), Tag.of(TagKey.RESULT, "account-purge-scanned"));
+    gcMetrics.recordCollection(
+        accountResult.purged(), Tag.of(TagKey.RESULT, "account-purge-purged"));
+
+    var credentialResult = credentials.drain(secondDeadline, pageSize);
+    gcMetrics.recordCollection(
+        credentialResult.scanned(), Tag.of(TagKey.RESULT, "credential-scanned"));
+    gcMetrics.recordCollection(
+        credentialResult.deleted(), Tag.of(TagKey.RESULT, "credential-deleted"));
+
+    var relationResult = relationPurges.drain(finalDeadline, pageSize);
+    gcMetrics.recordCollection(
+        relationResult.scanned(), Tag.of(TagKey.RESULT, "relation-purge-scanned"));
+    gcMetrics.recordCollection(
+        relationResult.completed(), Tag.of(TagKey.RESULT, "relation-purge-completed"));
+    gcMetrics.recordCollection(
+        relationResult.relationsDeleted(), Tag.of(TagKey.RESULT, "relation-purge-deleted"));
   }
 
   private void registerGauges() {

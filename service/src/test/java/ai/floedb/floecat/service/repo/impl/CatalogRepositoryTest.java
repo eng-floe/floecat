@@ -245,6 +245,34 @@ class CatalogRepositoryTest {
     assertTrue(ptr.get(overlays).isEmpty());
   }
 
+  @Test
+  void cascadeFenceBlocksUpdatesAndIsRemovedWithTheCatalog() {
+    String account = "acct-cascade";
+    ResourceId rid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId("cat-cascade")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    Catalog catalog = Catalog.newBuilder().setResourceId(rid).setDisplayName("cascade").build();
+    catalogRepo.create(catalog);
+
+    var installed = catalogRepo.acquireCascadeDeletionFence(rid, 1L).orElseThrow();
+    assertTrue(installed.newlyInstalled());
+    var resumed = catalogRepo.acquireCascadeDeletionFence(rid, 1L).orElseThrow();
+    assertFalse(resumed.newlyInstalled(), "acquire is resumable");
+    assertEquals(installed.version(), resumed.version());
+    assertFalse(catalogRepo.update(catalog.toBuilder().setDescription("late").build(), 1L));
+    assertFalse(
+        catalogRepo.deleteWhileChildSetsUnchanged(rid, 1L, removal(Set.of(), Map.of())),
+        "the non-cascade path cannot strand the durable fence");
+
+    assertTrue(
+        catalogRepo.deleteForCascade(rid, 1L, resumed.version(), removal(Set.of(), Map.of())));
+    assertTrue(catalogRepo.getById(rid).isEmpty());
+    assertTrue(ptr.get(Keys.catalogDeletionMarker(account, rid.getId())).isEmpty());
+  }
+
   /**
    * A marker removal, in the shape MarkerStore samples: absent markers are required absent, and
    * existing ones are required at their version and removed.

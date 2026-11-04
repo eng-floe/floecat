@@ -31,14 +31,14 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.service.cache.HintCache;
-import ai.floedb.floecat.service.cache.ObjectCache;
+import ai.floedb.floecat.integration.rpc.BearerAuthentication;
+import ai.floedb.floecat.integration.rpc.CatalogAuthentication;
+import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.credentials.DefaultCredentialResolver;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
-import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -53,9 +53,7 @@ import ai.floedb.floecat.storage.secrets.SecretsManager;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import jakarta.enterprise.inject.Instance;
 import java.lang.reflect.Field;
-import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -63,6 +61,7 @@ import org.junit.jupiter.api.Test;
 
 class AccountServiceImplTest {
   private AccountServiceImpl service;
+  private AccountCredentialCleanup credentialCleanup;
   private ResourceId accountId;
   private TrackingPointerStore pointers;
   private InMemoryBlobStore blobs;
@@ -71,22 +70,20 @@ class AccountServiceImplTest {
   void setUp() {
     service = new AccountServiceImpl();
     service.accountRepo = mock(AccountRepository.class);
-    service.catalogIntegrationRepo = mock(CatalogIntegrationRepository.class);
     service.principal = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
     service.idempotencyStore = mock(IdempotencyRepository.class);
     pointers = new TrackingPointerStore();
     service.pointerStore = pointers;
     blobs = new InMemoryBlobStore();
-    service.blobStore = blobs;
-    service.credentialResolver = mock(DefaultCredentialResolver.class);
-    service.secretsManager = mock(SecretsManager.class);
-    service.durableReconcileJobStore = mock(Instance.class);
-    when(service.durableReconcileJobStore.isResolvable()).thenReturn(false);
-    service.catalogIntegrationCredentialCleanup = mock(CatalogIntegrationCredentialCleanup.class);
-    service.objects = ObjectCache.forTesting();
-    service.hints = mock(HintCache.class);
-    service.blobs = mock(BlobCacheAccess.class);
+    credentialCleanup = new AccountCredentialCleanup();
+    credentialCleanup.pointerStore = pointers;
+    credentialCleanup.catalogIntegrationRepo = mock(CatalogIntegrationRepository.class);
+    credentialCleanup.credentialResolver = mock(DefaultCredentialResolver.class);
+    credentialCleanup.secretsManager = mock(SecretsManager.class);
+    credentialCleanup.catalogIntegrationCredentialCleanup =
+        mock(CatalogIntegrationCredentialCleanup.class);
+    service.credentialCleanup = credentialCleanup;
     service.awsExternalIds = mock(AccountAwsExternalIdProvider.class);
     service.awsServicePrincipalArn = Optional.of("arn:aws:iam::123456789012:role/floecat");
     installBasePrincipal(service, service.principal);
@@ -227,7 +224,7 @@ class AccountServiceImplTest {
               assertTrue(pointers.get(authorityPointer).isPresent());
               return null;
             })
-        .when(service.secretsManager)
+        .when(credentialCleanup.secretsManager)
         .delete(
             "acct", StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE, authorityId.getId());
 
@@ -236,16 +233,44 @@ class AccountServiceImplTest {
         .await()
         .indefinitely();
 
-    verify(service.secretsManager)
+    verify(credentialCleanup.secretsManager)
         .delete(
             "acct", StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE, authorityId.getId());
-    verify(service.hints).evictAccount("acct");
-    verify(service.blobs).evictAccount("acct");
-    assertTrue(pointers.get(authorityPointer).isEmpty());
+    assertTrue(pointers.get(authorityPointer).isPresent());
     assertTrue(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
+    assertTrue(pointers.get(Keys.accountPurgePointer("acct")).isPresent());
     assertTrue(
         Keys.accountDeletionFenceShards("acct").stream()
             .allMatch(key -> pointers.get(key).isPresent()));
+  }
+
+  @Test
+  void accountDeletionRevokesCatalogIntegrationCredentialsInsideRpc() {
+    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    ResourceId integrationId = resourceId("integration", ResourceKind.RK_CATALOG_INTEGRATION);
+    CatalogIntegration integration =
+        CatalogIntegration.newBuilder()
+            .setResourceId(integrationId)
+            .setAuthentication(
+                CatalogAuthentication.newBuilder()
+                    .setBearer(BearerAuthentication.getDefaultInstance())
+                    .setCredentialsConfigured(true)
+                    .setCredentialGeneration(3L))
+            .build();
+    putPointer(Keys.catalogIntegrationPointerById("acct", "integration"), "broken");
+    when(credentialCleanup.catalogIntegrationRepo.getById(integrationId))
+        .thenReturn(Optional.of(integration));
+    when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
+    when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
+
+    service
+        .deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
+        .await()
+        .indefinitely();
+
+    verify(credentialCleanup.catalogIntegrationCredentialCleanup)
+        .revokeForDeletedAccount(integration);
+    assertTrue(pointers.get(Keys.catalogIntegrationPointerById("acct", "integration")).isPresent());
   }
 
   @Test
@@ -284,13 +309,13 @@ class AccountServiceImplTest {
         .await()
         .indefinitely();
 
-    assertFalse(pointers.get(constraintKey).isPresent());
-    assertFalse(pointers.get(catalogMarker).isPresent());
-    assertFalse(pointers.get(namespaceMarker).isPresent());
-    assertEquals(1, pointers.countByPrefixConsistent(Keys.accountRootPrefix("acct")));
-    assertTrue(blobs.list(tableBlobPrefix, 100, "").keys().isEmpty());
-    assertTrue(blobs.get(residualBlob) == null);
+    assertTrue(pointers.get(constraintKey).isPresent());
+    assertTrue(pointers.get(catalogMarker).isPresent());
+    assertTrue(pointers.get(namespaceMarker).isPresent());
+    assertTrue(blobs.get(statsBlob) != null);
+    assertTrue(blobs.get(residualBlob) != null);
     assertTrue(blobs.get(otherAccountBlob) != null);
+    assertTrue(pointers.get(Keys.accountPurgePointer("acct")).isPresent());
   }
 
   @Test
@@ -317,10 +342,11 @@ class AccountServiceImplTest {
         .await()
         .indefinitely();
 
-    assertTrue(pointers.get(transactionPointer).isEmpty());
-    assertTrue(pointers.get(intentPointer).isEmpty());
-    assertTrue(blobs.get(transactionBlob) == null);
-    assertTrue(blobs.get(intentBlob) == null);
+    assertTrue(pointers.get(transactionPointer).isPresent());
+    assertTrue(pointers.get(intentPointer).isPresent());
+    assertTrue(blobs.get(transactionBlob) != null);
+    assertTrue(blobs.get(intentBlob) != null);
+    assertTrue(pointers.get(Keys.accountPurgePointer("acct")).isPresent());
   }
 
   @Test
@@ -337,45 +363,16 @@ class AccountServiceImplTest {
         .thenReturn(meta)
         .thenThrow(new BaseResourceRepository.NotFoundException("deleted"));
     when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
-    pointers.failNextExcludedSweep = true;
-
-    var response =
-        service
-            .deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
-            .await()
-            .indefinitely();
+    var request = DeleteAccountRequest.newBuilder().setAccountId(accountId).build();
+    var response = service.deleteAccount(request).await().indefinitely();
+    service.deleteAccount(request).await().indefinitely();
 
     assertEquals(meta, response.getMeta());
     assertTrue(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
+    assertTrue(pointers.get(Keys.accountPurgePointer("acct")).isPresent());
     verify(service.accountRepo).deleteWithPrecondition(accountId, 7L);
-    verify(service.credentialResolver, org.mockito.Mockito.times(2))
+    verify(credentialCleanup.credentialResolver, org.mockito.Mockito.times(2))
         .delete("acct", connectorId.getId());
-  }
-
-  @Test
-  void incompletePointerSweepReportsBoundedUnexpectedKeys() {
-    String accountPrefix = Keys.accountRootPrefix("acct");
-    String deletionFence = Keys.accountDeletionMarker("acct");
-    putPointer(deletionFence, "deletion-fence");
-    for (char suffix = 'a'; suffix <= 'l'; suffix++) {
-      putPointer(accountPrefix + "residual-" + suffix, "residual-" + suffix);
-    }
-
-    BaseResourceRepository.AbortRetryableException failure =
-        assertThrows(
-            BaseResourceRepository.AbortRetryableException.class,
-            () -> service.assertAccountPointerSweepComplete(accountPrefix, deletionFence));
-
-    String message = failure.getMessage();
-    assertTrue(message.contains("account pointer sweep left 13 rows under " + accountPrefix));
-    assertTrue(message.contains("deletion_fence_present=true"));
-    assertTrue(message.contains("unexpected_pointer_count=12"));
-    for (char suffix = 'a'; suffix <= 'j'; suffix++) {
-      assertTrue(message.contains(accountPrefix + "residual-" + suffix));
-    }
-    assertFalse(message.contains(accountPrefix + "residual-k"));
-    assertFalse(message.contains(accountPrefix + "residual-l"));
-    assertTrue(message.contains("unexpected_pointer_keys_truncated=true"));
   }
 
   @Test
@@ -393,6 +390,7 @@ class AccountServiceImplTest {
 
     assertEquals(missing, response.getMeta());
     assertFalse(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
+    assertFalse(pointers.get(Keys.accountPurgePointer("acct")).isPresent());
     assertTrue(
         Keys.accountDeletionFenceShards("acct").stream()
             .allMatch(key -> pointers.get(key).isEmpty()));
@@ -400,40 +398,24 @@ class AccountServiceImplTest {
   }
 
   @Test
-  void existingDeletionMarkerRepairsMissingFenceShards() {
+  void failedFenceBatchLeavesNoMarkerShardsOrPurgeEntry() {
     MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
-    installDeletionMarker(meta);
-    String existingShard = Keys.accountDeletionFenceShards("acct").get(17);
-    pointers.compareAndSet(
-        existingShard, 0L, PointerReferences.opaqueMarkerPointer(existingShard, "deleting", 1L));
+    pointers.failFenceCreates = true;
     when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
-    when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
 
-    service
-        .deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
-        .await()
-        .indefinitely();
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
+                .await()
+                .indefinitely());
 
+    assertFalse(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
+    assertFalse(pointers.get(Keys.accountPurgePointer("acct")).isPresent());
     assertTrue(
         Keys.accountDeletionFenceShards("acct").stream()
-            .allMatch(key -> pointers.get(key).isPresent()));
-  }
-
-  @Test
-  void orphanedFenceShardIsRemovedBeforeFenceCreationRetries() {
-    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
-    String orphan = Keys.accountDeletionFenceShards("acct").get(23);
-    pointers.compareAndSet(orphan, 0L, PointerReferences.opaqueMarkerPointer(orphan, "orphan", 9L));
-    when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
-    when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
-
-    service
-        .deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
-        .await()
-        .indefinitely();
-
-    assertEquals(1L, pointers.get(orphan).orElseThrow().getVersion());
-    assertTrue(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
+            .allMatch(key -> pointers.get(key).isEmpty()));
   }
 
   @Test
@@ -496,6 +478,7 @@ class AccountServiceImplTest {
 
     assertEquals(0, pointers.compareAndDeleteCalls);
     assertFalse(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
+    assertFalse(pointers.get(Keys.accountPurgePointer("acct")).isPresent());
     assertTrue(
         Keys.accountDeletionFenceShards("acct").stream()
             .allMatch(key -> pointers.get(key).isEmpty()));
@@ -607,16 +590,22 @@ class AccountServiceImplTest {
     pointers.compareAndSet(key, 0L, PointerReferences.blobPointer(key, blobUri, 1L));
   }
 
-  private void installDeletionMarker(MutationMeta meta) {
-    String key = Keys.accountDeletionMarker("acct");
-    String payload = Base64.getEncoder().encodeToString(meta.toByteArray());
-    pointers.compareAndSet(key, 0L, PointerReferences.opaqueMarkerPointer(key, payload, 1L));
-  }
-
   private static final class TrackingPointerStore extends InMemoryPointerStore {
     private int compareAndDeleteCalls;
     private int excludedSweepCalls;
     private boolean failNextExcludedSweep;
+    private boolean failFenceCreates;
+
+    @Override
+    public synchronized boolean compareAndSetBatch(
+        List<ai.floedb.floecat.storage.spi.PointerStore.CasOp> operations) {
+      if (failFenceCreates
+          && operations.stream()
+              .anyMatch(operation -> operation.key().equals(Keys.accountDeletionMarker("acct")))) {
+        return false;
+      }
+      return super.compareAndSetBatch(operations);
+    }
 
     @Override
     public synchronized boolean compareAndDelete(String key, long expectedVersion) {

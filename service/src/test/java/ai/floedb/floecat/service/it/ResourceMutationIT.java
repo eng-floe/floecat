@@ -174,10 +174,7 @@ class ResourceMutationIT {
             StatusRuntimeException.class,
             () ->
                 namespace.deleteNamespace(
-                    DeleteNamespaceRequest.newBuilder()
-                        .setNamespaceId(nsId)
-                        .setRequireEmpty(true)
-                        .build()));
+                    DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).build()));
     TestSupport.assertGrpcAndMc(
         nsDelBlocked,
         Status.Code.ABORTED,
@@ -192,17 +189,17 @@ class ResourceMutationIT {
             () -> TestSupport.resolveTableId(directory, relations, catName, nsFullPath, newName));
     TestSupport.assertGrpcAndMc(tblGone, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, null);
 
-    TestSupport.deleteNamespace(namespace, nsId, true);
+    TestSupport.deleteNamespace(namespace, nsId, false);
 
     var schemaNsId =
         TestSupport.resolveNamespaceId(
             directory, cat.getDisplayName(), List.of("db_it", "schema_it"));
-    TestSupport.deleteNamespace(namespace, schemaNsId, true);
+    TestSupport.deleteNamespace(namespace, schemaNsId, false);
 
     var dbNsId = TestSupport.resolveNamespaceId(directory, cat.getDisplayName(), List.of("db_it"));
-    TestSupport.deleteNamespace(namespace, dbNsId, true);
+    TestSupport.deleteNamespace(namespace, dbNsId, false);
 
-    TestSupport.deleteCatalog(catalog, catId, true);
+    TestSupport.deleteCatalog(catalog, catId, false);
 
     StatusRuntimeException catGone =
         assertThrows(
@@ -279,7 +276,6 @@ class ResourceMutationIT {
         catalog.deleteCatalog(
             DeleteCatalogRequest.newBuilder()
                 .setCatalogId(id)
-                .setRequireEmpty(true)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(m2.getPointerVersion())

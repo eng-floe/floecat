@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -104,16 +105,23 @@ class CatalogOverlaysImplTest {
     @SuppressWarnings("unchecked")
     var parents = ArgumentCaptor.forClass(Map.class);
     @SuppressWarnings("unchecked")
+    var requiredAbsent = ArgumentCaptor.forClass(Set.class);
+    @SuppressWarnings("unchecked")
     var markers = ArgumentCaptor.forClass(Map.class);
     verify(service.overlays)
         .createAttachedWithMetaAndCompanions(
-            overlay.capture(), parents.capture(), any(), markers.capture(), any());
+            overlay.capture(),
+            parents.capture(),
+            requiredAbsent.capture(),
+            markers.capture(),
+            any());
 
     assertEquals(catalogId(), response.getOverlay().getCatalogId());
     assertEquals(integrationId(), response.getOverlay().getIntegrationId());
     assertEquals(
         5L, parents.getValue().get(Keys.catalogIntegrationPointerById("acct", "integration")));
     assertEquals(7L, parents.getValue().get(Keys.catalogPointerById("acct", "catalog")));
+    assertTrue(requiredAbsent.getValue().contains(Keys.catalogDeletionMarker("acct", "catalog")));
     assertEquals(
         2L, markers.getValue().get(Keys.catalogIntegrationOverlaysMarker("acct", "integration")));
     assertEquals(3L, markers.getValue().get(Keys.catalogOverlaysMarker("acct", "catalog")));
@@ -198,7 +206,10 @@ class CatalogOverlaysImplTest {
     when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(oldIntegrationId))
         .thenReturn(4L);
     when(service.markerStore.catalogOverlaysMarkerVersion(oldCatalogId)).thenReturn(6L);
-    when(service.overlays.beginDeletion(oldOverlayId, 9L)).thenReturn(true);
+    when(service.overlays.acquireDeletionFence(oldOverlayId, 9L))
+        .thenReturn(
+            Optional.of(
+                new ai.floedb.floecat.service.repo.util.DurableDeletionFence.Fence(1L, true)));
     when(service.overlays.replaceIdentityAttachedWithMeta(
             any(), eq(9L), any(), any(), any(), any()))
         .thenAnswer(invocation -> Optional.of(row(invocation.getArgument(2), 1L)));
@@ -246,7 +257,7 @@ class CatalogOverlaysImplTest {
                     .indefinitely());
 
     assertEquals(Status.Code.INTERNAL, error.getStatus().getCode());
-    verify(service.overlays, never()).beginDeletion(any(), anyLong());
+    verify(service.overlays, never()).acquireDeletionFence(any(), anyLong());
     verify(service.reconciler, never()).retireMaterializedResources(any());
   }
 
@@ -380,8 +391,10 @@ class CatalogOverlaysImplTest {
     var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
     var current = overlay(overlayId, integrationId(), catalogId(), "sales");
     when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
-    when(service.overlays.beginDeletion(overlayId, 7L)).thenReturn(true);
-    when(service.overlays.deletionFenceVersion(overlayId)).thenReturn(1L);
+    when(service.overlays.acquireDeletionFence(overlayId, 7L))
+        .thenReturn(
+            Optional.of(
+                new ai.floedb.floecat.service.repo.util.DurableDeletionFence.Fence(1L, true)));
     when(service.overlays.deleteWithFence(overlayId, 7L, 1L)).thenReturn(true);
 
     service
@@ -390,7 +403,7 @@ class CatalogOverlaysImplTest {
         .await()
         .indefinitely();
 
-    verify(service.overlays).beginDeletion(overlayId, 7L);
+    verify(service.overlays).acquireDeletionFence(overlayId, 7L);
     verify(service.reconciler).retireMaterializedResources(current);
     verify(service.overlays).deleteWithFence(overlayId, 7L, 1L);
     verify(service.catalogs, never()).delete(any());

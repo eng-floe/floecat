@@ -24,8 +24,10 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView.NamespaceRef;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.NamespaceKey;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.DurableDeletionFence;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
@@ -121,17 +123,65 @@ public class NamespaceRepository {
       ResourceId namespaceResourceId,
       long expectedPointerVersion,
       MarkerStore.MarkerRemoval markers) {
+    String fence =
+        Keys.namespaceDeletionMarker(
+            namespaceResourceId.getAccountId(), namespaceResourceId.getId());
     return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()),
         expectedPointerVersion,
-        markers.conditions(),
+        markers.conditions().and(new PointerConditions(Map.of(), Set.of(fence), Map.of())),
         markers.toDelete());
+  }
+
+  public Optional<DurableDeletionFence.Fence> acquireCascadeDeletionFence(
+      ResourceId namespaceId, long expectedPointerVersion) {
+    return DurableDeletionFence.acquire(
+        pointerStore,
+        namespaceId.getAccountId(),
+        Keys.namespacePointerById(namespaceId.getAccountId(), namespaceId.getId()),
+        Keys.namespaceDeletionMarker(namespaceId.getAccountId(), namespaceId.getId()),
+        expectedPointerVersion);
+  }
+
+  public boolean cascadeDeletionInProgress(ResourceId namespaceId) {
+    return pointerStore
+        .get(Keys.namespaceDeletionMarker(namespaceId.getAccountId(), namespaceId.getId()))
+        .isPresent();
+  }
+
+  /** Removes one namespace, its shape markers, and its durable cascade fence atomically. */
+  public boolean deleteForCascade(
+      ResourceId namespaceId,
+      ResourceId catalogId,
+      long expectedPointerVersion,
+      long expectedFenceVersion,
+      MarkerStore.MarkerRemoval markers) {
+    if (expectedFenceVersion <= 0L) return false;
+    String fence = Keys.namespaceDeletionMarker(namespaceId.getAccountId(), namespaceId.getId());
+    Map<String, Long> deletes = new java.util.LinkedHashMap<>(markers.toDelete());
+    deletes.put(fence, expectedFenceVersion);
+    String purgeKey =
+        Keys.relationPurgePointer(
+            namespaceId.getAccountId(), catalogId.getId(), namespaceId.getId());
+    return repo.deleteWithPreconditionWhilePointersMatchAndMutatePointers(
+        new NamespaceKey(namespaceId.getAccountId(), namespaceId.getId()),
+        expectedPointerVersion,
+        markers.conditions(),
+        Map.copyOf(deletes),
+        List.of(
+            new PointerStore.CasUpsert(
+                purgeKey, 0L, PointerReferences.opaqueMarkerPointer(purgeKey, purgeKey, 1L))));
   }
 
   public Optional<MutationMeta> updateWhilePointersMatch(
       Namespace namespace, long expectedPointerVersion, PointerConditions conditions) {
+    String fence =
+        Keys.namespaceDeletionMarker(
+            namespace.getResourceId().getAccountId(), namespace.getResourceId().getId());
     return repo.updateWithMetaWhilePointersMatchAndBumpMarkers(
-        namespace, expectedPointerVersion, conditions);
+        namespace,
+        expectedPointerVersion,
+        conditions.and(new PointerConditions(Map.of(), Set.of(fence), Map.of())));
   }
 
   public boolean delete(ResourceId namespaceResourceId) {
@@ -150,6 +200,13 @@ public class NamespaceRepository {
 
   public Optional<Namespace> getById(ResourceId namespaceResourceId) {
     return repo.getByKey(
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
+  }
+
+  /** The namespace body and the metadata of the pointer version it was read from. */
+  public Optional<GenericResourceRepository.ResourceWithMeta<Namespace>> getByIdWithMeta(
+      ResourceId namespaceResourceId) {
+    return repo.getByKeyWithMeta(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
@@ -302,6 +359,18 @@ public class NamespaceRepository {
       StringBuilder nextOut) {
     String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
     return repo.listByPrefixForMutation(prefix, limit, pageToken, nextOut);
+  }
+
+  /** Lists a subtree with each row and canonical version resolved from the same live pointer. */
+  public List<GenericResourceRepository.ResourceWithMeta<Namespace>> listWithMetaConsistent(
+      String accountId,
+      String catalogId,
+      List<String> parentSegmentsOrEmpty,
+      int limit,
+      String pageToken,
+      StringBuilder nextOut) {
+    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
+    return repo.listByPrefixWithMetaForMutation(prefix, limit, pageToken, nextOut);
   }
 
   /**

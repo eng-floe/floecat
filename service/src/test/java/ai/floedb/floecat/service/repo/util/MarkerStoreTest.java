@@ -82,6 +82,9 @@ class MarkerStoreTest {
     assertTrue(
         conditions.markerVersions().get(canonical) == null,
         "requiring the row must not advance it");
+    assertTrue(
+        conditions.requiredAbsent().contains(Keys.catalogDeletionMarker("acct", "cat-live")),
+        "a catalog cascade fence blocks new child namespaces before the catalog row is removed");
   }
 
   /**
@@ -185,9 +188,9 @@ class MarkerStoreTest {
         conditions.markerVersions().keySet(),
         "only joining the destination can race its deletion; leaving the source makes it emptier");
     assertEquals(
-        2,
+        3,
         conditions.toCasOps().size(),
-        "a destination join is exactly one marker advance plus one namespace existence check");
+        "a destination join advances one marker and checks namespace existence and deletion");
     assertTrue(
         conditions
             .requiredVersions()
@@ -233,6 +236,12 @@ class MarkerStoreTest {
     assertTrue(
         fence.requiredVersions().containsKey(Keys.namespacePointerById("acct", "ns-parent")),
         "the parent's own row is a read dependency, refusing a delete that already finished");
+    assertTrue(
+        fence.requiredAbsent().contains(Keys.catalogDeletionMarker("acct", "cat-nested")),
+        "a catalog cascade blocks every new namespace in the catalog");
+    assertTrue(
+        fence.requiredAbsent().contains(Keys.namespaceDeletionMarker("acct", "ns-parent")),
+        "a namespace cascade blocks new children before removing the parent row");
   }
 
   /** A top-level create has no parent to join, so the catalog's child set is all there is. */
@@ -248,6 +257,25 @@ class MarkerStoreTest {
         java.util.Set.of(Keys.catalogChildrenMarker("acct", "cat-root")),
         fence.markerVersions().keySet(),
         "no parent marker, because there is no parent row to have one");
+    assertTrue(
+        fence.requiredAbsent().contains(Keys.catalogDeletionMarker("acct", "cat-root")),
+        "the top-level create still observes the durable catalog cascade fence");
+  }
+
+  @Test
+  void aRelationCreateObservesTheDurableNamespaceFence() {
+    var namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("ns-deleting")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    seed(Keys.namespacePointerById("acct", "ns-deleting"));
+
+    var conditions = markers.relationCreateFence(namespaceId);
+
+    assertTrue(
+        conditions.requiredAbsent().contains(Keys.namespaceDeletionMarker("acct", "ns-deleting")));
   }
 
   /** A parent path with no row cannot be joined, and says so rather than fencing on nothing. */

@@ -35,6 +35,7 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.gc.AccountPurge;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -84,6 +85,7 @@ class AccountMutationIT {
   @Inject PointerStore ptr;
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
+  @Inject AccountPurge accountPurge;
 
   private static final Schema SIMPLE_SCHEMA =
       new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
@@ -476,6 +478,8 @@ class AccountMutationIT {
                     .setExpectedEtag(seededMeta.getEtag())
                     .build())
             .build());
+    accountPurge.drain(System.currentTimeMillis() + 30_000L, 500);
+    assertTrue(ptr.get(Keys.accountPurgePointer(seedAccountId)).isEmpty());
 
     assertEquals(
         0,
@@ -518,6 +522,8 @@ class AccountMutationIT {
                     .setExpectedEtag(seededMeta.getEtag())
                     .build())
             .build());
+    accountPurge.drain(System.currentTimeMillis() + 30_000L, 500);
+    assertTrue(ptr.get(Keys.accountPurgePointer(seedAccountId)).isEmpty());
 
     assertEquals(
         0,

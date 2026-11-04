@@ -37,7 +37,6 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationSpec;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
-import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.integration.rpc.CreateCatalogIntegrationRequest;
 import ai.floedb.floecat.integration.rpc.CreateCatalogIntegrationResponse;
 import ai.floedb.floecat.integration.rpc.DeleteCatalogIntegrationRequest;
@@ -84,7 +83,7 @@ class CatalogIntegrationsImplTest {
     service = new CatalogIntegrationsImpl();
     service.integrations = mock(CatalogIntegrationRepository.class);
     service.overlays = mock(CatalogOverlayRepository.class);
-    service.overlayReconciler = mock(CatalogOverlayReconciler.class);
+    service.cascadeDeletion = mock(CatalogIntegrationCascadeDeletion.class);
     service.markerStore = mock(MarkerStore.class);
     service.principal = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
@@ -1434,29 +1433,10 @@ class CatalogIntegrationsImplTest {
     var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
     var integration = CatalogIntegration.newBuilder().setResourceId(integrationId).build();
     var integrationMeta = MutationMeta.newBuilder().setPointerVersion(7L).build();
-    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
-    var catalogId = id("catalog", ResourceKind.RK_CATALOG);
-    var overlay =
-        CatalogOverlay.newBuilder()
-            .setResourceId(overlayId)
-            .setCatalogId(catalogId)
-            .setIntegrationId(integrationId)
-            .build();
-    var overlayMeta = MutationMeta.newBuilder().setPointerVersion(3L).build();
     when(service.integrations.getByIdWithMeta(integrationId))
         .thenReturn(Optional.of(new ResourceWithMeta<>(integration, integrationMeta)));
-    when(service.integrations.beginCascadeDeletion(integrationId, 7L)).thenReturn(true);
-    when(service.overlays.listByIntegrationWithMetaConsistent(
-            eq("acct"), eq("integration"), eq(100), eq(""), any()))
-        .thenReturn(List.of(new ResourceWithMeta<>(overlay, overlayMeta)), List.of());
-    when(service.overlays.beginDeletion(overlayId, 3L)).thenReturn(true);
-    when(service.overlays.deletionFenceVersion(overlayId)).thenReturn(1L);
-    when(service.overlays.deleteWithFence(overlayId, 3L, 1L)).thenReturn(true);
-    when(service.overlays.countByIntegration("acct", "integration")).thenReturn(0);
-    when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId)).thenReturn(4L);
-    when(service.integrations.cascadeDeletionFenceVersion(integrationId)).thenReturn(1L);
-    when(service.integrations.deleteWithPreconditionForCascadeDeletion(integrationId, 7L, 4L, 1L))
-        .thenReturn(true);
+    when(service.cascadeDeletion.delete(integrationId, integrationMeta))
+        .thenReturn(integrationMeta);
 
     service
         .deleteCatalogIntegration(
@@ -1467,12 +1447,7 @@ class CatalogIntegrationsImplTest {
         .await()
         .indefinitely();
 
-    verify(service.integrations).beginCascadeDeletion(integrationId, 7L);
-    verify(service.overlays).beginDeletion(overlayId, 3L);
-    verify(service.overlayReconciler).retireMaterializedResources(overlay);
-    verify(service.overlays).deleteWithFence(overlayId, 3L, 1L);
-    verify(service.integrations)
-        .deleteWithPreconditionForCascadeDeletion(integrationId, 7L, 4L, 1L);
+    verify(service.cascadeDeletion).delete(integrationId, integrationMeta);
     verify(service.integrations, never())
         .deleteWithPreconditionAndOverlayMarker(any(), anyLong(), anyLong());
   }

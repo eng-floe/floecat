@@ -13,9 +13,8 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.CatalogIntegrationKey;
 import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
-import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
+import ai.floedb.floecat.service.repo.util.DurableDeletionFence;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta;
@@ -156,33 +155,22 @@ public class CatalogIntegrationRepository {
         expectedMarkerVersion == 0L ? Map.of() : Map.of(marker, expectedMarkerVersion));
   }
 
-  public boolean beginCascadeDeletion(ResourceId integrationId, long expectedPointerVersion) {
-    if (expectedPointerVersion <= 0L) return false;
-    String canonical =
-        Keys.catalogIntegrationPointerById(integrationId.getAccountId(), integrationId.getId());
-    String fence =
-        Keys.catalogIntegrationDeletionMarker(integrationId.getAccountId(), integrationId.getId());
-    if (pointerStore.get(fence).isPresent()) {
-      return pointerStore
-          .get(canonical)
-          .map(pointer -> pointer.getVersion() == expectedPointerVersion)
-          .orElse(false);
-    }
-    return pointerStore.compareAndSetBatch(
-        List.of(
-            new PointerStore.CasCheck(canonical, expectedPointerVersion),
-            AccountDeletionFence.checkForAccountWrite(integrationId.getAccountId(), fence),
-            new PointerStore.CasUpsert(
-                fence, 0L, PointerReferences.opaqueMarkerPointer(fence, fence, 1L))));
+  public Optional<DurableDeletionFence.Fence> acquireCascadeDeletionFence(
+      ResourceId integrationId, long expectedPointerVersion) {
+    return DurableDeletionFence.acquire(
+        pointerStore,
+        integrationId.getAccountId(),
+        Keys.catalogIntegrationPointerById(integrationId.getAccountId(), integrationId.getId()),
+        Keys.catalogIntegrationDeletionMarker(integrationId.getAccountId(), integrationId.getId()),
+        expectedPointerVersion);
   }
 
-  public long cascadeDeletionFenceVersion(ResourceId integrationId) {
+  public boolean cascadeDeletionInProgress(ResourceId integrationId) {
     return pointerStore
         .get(
             Keys.catalogIntegrationDeletionMarker(
                 integrationId.getAccountId(), integrationId.getId()))
-        .map(ai.floedb.floecat.common.rpc.Pointer::getVersion)
-        .orElse(0L);
+        .isPresent();
   }
 
   public boolean deleteWithPreconditionForCascadeDeletion(

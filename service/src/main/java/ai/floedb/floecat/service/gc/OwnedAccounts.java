@@ -96,7 +96,7 @@ public class OwnedAccounts {
     return owns(accountId.getId()) ? accounts.getById(accountId) : Optional.empty();
   }
 
-  private boolean owns(String accountId) {
+  public boolean owns(String accountId) {
     Optional<Ownership.Permit> permit = ownership.acquire(accountId, Ownership.Access.WRITE);
     permit.ifPresent(Ownership.Permit::close);
     return permit.isPresent();

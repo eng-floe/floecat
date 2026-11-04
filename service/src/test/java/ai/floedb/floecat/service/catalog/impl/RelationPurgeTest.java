@@ -191,6 +191,50 @@ class RelationPurgeTest {
   }
 
   @Test
+  void purgeViewStateDeletesHintsAndAcknowledgesItsMarker() {
+    var pointers = new InMemoryPointerStore();
+    var purge = purge(pointers);
+    ResourceId view =
+        ResourceId.newBuilder()
+            .setAccountId("account")
+            .setId("view")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    String hint = Keys.relationHintsPointer("account", "view", "engine", "1");
+    String otherHint = Keys.relationHintsPointer("account", "other", "engine", "1");
+    String marker = Keys.viewPurgePointer("account", "view");
+    put(pointers, hint);
+    put(pointers, otherHint);
+    put(pointers, marker);
+
+    assertTrue(purge.purgeViewState(view));
+
+    assertTrue(pointers.get(hint).isEmpty());
+    assertTrue(pointers.get(marker).isEmpty(), "purge marker should be acknowledged");
+    assertTrue(pointers.get(otherHint).isPresent());
+    verify(purge.hints).evictRelation(view);
+  }
+
+  @Test
+  void purgeViewStateLeavesARecreatedViewsHintsAlone() {
+    var pointers = new InMemoryPointerStore();
+    var purge = purge(pointers);
+    ResourceId view =
+        ResourceId.newBuilder()
+            .setAccountId("account")
+            .setId("view")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    String hint = Keys.relationHintsPointer("account", "view", "engine", "1");
+    put(pointers, Keys.viewPointerById("account", "view"));
+    put(pointers, hint);
+
+    assertFalse(purge.purgeViewState(view), "no marker and a live row: nothing is owed");
+
+    assertTrue(pointers.get(hint).isPresent());
+  }
+
+  @Test
   void purgeTableStateKeepsItsMarkerWhenCleanupFails() {
     String accountId = "account";
     String tableId = "123e4567-e89b-12d3-a456-426614174000";

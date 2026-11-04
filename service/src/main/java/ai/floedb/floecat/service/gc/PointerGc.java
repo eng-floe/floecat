@@ -99,8 +99,6 @@ public class PointerGc {
     int missingBlobs = 0;
     int staleSecondaries = 0;
 
-    String acct = encode(accountId);
-
     List<String> tableIds = new ArrayList<>();
 
     Result tablesById =
@@ -276,7 +274,8 @@ public class PointerGc {
               return key != null
                   && (key.contains(Keys.SEG_NAMESPACE_BY_PATH)
                       || key.contains(Keys.SEG_TABLES_BY_NAME)
-                      || key.contains(Keys.SEG_VIEWS_BY_NAME));
+                      || key.contains(Keys.SEG_VIEWS_BY_NAME)
+                      || key.contains("/relations/by-name/"));
             },
             nowMs,
             minAgeMs);
@@ -521,9 +520,5 @@ public class PointerGc {
     } catch (NumberFormatException e) {
       return 0L;
     }
-  }
-
-  private static String encode(String value) {
-    return Keys.encodeSegment(value);
   }
 }

@@ -221,15 +221,15 @@ final class CatalogCliSupport {
       }
       case "delete" -> {
         if (args.size() < 2) {
-          out.println("usage: catalog delete <display_name|id> [--require-empty] [--etag <etag>]");
+          out.println("usage: catalog delete <display_name|id> [--cascade] [--etag <etag>]");
           return;
         }
-        boolean requireEmpty = args.contains("--require-empty");
+        boolean cascade = args.contains("--cascade");
         var deleteBuilder =
             DeleteCatalogRequest.newBuilder()
                 .setCatalogId(
                     resolveCatalogId(Quotes.unquote(args.get(1)), directory, getCurrentAccountId))
-                .setRequireEmpty(requireEmpty);
+                .setCascade(cascade);
         Precondition precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) {
           deleteBuilder.setPrecondition(precondition);

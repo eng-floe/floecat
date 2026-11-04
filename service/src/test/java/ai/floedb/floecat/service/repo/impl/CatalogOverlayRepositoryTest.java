@@ -98,14 +98,13 @@ class CatalogOverlayRepositoryTest {
     var overlay = overlay("overlay", "integration", "catalog");
     overlays.create(overlay);
 
-    assertTrue(overlays.beginDeletion(overlay.getResourceId(), 1L));
+    var fence = overlays.acquireDeletionFence(overlay.getResourceId(), 1L).orElseThrow();
     assertTrue(
         overlays
             .updateWithMetaUnlessIntegrationDeleting(
                 overlay.toBuilder().setDisplayName("renamed").build(), 1L)
             .isEmpty());
-    long fenceVersion = overlays.deletionFenceVersion(overlay.getResourceId());
-    assertTrue(overlays.deleteWithFence(overlay.getResourceId(), 1L, fenceVersion));
+    assertTrue(overlays.deleteWithFence(overlay.getResourceId(), 1L, fence.version()));
 
     assertTrue(overlays.getById(overlay.getResourceId()).isEmpty());
     assertEquals(0, overlays.countByIntegration("account", "integration"));
@@ -126,7 +125,7 @@ class CatalogOverlayRepositoryTest {
         Map.of(
             Keys.catalogIntegrationOverlaysMarker("account", "old-integration"), 0L,
             Keys.catalogOverlaysMarker("account", "old-catalog"), 0L));
-    assertTrue(overlays.beginDeletion(current.getResourceId(), 1L));
+    assertTrue(overlays.acquireDeletionFence(current.getResourceId(), 1L).isPresent());
     var replacement = overlay("new-overlay", "new-integration", "new-catalog");
 
     assertTrue(
@@ -150,7 +149,7 @@ class CatalogOverlayRepositoryTest {
     assertEquals(1, overlays.countByIntegration("account", "new-integration"));
     assertEquals(0, overlays.countByCatalog("account", "old-catalog"));
     assertEquals(1, overlays.countByCatalog("account", "new-catalog"));
-    assertEquals(0L, overlays.deletionFenceVersion(current.getResourceId()));
+    assertFalse(overlays.deletionInProgress(current.getResourceId()));
   }
 
   @Test

@@ -463,23 +463,17 @@ public final class TestSupport {
   public static void deleteNamespace(
       NamespaceServiceGrpc.NamespaceServiceBlockingStub mutation,
       ResourceId nsId,
-      boolean requireEmpty) {
+      boolean cascade) {
     mutation.deleteNamespace(
-        DeleteNamespaceRequest.newBuilder()
-            .setNamespaceId(nsId)
-            .setRequireEmpty(requireEmpty)
-            .build());
+        DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).setCascade(cascade).build());
   }
 
   public static void deleteCatalog(
       CatalogServiceGrpc.CatalogServiceBlockingStub mutation,
       ResourceId catalogId,
-      boolean requireEmpty) {
+      boolean cascade) {
     mutation.deleteCatalog(
-        DeleteCatalogRequest.newBuilder()
-            .setCatalogId(catalogId)
-            .setRequireEmpty(requireEmpty)
-            .build());
+        DeleteCatalogRequest.newBuilder().setCatalogId(catalogId).setCascade(cascade).build());
   }
 
   public static ai.floedb.floecat.common.rpc.Error unpackMcError(StatusRuntimeException ex)

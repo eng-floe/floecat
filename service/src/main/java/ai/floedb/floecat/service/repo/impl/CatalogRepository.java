@@ -23,7 +23,9 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
+import ai.floedb.floecat.service.repo.util.DurableDeletionFence;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -32,7 +34,9 @@ import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 
 @ApplicationScoped
@@ -42,9 +46,11 @@ public class CatalogRepository {
   public record CatalogRef(ResourceId id, String name) {}
 
   private final GenericResourceRepository<Catalog, CatalogKey> repo;
+  private final PointerStore pointerStore;
 
   public CatalogRepository(PointerStore pointerStore, BlobStore blobStore) {
     this(
+        pointerStore,
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
@@ -55,13 +61,16 @@ public class CatalogRepository {
   }
 
   @Inject
-  public CatalogRepository(MetadataRepositoryFactory repositories) {
+  public CatalogRepository(PointerStore pointerStore, MetadataRepositoryFactory repositories) {
     this(
+        pointerStore,
         repositories.create(
             Schemas.CATALOG, Catalog::parseFrom, Catalog::toByteArray, "application/x-protobuf"));
   }
 
-  private CatalogRepository(GenericResourceRepository<Catalog, CatalogKey> repo) {
+  private CatalogRepository(
+      PointerStore pointerStore, GenericResourceRepository<Catalog, CatalogKey> repo) {
+    this.pointerStore = pointerStore;
     this.repo = repo;
   }
 
@@ -85,7 +94,14 @@ public class CatalogRepository {
   }
 
   public boolean update(Catalog catalog, long expectedPointerVersion) {
-    return repo.update(catalog, expectedPointerVersion);
+    String fence =
+        Keys.catalogDeletionMarker(
+            catalog.getResourceId().getAccountId(), catalog.getResourceId().getId());
+    return repo.updateWithMetaWhilePointersMatchAndBumpMarkers(
+            catalog,
+            expectedPointerVersion,
+            new PointerConditions(Map.of(), Set.of(fence), Map.of()))
+        .isPresent();
   }
 
   public boolean delete(ResourceId catalogResourceId) {
@@ -106,11 +122,51 @@ public class CatalogRepository {
    */
   public boolean deleteWhileChildSetsUnchanged(
       ResourceId catalogId, long expectedPointerVersion, MarkerStore.MarkerRemoval markers) {
+    String fence = Keys.catalogDeletionMarker(catalogId.getAccountId(), catalogId.getId());
+    return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
+        new CatalogKey(catalogId.getAccountId(), catalogId.getId()),
+        expectedPointerVersion,
+        markers.conditions().and(new PointerConditions(Map.of(), Set.of(fence), Map.of())),
+        markers.toDelete());
+  }
+
+  public Optional<DurableDeletionFence.Fence> acquireCascadeDeletionFence(
+      ResourceId catalogId, long expectedPointerVersion) {
+    return DurableDeletionFence.acquire(
+        pointerStore,
+        catalogId.getAccountId(),
+        Keys.catalogPointerById(catalogId.getAccountId(), catalogId.getId()),
+        Keys.catalogDeletionMarker(catalogId.getAccountId(), catalogId.getId()),
+        expectedPointerVersion);
+  }
+
+  public boolean cascadeDeletionInProgress(ResourceId catalogId) {
+    return pointerStore
+        .get(Keys.catalogDeletionMarker(catalogId.getAccountId(), catalogId.getId()))
+        .isPresent();
+  }
+
+  public boolean releaseCascadeDeletionFence(ResourceId catalogId, long expectedFenceVersion) {
+    return pointerStore.compareAndDelete(
+        Keys.catalogDeletionMarker(catalogId.getAccountId(), catalogId.getId()),
+        expectedFenceVersion);
+  }
+
+  /** Removes the catalog, its child-set markers, and its durable cascade fence atomically. */
+  public boolean deleteForCascade(
+      ResourceId catalogId,
+      long expectedPointerVersion,
+      long expectedFenceVersion,
+      MarkerStore.MarkerRemoval markers) {
+    if (expectedFenceVersion <= 0L) return false;
+    String fence = Keys.catalogDeletionMarker(catalogId.getAccountId(), catalogId.getId());
+    Map<String, Long> deletes = new java.util.LinkedHashMap<>(markers.toDelete());
+    deletes.put(fence, expectedFenceVersion);
     return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
         new CatalogKey(catalogId.getAccountId(), catalogId.getId()),
         expectedPointerVersion,
         markers.conditions(),
-        markers.toDelete());
+        Map.copyOf(deletes));
   }
 
   public Optional<Catalog> getById(ResourceId catalogResourceId) {
