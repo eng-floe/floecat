@@ -44,12 +44,20 @@ public final class MergedBound {
 
   /**
    * Whether a contributor of {@code values} values, {@code nulls} NULLs and {@code nans} NaNs (each
-   * null when not counted) may hold a value a bound must cover: false only when its counts show
-   * nothing but NULLs and NaNs. A count of no values alone does not: a partial merge counts only
-   * the files that reported the column.
+   * null when not counted) may hold a value a bound must cover: false only when its counts are
+   * valid and its NULLs and NaNs are exactly its values. A count of no values alone does not show
+   * it: a partial merge counts only the files that reported the column. A negative, overflowing or
+   * inconsistent count shows nothing.
    */
   public static boolean mayHoldValues(Long values, Long nulls, Long nans) {
-    return values == null || nulls == null || values > nulls + (nans == null ? 0L : nans);
+    if (values == null || nulls == null || values < 0 || nulls < 0 || (nans != null && nans < 0)) {
+      return true;
+    }
+    try {
+      return values != Math.addExact(nulls, nans == null ? 0L : nans);
+    } catch (ArithmeticException overflow) {
+      return true;
+    }
   }
 
   /**

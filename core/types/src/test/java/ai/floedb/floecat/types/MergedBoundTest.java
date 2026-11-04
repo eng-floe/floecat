@@ -18,6 +18,7 @@ package ai.floedb.floecat.types;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -42,6 +43,18 @@ class MergedBoundTest {
     assertTrue(MergedBound.mayHoldValues(0L, null, null));
     assertNull(
         withUnboundedContributor.value(), "the unbounded contributor's values may lie below");
+  }
+
+  @Test
+  void onlyValidCountsOfNothingButNullsAndNansShowAContributorHoldsNoValues() {
+    assertFalse(MergedBound.mayHoldValues(5L, 3L, 2L));
+    assertFalse(MergedBound.mayHoldValues(5L, 5L, null));
+    // Negative, inconsistent or overflowing counts show nothing.
+    assertTrue(MergedBound.mayHoldValues(-1L, 0L, null));
+    assertTrue(MergedBound.mayHoldValues(5L, -1L, null));
+    assertTrue(MergedBound.mayHoldValues(5L, 3L, -1L));
+    assertTrue(MergedBound.mayHoldValues(5L, 6L, null));
+    assertTrue(MergedBound.mayHoldValues(5L, Long.MAX_VALUE, 1L));
   }
 
   @Test
