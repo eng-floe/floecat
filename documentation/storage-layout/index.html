@@ -1937,10 +1937,12 @@ together or neither does:</p>
   delete namespace ---------+------------------------------+
 </code></pre></div>
 <p>A writer that loses its assertion retries; one that keeps losing fails with a retryable abort.</p>
-<p>An overlay references an existing Catalog. Its <code>by-integration</code> and <code>by-catalog</code> dependency
-pointers are written and removed atomically with the overlay resource. Fixed generation markers on
-both parents close create/delete races, and the per-overlay deletion marker fences reconciliation
-while an overlay is retired. Catalog and overlay names and lifecycles remain independent.</p>
+<p>An overlay references a supplied or automatically created Catalog. Its <code>by-integration</code> and
+<code>by-catalog</code> dependency pointers are written and removed atomically with the overlay resource. An
+automatically created Catalog is written in that same create batch and removed in the owning
+Overlay's final fenced delete batch after the shared catalog cascade driver has removed its
+namespaces and prepared its durable catalog fence. Fixed generation markers on both parents close
+create/delete races, and the per-overlay deletion marker fences reconciliation during deletion.</p>
 <p>Catalog integration secret payloads are stored outside the resource blob through SecretsManager:</p>
 <div class="highlight"><pre><span></span><code>accounts/{account_id}/catalog-integrations/{integration_id}.credentials.{credential_generation}
 </code></pre></div>

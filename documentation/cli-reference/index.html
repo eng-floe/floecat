@@ -1762,12 +1762,12 @@ integration delete &lt;name|id&gt; [--cascade] [--etag &lt;etag&gt;]
 overlays [--integration &lt;name|id&gt;]
 overlay list [--integration &lt;name|id&gt;]
 overlay get &lt;name|id&gt;
-overlay create &lt;name&gt; &lt;integration-name|id&gt; &lt;catalog-name|id&gt;
+overlay create &lt;name&gt; &lt;integration-name|id&gt; [catalog-name|id]
     [--include ns[,ns...]] [--exclude ns[,ns...]]
 overlay update &lt;name|id&gt; [--display &lt;name&gt;]
     [--include ns[,ns...]] [--exclude ns[,ns...]] [--etag &lt;etag&gt;]
 overlay reconcile &lt;name|id&gt; [--etag &lt;etag&gt;]
-overlay delete &lt;name|id&gt; [--etag &lt;etag&gt;]
+overlay delete &lt;name|id&gt; [--cascade] [--etag &lt;etag&gt;]
 
 connectors
 connector list [--kind &lt;KIND&gt;]
