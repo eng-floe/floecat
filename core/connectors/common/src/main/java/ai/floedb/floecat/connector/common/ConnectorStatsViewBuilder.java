@@ -53,7 +53,7 @@ public final class ConnectorStatsViewBuilder {
 
     return TableValueStats.newBuilder()
         .setUpstream(upstream)
-        .setRowCount(result.totalRowCount())
+        .setRowCount(result.liveRowCount())
         .setDataFileCount(result.fileCount())
         .setTotalSizeBytes(result.totalSizeBytes())
         .build();
@@ -284,7 +284,9 @@ public final class ConnectorStatsViewBuilder {
               // delete files in Iceberg.
               fa.equalityFieldIds() == null ? List.of() : fa.equalityFieldIds(),
               fa.sequenceNumber(),
-              java.util.Collections.unmodifiableList(cols)));
+              java.util.Collections.unmodifiableList(cols),
+              null,
+              fa.liveRowCount()));
     }
 
     return out;

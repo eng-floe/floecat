@@ -95,6 +95,43 @@ class ConnectorStatsViewBuilderTest {
   }
 
   @Test
+  void toTableValueStats_countsTheRowsTheDeletesLeave() {
+    StatsEngine.Result<String> result =
+        new StatsEngine.Result<>() {
+          @Override
+          public long totalRowCount() {
+            return 10;
+          }
+
+          @Override
+          public long liveRowCount() {
+            return 7;
+          }
+
+          @Override
+          public long totalSizeBytes() {
+            return 0;
+          }
+
+          @Override
+          public long fileCount() {
+            return 1;
+          }
+
+          @Override
+          public Map<String, StatsEngine.ColumnAgg> columns() {
+            return Map.of();
+          }
+        };
+
+    assertEquals(
+        7L,
+        ConnectorStatsViewBuilder.toTableValueStats(
+                1L, 0L, ai.floedb.floecat.catalog.rpc.TableFormat.TF_ICEBERG, result)
+            .getRowCount());
+  }
+
+  @Test
   void toColumnStatsView_populatesColumnRefFields() {
     Map<Integer, StatsEngine.ColumnAgg> cols = new LinkedHashMap<>();
     cols.put(10, new Agg(100L, 2L, 0L, null, null, 7L, null));

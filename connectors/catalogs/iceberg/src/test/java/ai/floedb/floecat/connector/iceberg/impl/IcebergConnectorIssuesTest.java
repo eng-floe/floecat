@@ -587,6 +587,12 @@ class IcebergConnectorIssuesTest {
       assertEquals(
           planned.get(file.getFilePath()),
           file.getAppliedDeletes().getFilePathsList().stream().sorted().toList());
+      // A file without deletes keeps every row; a position delete file does not say how many.
+      if (file.getAppliedDeletes().getFilePathsCount() == 0) {
+        assertEquals(file.getRowCount(), file.getLiveRowCount(), file.getFilePath());
+      } else {
+        assertFalse(file.hasLiveRowCount(), file.getFilePath());
+      }
     }
   }
 

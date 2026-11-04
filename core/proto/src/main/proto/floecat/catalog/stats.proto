@@ -233,6 +233,8 @@ message TargetStatsRecord {
 
 message TableValueStats {
   UpstreamStamp upstream = 1;
+  // The rows the table's deletes leave: each data file's live_row_count when known, else its
+  // row_count.
   int64 row_count = 2;
   int64 data_file_count = 3;
   int64 total_size_bytes = 4;
@@ -319,6 +321,8 @@ message FileTargetStats {
   // For a data file: the delete files that apply to it, when its producer knows them; empty when
   // none do. Absent when unknown, so every delete file of the snapshot may apply.
   AppliedDeletes applied_deletes = 13;
+  // For a data file: the rows its deletes leave, when its producer knows them.
+  optional int64 live_row_count = 14;
 }
 
 // Delete files, by the file_path of their FileTargetStats.

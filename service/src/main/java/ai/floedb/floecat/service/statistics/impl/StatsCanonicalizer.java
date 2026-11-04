@@ -159,6 +159,9 @@ final class StatsCanonicalizer {
       c.scalar("applied_delete_count", deletes.size());
       c.list("applied_deletes", deletes);
     }
+    if (stats.hasLiveRowCount()) {
+      c.scalar("live_row_count", stats.getLiveRowCount());
+    }
 
     var cols = new ArrayList<>(stats.getColumnsList());
     cols.sort(

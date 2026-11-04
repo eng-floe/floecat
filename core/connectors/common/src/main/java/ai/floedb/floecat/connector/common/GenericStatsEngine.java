@@ -110,7 +110,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
           new ColAcc(logicalTypeFor(column).orElse(null), columnNameFor(column).orElse(null)));
     }
 
-    long files = 0, rows = 0, bytes = 0;
+    long files = 0, rows = 0, liveRows = 0, bytes = 0;
 
     // Column names are not unique across a nested schema: Iceberg exposes leaf names, so struct
     // fields such as a.name and b.name collide. The NDV/avg-width providers are name-keyed, so a
@@ -193,6 +193,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     for (PlannedFile<K> file : planner) {
       files++;
       rows += file.rowCount();
+      liveRows += file.rowsAfterDeletes();
       bytes += file.sizeBytes();
 
       for (var column : acc.columns.entrySet()) {
@@ -287,7 +288,8 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
               fileCols,
               file.partitionDataJson(),
               file.partitionSpecId(),
-              file.sequenceNumber()));
+              file.sequenceNumber(),
+              file.liveRowCount()));
     }
 
     final Map<K, ColumnAgg> out = new LinkedHashMap<>(acc.columns.size());
@@ -301,6 +303,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
     return new ResultImpl<>(
         rows,
+        liveRows,
         bytes,
         files,
         Collections.unmodifiableMap(out),
@@ -428,6 +431,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     private final String partitionDataJson;
     private final int partitionSpecId;
     private final Long sequenceNumber;
+    private final Long liveRowCount;
 
     FileAggImpl(
         String path,
@@ -437,7 +441,8 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
         Map<K, ColumnAgg> columns,
         String partitionDataJson,
         int partitionSpecId,
-        Long sequenceNumber) {
+        Long sequenceNumber,
+        Long liveRowCount) {
       this.path = path;
       this.format = format;
       this.rowCount = rowCount;
@@ -446,6 +451,12 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       this.partitionDataJson = partitionDataJson;
       this.partitionSpecId = partitionSpecId;
       this.sequenceNumber = sequenceNumber;
+      this.liveRowCount = liveRowCount;
+    }
+
+    @Override
+    public Long liveRowCount() {
+      return liveRowCount;
     }
 
     @Override
@@ -607,14 +618,21 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
   private static final class ResultImpl<K> implements Result<K> {
     private final long rows;
+    private final long liveRows;
     private final long bytes;
     private final long files;
     private final Map<K, ColumnAgg> cols;
     private final List<FileAgg<K>> fileAggs;
 
     ResultImpl(
-        long rows, long bytes, long files, Map<K, ColumnAgg> cols, List<FileAgg<K>> fileAggs) {
+        long rows,
+        long liveRows,
+        long bytes,
+        long files,
+        Map<K, ColumnAgg> cols,
+        List<FileAgg<K>> fileAggs) {
       this.rows = rows;
+      this.liveRows = liveRows;
       this.bytes = bytes;
       this.files = files;
       this.cols = cols;
@@ -624,6 +642,11 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     @Override
     public long totalRowCount() {
       return rows;
+    }
+
+    @Override
+    public long liveRowCount() {
+      return liveRows;
     }
 
     @Override

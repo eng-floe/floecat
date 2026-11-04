@@ -739,7 +739,8 @@ public interface FloecatConnector extends Closeable {
 
   /**
    * A file's statistics. For a data file, {@code appliedDeletes} names the delete files, by path,
-   * that apply to it, or is null when unknown, so every delete file of the snapshot may apply.
+   * that apply to it, or is null when unknown, so every delete file of the snapshot may apply; and
+   * {@code liveRowCount} is the rows its deletes leave, or null when unknown.
    */
   record FileColumnStatsView(
       String filePath,
@@ -752,13 +753,42 @@ public interface FloecatConnector extends Closeable {
       List<Integer> equalityFieldIds,
       Long sequenceNumber,
       List<ColumnStatsView> columns,
-      List<String> appliedDeletes) {
+      List<String> appliedDeletes,
+      Long liveRowCount) {
 
     public FileColumnStatsView {
       appliedDeletes = appliedDeletes == null ? null : List.copyOf(appliedDeletes);
     }
 
-    /** A file whose applicable delete files are unknown. */
+    /** A file whose live rows are unknown. */
+    public FileColumnStatsView(
+        String filePath,
+        String fileFormat,
+        long rowCount,
+        long sizeBytes,
+        FileContent fileContent,
+        String partitionDataJson,
+        int partitionSpecId,
+        List<Integer> equalityFieldIds,
+        Long sequenceNumber,
+        List<ColumnStatsView> columns,
+        List<String> appliedDeletes) {
+      this(
+          filePath,
+          fileFormat,
+          rowCount,
+          sizeBytes,
+          fileContent,
+          partitionDataJson,
+          partitionSpecId,
+          equalityFieldIds,
+          sequenceNumber,
+          columns,
+          appliedDeletes,
+          null);
+    }
+
+    /** A file whose applicable delete files and live rows are unknown. */
     public FileColumnStatsView(
         String filePath,
         String fileFormat,
@@ -781,6 +811,7 @@ public interface FloecatConnector extends Closeable {
           equalityFieldIds,
           sequenceNumber,
           columns,
+          null,
           null);
     }
 
@@ -797,7 +828,8 @@ public interface FloecatConnector extends Closeable {
           equalityFieldIds,
           sequenceNumber,
           columns,
-          appliedDeletes);
+          appliedDeletes,
+          liveRowCount);
     }
   }
 

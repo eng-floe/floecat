@@ -18,6 +18,10 @@ package ai.floedb.floecat.connector.common;
 
 import java.util.Map;
 
+/**
+ * A planned data file and its statistics. {@code liveRowCount} is the rows its deletes leave, or
+ * null when the planner does not know them.
+ */
 public record PlannedFile<K>(
     String path,
     String format,
@@ -31,8 +35,46 @@ public record PlannedFile<K>(
     String partitionDataJson,
     int partitionSpecId,
     Long sequenceNumber,
-    String contentIdentity) {
+    String contentIdentity,
+    Long liveRowCount) {
   public PlannedFile {
     contentIdentity = contentIdentity == null ? "" : contentIdentity.trim();
+  }
+
+  /** A planned data file whose live rows are unknown. */
+  public PlannedFile(
+      String path,
+      String format,
+      long rowCount,
+      long sizeBytes,
+      Map<K, Long> rowCounts,
+      Map<K, Long> nullCounts,
+      Map<K, Long> nanCounts,
+      Map<K, Object> lowerBounds,
+      Map<K, Object> upperBounds,
+      String partitionDataJson,
+      int partitionSpecId,
+      Long sequenceNumber,
+      String contentIdentity) {
+    this(
+        path,
+        format,
+        rowCount,
+        sizeBytes,
+        rowCounts,
+        nullCounts,
+        nanCounts,
+        lowerBounds,
+        upperBounds,
+        partitionDataJson,
+        partitionSpecId,
+        sequenceNumber,
+        contentIdentity,
+        null);
+  }
+
+  /** The rows its deletes leave when known, else its rows. */
+  public long rowsAfterDeletes() {
+    return liveRowCount == null ? rowCount : liveRowCount;
   }
 }

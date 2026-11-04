@@ -174,6 +174,7 @@ final class DeltaPlanner implements Planner<String> {
             long sizeBytes = fs.getSize();
 
             long rowCount = 0L;
+            boolean rowCountKnown = false;
             Map<String, Long> rowCounts = null;
             Map<String, Long> nullCounts = null;
             Map<String, Long> nanCounts = null;
@@ -214,6 +215,7 @@ final class DeltaPlanner implements Planner<String> {
                 DataFileStatistics stats = optStats.get();
 
                 rowCount = stats.getNumRecords();
+                rowCountKnown = true;
 
                 Map<Column, Long> nc = stats.getNullCount();
                 if (nc != null && !nc.isEmpty()) {
@@ -279,6 +281,7 @@ final class DeltaPlanner implements Planner<String> {
                                 parquetPath, fieldId, deltaSchema, columnSet));
 
                 rowCount = bfs.rowCount;
+                rowCountKnown = true;
                 nullCounts = new LinkedHashMap<>();
                 mins = new LinkedHashMap<>();
                 maxs = new LinkedHashMap<>();
@@ -319,7 +322,10 @@ final class DeltaPlanner implements Planner<String> {
                     contentIdentity(
                         add.getModificationTime(),
                         add.getBaseRowId().orElse(null),
-                        add.getDefaultRowCommitVersion().orElse(null))));
+                        add.getDefaultRowCommitVersion().orElse(null)),
+                    rowCountKnown
+                        ? liveRows(rowCount, add.getDeletionVector().orElse(null))
+                        : null));
           }
         }
       }
@@ -380,6 +386,13 @@ final class DeltaPlanner implements Planner<String> {
 
   List<DeletionVectorDescriptor> deletionVectors() {
     return Collections.unmodifiableList(diskDeletionVectors);
+  }
+
+  /** The rows a data file of {@code rowCount} rows keeps once its deletion vector applies. */
+  static long liveRows(long rowCount, DeletionVectorDescriptor deletionVector) {
+    return deletionVector == null
+        ? rowCount
+        : Math.max(0L, rowCount - deletionVector.getCardinality());
   }
 
   DeletionVectorDescriptor deletionVectorForFile(String filePath) {

@@ -343,6 +343,9 @@ public final class StatsProtoEmitter {
       if (fv.appliedDeletes() != null) {
         file.setAppliedDeletes(AppliedDeletes.newBuilder().addAllFilePaths(fv.appliedDeletes()));
       }
+      if (fv.liveRowCount() != null) {
+        file.setLiveRowCount(fv.liveRowCount());
+      }
       FileTargetStats fileStats = file.build();
 
       out.add(
@@ -463,6 +466,9 @@ public final class StatsProtoEmitter {
       if (fileView.appliedDeletes() != null) {
         file.setAppliedDeletes(
             AppliedDeletes.newBuilder().addAllFilePaths(fileView.appliedDeletes()));
+      }
+      if (fileView.liveRowCount() != null) {
+        file.setLiveRowCount(fileView.liveRowCount());
       }
 
       out.add(

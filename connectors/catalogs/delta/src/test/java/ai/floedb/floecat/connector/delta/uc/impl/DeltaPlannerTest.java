@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import io.delta.kernel.expressions.Column;
+import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
 import io.delta.kernel.internal.data.GenericRow;
 import io.delta.kernel.statistics.DataFileStatistics;
 import io.delta.kernel.types.IntegerType;
@@ -195,5 +196,13 @@ class DeltaPlannerTest {
     assertThat(DeltaPlanner.widenTruncatedMax(LocalDateTime.parse("2026-01-01T00:00:00.123")))
         .isEqualTo(LocalDateTime.parse("2026-01-01T00:00:00.124"));
     assertThat(DeltaPlanner.widenTruncatedMax(7L)).isEqualTo(7L);
+  }
+
+  @Test
+  void aDataFileKeepsTheRowsItsDeletionVectorDoesNotRemove() {
+    var vector = new DeletionVectorDescriptor("u", "ab^-aqEH.-t@S}K{vb[*k^", Optional.of(1), 36, 2);
+
+    assertThat(DeltaPlanner.liveRows(10, vector)).isEqualTo(8L);
+    assertThat(DeltaPlanner.liveRows(10, null)).isEqualTo(10L);
   }
 }

@@ -263,6 +263,10 @@ class IcebergPlannerTest {
       assertThat(planner.deleteLocationsByDataFile())
           .containsEntry("mem://a.parquet", List.of("mem://d.parquet"))
           .containsEntry("mem://b.parquet", List.of());
+      // A position delete file does not say how many of a's rows it removes; b has none.
+      assertThat(liveRows(planner))
+          .containsEntry("mem://a.parquet", null)
+          .containsEntry("mem://b.parquet", 2L);
     }
 
     // A deletion vector's Puffin file holds other data files' vectors too, so its path does not
@@ -297,7 +301,15 @@ class IcebergPlannerTest {
             null,
             true)) {
       assertThat(planner.deleteLocationsByDataFile()).doesNotContainKey("mem://c.parquet");
+      // A deletion vector counts the rows it removes.
+      assertThat(liveRows(planner)).containsEntry("mem://c.parquet", 1L);
     }
+  }
+
+  private static Map<String, Long> liveRows(IcebergPlanner planner) {
+    Map<String, Long> out = new java.util.HashMap<>();
+    planner.iterator().forEachRemaining(file -> out.put(file.path(), file.liveRowCount()));
+    return out;
   }
 
   private static DataFile dataFile(PartitionSpec spec, String path) {

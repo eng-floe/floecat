@@ -69,6 +69,44 @@ class GenericStatsEngineTest {
   }
 
   @Test
+  void theSnapshotCountsTheRowsTheDeletesLeaveWhereAFileKnowsThem() {
+    var names = Map.of(1, "c");
+    var types = Map.of(1, LogicalType.of(LogicalKind.INT));
+    var withDeletes =
+        new PlannedFile<Integer>(
+            "s3://b/a.parquet",
+            "PARQUET",
+            10L,
+            1L,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            0,
+            null,
+            "",
+            7L);
+    var unknown =
+        new PlannedFile<Integer>(
+            "s3://b/b.parquet", "PARQUET", 5L, 1L, null, null, null, null, null, null, 0, null, "");
+
+    var result =
+        new GenericStatsEngine<>(
+                planner(Set.of(1), names, types, List.of(withDeletes, unknown)),
+                null,
+                null,
+                names,
+                types)
+            .compute();
+
+    assertEquals(15L, result.totalRowCount());
+    assertEquals(12L, result.liveRowCount());
+    assertEquals(7L, result.files().get(0).liveRowCount());
+  }
+
+  @Test
   void perFileStats_includesAllPlannerColumns_evenWhenMetricsAreSparse() {
     // Planner knows 3 columns: int (1), date (2), timestamp (3)
     var cols = Set.of(1, 2, 3);

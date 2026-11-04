@@ -115,6 +115,45 @@ class FileGroupTargetStatsRollupContractTest {
   }
 
   @Test
+  void aTableCountsTheRowsItsDeletesLeaveWhereAFileKnowsThem() {
+    TargetStatsRecord withDeletes = fileRecord(10, List.of());
+    withDeletes =
+        withDeletes.toBuilder()
+            .setFile(withDeletes.getFile().toBuilder().setLiveRowCount(7))
+            .build();
+
+    TargetStatsRecord table =
+        FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+                TABLE,
+                1L,
+                Set.of(FloecatConnector.StatsTargetKind.TABLE),
+                List.of(withDeletes, fileRecord(5, List.of())))
+            .stream()
+            .filter(TargetStatsRecord::hasTable)
+            .findFirst()
+            .orElseThrow();
+
+    assertEquals(12L, table.getTable().getRowCount());
+
+    // A file cannot keep more rows than it holds.
+    TargetStatsRecord impossible = fileRecord(10, List.of());
+    impossible =
+        impossible.toBuilder()
+            .setFile(impossible.getFile().toBuilder().setLiveRowCount(20))
+            .build();
+    assertEquals(
+        10L,
+        FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+                TABLE, 1L, Set.of(FloecatConnector.StatsTargetKind.TABLE), List.of(impossible))
+            .stream()
+            .filter(TargetStatsRecord::hasTable)
+            .findFirst()
+            .orElseThrow()
+            .getTable()
+            .getRowCount());
+  }
+
+  @Test
   void aNegativeZeroMinimumHasNoLegacySpelling() {
     ScalarStats zero =
         ScalarStats.newBuilder()

@@ -95,5 +95,8 @@ class TableStatisticsServiceImplFingerprintTest {
         .isNotEqualTo(StatsCanonicalizer.canonicalFingerprint(none));
     assertThat(StatsCanonicalizer.canonicalFingerprint(none))
         .isNotEqualTo(StatsCanonicalizer.canonicalFingerprint(one));
+    assertThat(StatsCanonicalizer.canonicalFingerprint(none))
+        .isNotEqualTo(
+            StatsCanonicalizer.canonicalFingerprint(none.toBuilder().setLiveRowCount(3).build()));
   }
 }

@@ -179,7 +179,9 @@ public final class FileGroupTargetStatsRollup {
         continue;
       }
       metadata.add(record);
-      rowCount += Math.max(0L, file.getRowCount());
+      // The table counts the rows its deletes leave, where the file's producer knows them.
+      long rows = Math.max(0L, file.getRowCount());
+      rowCount += file.hasLiveRowCount() ? Math.clamp(file.getLiveRowCount(), 0L, rows) : rows;
       sizeBytes += Math.max(0L, file.getSizeBytes());
       dataFileCount++;
     }
