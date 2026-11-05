@@ -836,8 +836,8 @@ public class DeltaManifestMaterializer {
       return;
     }
     Object decoded = decodeValue(field.type().asPrimitiveType(), valueNode);
-    if (isMax && decoded instanceof String string) {
-      decoded = DeltaStringBounds.max(string);
+    if (decoded instanceof String string) {
+      decoded = isMax ? DeltaStringBounds.max(string) : DeltaStringBounds.min(string);
     }
     if (decoded == null) {
       return;

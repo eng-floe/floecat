@@ -19,9 +19,14 @@ package ai.floedb.floecat.connector.common;
 public final class DeltaStringBounds {
   private DeltaStringBounds() {}
 
+  /** {@code min}, or null when it holds U+FFFD. */
+  public static String min(String min) {
+    return holdsReplacement(min, min.length()) ? null : min;
+  }
+
   /**
    * {@code max}, or, when it ends in U+FFFD, the least string above every string starting with what
-   * precedes it; null when there is none.
+   * precedes it; null when there is none, or when it holds U+FFFD elsewhere.
    *
    * <p>Delta before 3.3.0 cuts a long maximum and ends it with U+FFFD, comparing UTF-16 code units,
    * so a character past the Basic Multilingual Plane, above U+FFFD in code point order, can follow
@@ -30,11 +35,14 @@ public final class DeltaStringBounds {
    */
   public static String max(String max) {
     if (!max.endsWith("\uFFFD")) {
-      return max;
+      return holdsReplacement(max, max.length()) ? null : max;
     }
     int end = max.length() - 1;
     if (end > 0 && max.charAt(end - 1) == '?') {
       end--;
+    }
+    if (holdsReplacement(max, end)) {
+      return null;
     }
     while (end > 0) {
       int codePoint = max.codePointBefore(end);
@@ -46,6 +54,14 @@ public final class DeltaStringBounds {
       }
     }
     return null;
+  }
+
+  /**
+   * Whether {@code s} holds U+FFFD before {@code end}: Delta's writers put it in place of bytes
+   * that are not UTF-8, which can order a bound on the wrong side of a value.
+   */
+  private static boolean holdsReplacement(String s, int end) {
+    return s.lastIndexOf('\uFFFD', end - 1) >= 0;
   }
 
   private static boolean isSurrogate(int codePoint) {

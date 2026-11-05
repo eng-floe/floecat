@@ -243,9 +243,7 @@ final class DeltaPlanner implements Planner<String> {
                     if (colName != null) {
                       var lt = nameToLogical.get(colName);
                       Object raw = (e.getValue() == null) ? null : e.getValue().getValue();
-                      raw = canonicalizeStatValue(lt, raw);
-                      Object typed = (lt == null) ? raw : LogicalComparators.normalize(lt, raw);
-                      mins.put(colName, typed);
+                      mins.put(colName, boundThatHolds(lt, raw, false));
                     }
                   }
                 }
@@ -258,7 +256,7 @@ final class DeltaPlanner implements Planner<String> {
                     if (colName != null) {
                       var lt = nameToLogical.get(colName);
                       Object raw = (e.getValue() == null) ? null : e.getValue().getValue();
-                      maxs.put(colName, maxThatHolds(lt, raw));
+                      maxs.put(colName, boundThatHolds(lt, raw, true));
                     }
                   }
                 }
@@ -852,19 +850,21 @@ final class DeltaPlanner implements Planner<String> {
   }
 
   /**
-   * The maximum {@code raw} Delta wrote of a column of type {@code lt}, as a bound that holds for
-   * every value, or null when none can.
+   * The minimum ({@code isMax} false) or maximum {@code raw} Delta wrote of a column of type {@code
+   * lt}, as a bound that holds for every value, or null when none can.
    */
-  static Object maxThatHolds(LogicalType lt, Object raw) {
-    Object max = canonicalizeStatValue(lt, raw);
-    if (max instanceof String string) {
-      max = DeltaStringBounds.max(string);
-      if (max == null) {
+  static Object boundThatHolds(LogicalType lt, Object raw, boolean isMax) {
+    Object bound = canonicalizeStatValue(lt, raw);
+    if (bound instanceof String string) {
+      bound = isMax ? DeltaStringBounds.max(string) : DeltaStringBounds.min(string);
+      if (bound == null) {
         return null;
       }
     }
-    max = widenTruncatedMax(max);
-    return (lt == null) ? max : LogicalComparators.normalize(lt, max);
+    if (isMax) {
+      bound = widenTruncatedMax(bound);
+    }
+    return (lt == null) ? bound : LogicalComparators.normalize(lt, bound);
   }
 
   /**

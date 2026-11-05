@@ -199,10 +199,10 @@ class DeltaPlannerTest {
   }
 
   @Test
-  void aStringMaximumIsMadeToHold() {
+  void stringBoundsAreMadeToHold() {
     LogicalType string = LogicalType.of(LogicalKind.STRING);
-    assertThat(DeltaPlanner.maxThatHolds(string, "aaa\uFFFD")).isEqualTo("aab");
-    assertThat(DeltaPlanner.maxThatHolds(string, "\uDBFF\uDFFF\uFFFD")).isNull();
+    assertThat(DeltaPlanner.boundThatHolds(string, "aaa\uFFFD", true)).isEqualTo("aab");
+    assertThat(DeltaPlanner.boundThatHolds(string, "a\uFFFD", false)).isNull();
   }
 
   @Test

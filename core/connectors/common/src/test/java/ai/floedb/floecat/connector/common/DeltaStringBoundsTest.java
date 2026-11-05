@@ -31,4 +31,13 @@ class DeltaStringBoundsTest {
     assertThat(DeltaStringBounds.max("\uDBFF\uDFFF\uFFFD")).isNull();
     assertThat(DeltaStringBounds.max("aaa\uD83D\uDE00")).isEqualTo("aaa\uD83D\uDE00");
   }
+
+  @Test
+  void aBoundHoldingTheReplacementCharacterElsewhereIsDropped() {
+    // Bytes 61 80 decoded leniently: "a" then U+FFFD, above them.
+    assertThat(DeltaStringBounds.min("a\uFFFD")).isNull();
+    assertThat(DeltaStringBounds.min("a")).isEqualTo("a");
+    assertThat(DeltaStringBounds.max("a\uFFFDb")).isNull();
+    assertThat(DeltaStringBounds.max("a\uFFFDb\uFFFD")).isNull();
+  }
 }
