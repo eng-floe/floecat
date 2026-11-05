@@ -24,7 +24,6 @@ import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -92,8 +91,7 @@ final class IcebergPlanner implements Planner<Integer> {
 
     Snapshot snap = table.snapshot(snapshotId);
     Integer snapSchemaId = snap != null ? snap.schemaId() : null;
-    int schemaId =
-        snapSchemaId != null && snapSchemaId > 0 ? snapSchemaId : table.schema().schemaId();
+    int schemaId = snapSchemaId != null ? snapSchemaId : table.schema().schemaId();
     this.schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
     this.specsById = table.specs();
     this.defaultSpec = table.spec();
@@ -325,10 +323,14 @@ final class IcebergPlanner implements Planner<Integer> {
     for (var column : raw.entrySet()) {
       Integer id = column.getKey();
       Type type = idToIceType.get(id);
+      if (type == null) {
+        logSkippedBound(id, null, "column not in the snapshot's schema");
+        continue;
+      }
       // Iceberg's Java library merges a file's row-group bounds comparing UUIDs as signed longs,
       // not by their unsigned bytes as its spec and Parquet do (apache/iceberg#14216), so a file's
       // UUID bounds can exclude values it holds, and nothing in them tells.
-      if (type != null && type.typeId() == Type.TypeID.UUID) {
+      if (type.typeId() == Type.TypeID.UUID) {
         logSkippedBound(id, type, "UUID bound Iceberg may have merged in signed order");
         continue;
       }
@@ -339,14 +341,7 @@ final class IcebergPlanner implements Planner<Integer> {
           logSkippedBound(id, type, "empty bound payload");
           continue;
         }
-        if (type != null) {
-          decoded = Conversions.fromByteBuffer(type, value);
-        } else {
-          ByteBuffer dup = value.duplicate();
-          byte[] bytes = new byte[dup.remaining()];
-          dup.get(bytes);
-          decoded = new String(bytes, StandardCharsets.UTF_8);
-        }
+        decoded = Conversions.fromByteBuffer(type, value);
       } catch (IllegalArgumentException
           | BufferUnderflowException
           | UnsupportedOperationException

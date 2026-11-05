@@ -24,6 +24,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -326,6 +327,13 @@ class IcebergPlannerTest {
 
   /** A planner of a table of schema {@code schema}. */
   private static IcebergPlanner plannerOf(Schema schema) {
+    return plannerOf(schema, schema);
+  }
+
+  /** A planner of a snapshot of schema {@code schema}, of a table now of schema {@code current}. */
+  private static IcebergPlanner plannerOf(Schema schema, Schema current) {
+    Map<Integer, Schema> schemas = new HashMap<>(Map.of(current.schemaId(), current));
+    schemas.put(schema.schemaId(), schema);
     Snapshot snapshot =
         (Snapshot)
             Proxy.newProxyInstance(
@@ -344,13 +352,29 @@ class IcebergPlannerTest {
                 (proxy, method, args) ->
                     switch (method.getName()) {
                       case "snapshot" -> snapshot;
-                      case "schema" -> schema;
-                      case "schemas" -> Map.of(schema.schemaId(), schema);
+                      case "schema" -> current;
+                      case "schemas" -> schemas;
                       case "specs" -> Map.of();
                       case "spec" -> null;
                       default -> throw new UnsupportedOperationException(method.getName());
                     });
     return new IcebergPlanner(table, 1L, Set.of(), Set.of(), null, false);
+  }
+
+  @Test
+  void aSnapshotOfSchemaZeroIsPlannedWithIt() {
+    // Column 2 was dropped after the snapshot was written: its bound is decoded as schema 0's
+    // string, and one of a column the snapshot's schema lacks is dropped.
+    Schema first =
+        new Schema(
+            0,
+            Types.NestedField.optional(1, "id", Types.LongType.get()),
+            Types.NestedField.optional(2, "s", Types.StringType.get()));
+    Schema current = new Schema(1, Types.NestedField.optional(1, "id", Types.LongType.get()));
+    try (IcebergPlanner planner = plannerOf(first, current)) {
+      assertThat(planner.decodeBounds(Map.of(2, utf8("a")))).containsEntry(2, "a");
+      assertThat(planner.decodeBounds(Map.of(3, utf8("a")))).isNull();
+    }
   }
 
   @Test
