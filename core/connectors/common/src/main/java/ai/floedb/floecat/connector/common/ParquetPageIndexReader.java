@@ -22,9 +22,6 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigInteger;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
@@ -39,12 +36,10 @@ import org.apache.parquet.column.page.DataPage;
 import org.apache.parquet.column.page.DictionaryPage;
 import org.apache.parquet.column.page.PageReadStore;
 import org.apache.parquet.column.page.PageReader;
-import org.apache.parquet.column.statistics.Statistics;
 import org.apache.parquet.format.PageHeader;
 import org.apache.parquet.format.PageType;
 import org.apache.parquet.format.Util;
 import org.apache.parquet.hadoop.ParquetFileReader;
-import org.apache.parquet.internal.column.columnindex.ColumnIndex;
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.SeekableInputStream;
 import org.apache.parquet.io.api.PrimitiveConverter;
@@ -358,23 +353,6 @@ public final class ParquetPageIndexReader {
     return sum > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) Math.max(0L, sum);
   }
 
-  private static Long nullIfNegative(long value) {
-    return value < 0L ? null : value;
-  }
-
-  private static Integer dictionaryPageCompressedSize(
-      org.apache.parquet.hadoop.metadata.ColumnChunkMetaData column,
-      Long dictionaryPageHeaderOffset) {
-    if (dictionaryPageHeaderOffset == null) {
-      return null;
-    }
-    long firstDataPageOffset = column.getFirstDataPageOffset();
-    if (firstDataPageOffset <= dictionaryPageHeaderOffset) {
-      return null;
-    }
-    return clampInt(firstDataPageOffset - dictionaryPageHeaderOffset);
-  }
-
   private static int clampInt(long value) {
     if (value <= 0L) {
       return 0;
@@ -489,7 +467,7 @@ public final class ParquetPageIndexReader {
     var pageReader = new SinglePageReader(dictionaryPage, dataPage);
     ColumnReader columnReader =
         new ColumnReaderImpl(descriptor, pageReader, new PrimitiveConverter() {}, parsedVersion);
-    MutableTypedStats stats = new MutableTypedStats(logicalType);
+    MutableTypedStats stats = new MutableTypedStats();
     int maxDefinitionLevel = descriptor.getMaxDefinitionLevel();
     for (int i = 0; i < expectedRows; i++) {
       if (columnReader.getCurrentDefinitionLevel() == maxDefinitionLevel) {
@@ -563,8 +541,6 @@ public final class ParquetPageIndexReader {
     private BigInteger maxDecimal128;
     private BigInteger minDecimal256;
     private BigInteger maxDecimal256;
-
-    private MutableTypedStats(LogicalTypeAnnotation logicalType) {}
 
     private void observe(
         ColumnReader columnReader,
@@ -668,452 +644,6 @@ public final class ParquetPageIndexReader {
     }
   }
 
-  private static TypedStats typedStats(
-      PrimitiveType primitiveType,
-      LogicalTypeAnnotation logicalType,
-      ColumnIndex columnIndex,
-      int pageIndex) {
-    if (columnIndex == null
-        || pageIndex < 0
-        || pageIndex >= columnIndex.getMinValues().size()
-        || pageIndex >= columnIndex.getMaxValues().size()) {
-      return TypedStats.empty();
-    }
-    ByteBuffer min = duplicate(columnIndex.getMinValues().get(pageIndex));
-    ByteBuffer max = duplicate(columnIndex.getMaxValues().get(pageIndex));
-    if (min == null || max == null) {
-      return TypedStats.empty();
-    }
-    if (logicalType instanceof LogicalTypeAnnotation.StringLogicalTypeAnnotation) {
-      return new TypedStats(
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          decodeUtf8(min),
-          decodeUtf8(max),
-          null,
-          null,
-          null,
-          null);
-    }
-    if (logicalType instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) {
-      return decimalTypedStats(primitiveType, min, max);
-    }
-    return switch (primitiveType.getPrimitiveTypeName()) {
-      case INT32 ->
-          new TypedStats(
-              readInt32(min),
-              readInt32(max),
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null);
-      case INT64 ->
-          new TypedStats(
-              null,
-              null,
-              readInt64(min),
-              readInt64(max),
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null);
-      case FLOAT ->
-          new TypedStats(
-              null,
-              null,
-              null,
-              null,
-              readFloat32(min),
-              readFloat32(max),
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null);
-      case DOUBLE ->
-          new TypedStats(
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              readFloat64(min),
-              readFloat64(max),
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null);
-      case BOOLEAN ->
-          new TypedStats(
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              readBoolean(min),
-              readBoolean(max),
-              null,
-              null,
-              null,
-              null,
-              null,
-              null);
-      default -> TypedStats.empty();
-    };
-  }
-
-  private static TypedStats typedStatsFromChunkStatistics(
-      PrimitiveType primitiveType, LogicalTypeAnnotation logicalType, Statistics<?> statistics) {
-    if (statistics == null || statistics.isEmpty()) {
-      return TypedStats.empty();
-    }
-    Object min = statistics.genericGetMin();
-    Object max = statistics.genericGetMax();
-    if (min == null || max == null) {
-      return TypedStats.empty();
-    }
-    if (logicalType instanceof LogicalTypeAnnotation.StringLogicalTypeAnnotation) {
-      return new TypedStats(
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          null,
-          min.toString(),
-          max.toString(),
-          null,
-          null,
-          null,
-          null);
-    }
-    if (logicalType instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) {
-      return switch (primitiveType.getPrimitiveTypeName()) {
-        case INT32 ->
-            new TypedStats(
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                toFixedLenBytes(((Number) min).intValue(), 16),
-                toFixedLenBytes(((Number) max).intValue(), 16),
-                null,
-                null);
-        case INT64 ->
-            new TypedStats(
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                toFixedLenBytes(((Number) min).longValue(), 16),
-                toFixedLenBytes(((Number) max).longValue(), 16),
-                null,
-                null);
-        default -> TypedStats.empty();
-      };
-    }
-    return switch (primitiveType.getPrimitiveTypeName()) {
-      case INT32 ->
-          new TypedStats(
-              ((Number) min).intValue(),
-              ((Number) max).intValue(),
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null);
-      case INT64 ->
-          new TypedStats(
-              null,
-              null,
-              ((Number) min).longValue(),
-              ((Number) max).longValue(),
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null);
-      case FLOAT ->
-          new TypedStats(
-              null,
-              null,
-              null,
-              null,
-              ((Number) min).floatValue(),
-              ((Number) max).floatValue(),
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null);
-      case DOUBLE ->
-          new TypedStats(
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              ((Number) min).doubleValue(),
-              ((Number) max).doubleValue(),
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null);
-      case BOOLEAN ->
-          new TypedStats(
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              (Boolean) min,
-              (Boolean) max,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null);
-      default -> TypedStats.empty();
-    };
-  }
-
-  private static TypedStats mergeTypedStats(TypedStats primary, TypedStats fallback) {
-    return new TypedStats(
-        primary.minI32() != null ? primary.minI32() : fallback.minI32(),
-        primary.maxI32() != null ? primary.maxI32() : fallback.maxI32(),
-        primary.minI64() != null ? primary.minI64() : fallback.minI64(),
-        primary.maxI64() != null ? primary.maxI64() : fallback.maxI64(),
-        primary.minF32() != null ? primary.minF32() : fallback.minF32(),
-        primary.maxF32() != null ? primary.maxF32() : fallback.maxF32(),
-        primary.minF64() != null ? primary.minF64() : fallback.minF64(),
-        primary.maxF64() != null ? primary.maxF64() : fallback.maxF64(),
-        primary.minBool() != null ? primary.minBool() : fallback.minBool(),
-        primary.maxBool() != null ? primary.maxBool() : fallback.maxBool(),
-        primary.minUtf8() != null ? primary.minUtf8() : fallback.minUtf8(),
-        primary.maxUtf8() != null ? primary.maxUtf8() : fallback.maxUtf8(),
-        primary.minDecimal128Unscaled() != null
-            ? primary.minDecimal128Unscaled()
-            : fallback.minDecimal128Unscaled(),
-        primary.maxDecimal128Unscaled() != null
-            ? primary.maxDecimal128Unscaled()
-            : fallback.maxDecimal128Unscaled(),
-        primary.minDecimal256Unscaled() != null
-            ? primary.minDecimal256Unscaled()
-            : fallback.minDecimal256Unscaled(),
-        primary.maxDecimal256Unscaled() != null
-            ? primary.maxDecimal256Unscaled()
-            : fallback.maxDecimal256Unscaled());
-  }
-
-  private static TypedStats decimalTypedStats(
-      PrimitiveType primitiveType, ByteBuffer min, ByteBuffer max) {
-    return switch (primitiveType.getPrimitiveTypeName()) {
-      case INT32 ->
-          new TypedStats(
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              toFixedLenBytes(readInt32(min), 16),
-              toFixedLenBytes(readInt32(max), 16),
-              null,
-              null);
-      case INT64 ->
-          new TypedStats(
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              toFixedLenBytes(readInt64(min), 16),
-              toFixedLenBytes(readInt64(max), 16),
-              null,
-              null);
-      case FIXED_LEN_BYTE_ARRAY, BINARY -> {
-        byte[] minBytes = bytes(min);
-        byte[] maxBytes = bytes(max);
-        if (minBytes.length <= 16 && maxBytes.length <= 16) {
-          yield new TypedStats(
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              signExtend(minBytes, 16),
-              signExtend(maxBytes, 16),
-              null,
-              null);
-        }
-        yield new TypedStats(
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            signExtend(minBytes, 32),
-            signExtend(maxBytes, 32));
-      }
-      default -> TypedStats.empty();
-    };
-  }
-
-  private static ByteBuffer duplicate(ByteBuffer buffer) {
-    return buffer == null ? null : buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN);
-  }
-
-  private static Integer readInt32(ByteBuffer buffer) {
-    return buffer.remaining() < Integer.BYTES ? null : buffer.getInt(0);
-  }
-
-  private static Long readInt64(ByteBuffer buffer) {
-    return buffer.remaining() < Long.BYTES ? null : buffer.getLong(0);
-  }
-
-  private static Float readFloat32(ByteBuffer buffer) {
-    return buffer.remaining() < Float.BYTES ? null : buffer.getFloat(0);
-  }
-
-  private static Double readFloat64(ByteBuffer buffer) {
-    return buffer.remaining() < Double.BYTES ? null : buffer.getDouble(0);
-  }
-
-  private static Boolean readBoolean(ByteBuffer buffer) {
-    return buffer.remaining() < 1 ? null : buffer.get(0) != 0;
-  }
-
-  private static String decodeUtf8(ByteBuffer buffer) {
-    return StandardCharsets.UTF_8
-        .decode(buffer.duplicate().clear().position(buffer.position()).limit(buffer.limit()))
-        .toString();
-  }
-
-  private static byte[] bytes(ByteBuffer buffer) {
-    ByteBuffer duplicate = buffer.duplicate();
-    byte[] out = new byte[duplicate.remaining()];
-    duplicate.get(out);
-    return out;
-  }
-
   private static byte[] signExtend(byte[] input, int targetLength) {
     if (input.length > targetLength) {
       throw new IllegalArgumentException(
@@ -1124,11 +654,6 @@ public final class ParquetPageIndexReader {
     java.util.Arrays.fill(out, sign);
     System.arraycopy(input, 0, out, targetLength - input.length, input.length);
     return out;
-  }
-
-  private static byte[] toFixedLenBytes(long value, int length) {
-    byte[] raw = ByteBuffer.allocate(Long.BYTES).order(ByteOrder.BIG_ENDIAN).putLong(value).array();
-    return signExtend(raw, length);
   }
 
   private static byte[] toFixedLenBytes(BigInteger value, int length) {
@@ -1161,11 +686,5 @@ public final class ParquetPageIndexReader {
       byte[] minDecimal128Unscaled,
       byte[] maxDecimal128Unscaled,
       byte[] minDecimal256Unscaled,
-      byte[] maxDecimal256Unscaled) {
-    private static TypedStats empty() {
-      return new TypedStats(
-          null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-          null);
-    }
-  }
+      byte[] maxDecimal256Unscaled) {}
 }
