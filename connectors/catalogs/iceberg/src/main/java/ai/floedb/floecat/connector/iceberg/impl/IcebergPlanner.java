@@ -51,6 +51,7 @@ import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableScan;
+import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Type;
@@ -341,12 +342,24 @@ final class IcebergPlanner implements Planner<Integer> {
         }
       } catch (IllegalArgumentException
           | BufferUnderflowException
-          | UnsupportedOperationException e) {
+          | UnsupportedOperationException
+          | RuntimeIOException e) {
         // UnsupportedOperationException covers bound types Conversions cannot decode.
         // Iceberg v3 variant bounds are the known case: the spec stores them as a
         // serialized Variant keyed by normalized JSON path, which Conversions (a
-        // primitives-only decoder) rejects. Drop the stat rather than fail planning.
+        // primitives-only decoder) rejects. RuntimeIOException is a string bound that is
+        // not UTF-8. Drop the stat rather than fail planning.
         logSkippedBound(id, type, e.getClass().getSimpleName() + ": " + e.getMessage());
+        continue;
+      }
+      // Iceberg decodes a foreign Parquet footer's string bound leniently, so one its writer cut
+      // inside a character holds U+FFFD, or U+FFFE once Iceberg increments a maximum it cuts after
+      // it: either can order the bound on the wrong side of a value. A cut row-group bound that
+      // lost Iceberg's merge of the file's row groups is not seen, and can leave the bound that won
+      // on the wrong side of that row group's values.
+      if (decoded instanceof CharSequence string
+          && string.chars().anyMatch(c -> c == '\uFFFD' || c == '\uFFFE')) {
+        logSkippedBound(id, type, "string bound holding U+FFFD or U+FFFE");
         continue;
       }
       decoded = canonicalizeDecodedBound(type, decoded);

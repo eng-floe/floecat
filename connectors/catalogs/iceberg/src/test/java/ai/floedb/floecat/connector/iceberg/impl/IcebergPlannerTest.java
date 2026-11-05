@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.lang.reflect.Proxy;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -319,5 +320,52 @@ class IcebergPlannerTest {
         .withRecordCount(2)
         .withFormat(FileFormat.PARQUET)
         .build();
+  }
+
+  /** A planner of a table of schema {@code schema}. */
+  private static IcebergPlanner plannerOf(Schema schema) {
+    Snapshot snapshot =
+        (Snapshot)
+            Proxy.newProxyInstance(
+                Snapshot.class.getClassLoader(),
+                new Class<?>[] {Snapshot.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schemaId" -> schema.schemaId();
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    Table table =
+        (Table)
+            Proxy.newProxyInstance(
+                Table.class.getClassLoader(),
+                new Class<?>[] {Table.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "snapshot" -> snapshot;
+                      case "schema" -> schema;
+                      case "schemas" -> Map.of(schema.schemaId(), schema);
+                      case "specs" -> Map.of();
+                      case "spec" -> null;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    return new IcebergPlanner(table, 1L, Set.of(), Set.of(), null, false);
+  }
+
+  @Test
+  void aStringBoundThatIsNotUtf8OrHoldsUFFFDOrUFFFEIsDropped() {
+    Schema schema = new Schema(10, Types.NestedField.optional(2, "s", Types.StringType.get()));
+    try (IcebergPlanner planner = plannerOf(schema)) {
+      assertThat(planner.decodeBounds(Map.of(2, utf8("a")))).containsEntry(2, "a");
+      ByteBuffer cut = ByteBuffer.wrap(new byte[] {0x61, (byte) 0xF0, (byte) 0x9F});
+      assertThat(planner.decodeBounds(Map.of(2, cut))).isNull();
+      // Decoded leniently by Iceberg from a foreign footer: the cut character as U+FFFD, or as
+      // U+FFFE where Iceberg then incremented a maximum it cut after it.
+      assertThat(planner.decodeBounds(Map.of(2, utf8("a\uFFFD")))).isNull();
+      assertThat(planner.decodeBounds(Map.of(2, utf8("a\uFFFE")))).isNull();
+    }
+  }
+
+  private static ByteBuffer utf8(String string) {
+    return ByteBuffer.wrap(string.getBytes(StandardCharsets.UTF_8));
   }
 }
