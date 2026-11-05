@@ -835,10 +835,7 @@ public class DeltaManifestMaterializer {
         || !field.type().isPrimitiveType()) {
       return;
     }
-    Object decoded = decodeValue(field.type().asPrimitiveType(), valueNode);
-    if (decoded instanceof String string) {
-      decoded = isMax ? DeltaStringBounds.max(string) : DeltaStringBounds.min(string);
-    }
+    Object decoded = boundOf(field.type().asPrimitiveType(), valueNode, isMax);
     if (decoded == null) {
       return;
     }
@@ -854,7 +851,11 @@ public class DeltaManifestMaterializer {
     }
   }
 
-  private Object decodeValue(Type.PrimitiveType type, JsonNode value) {
+  /**
+   * The minimum ({@code isMax} false) or maximum a Delta log gives as {@code value} of a column of
+   * type {@code type}, as a bound that holds for every value, or null when none can.
+   */
+  static Object boundOf(Type.PrimitiveType type, JsonNode value, boolean isMax) {
     try {
       return switch (type.typeId()) {
         case BOOLEAN -> value.asBoolean();
@@ -864,12 +865,14 @@ public class DeltaManifestMaterializer {
         case DOUBLE -> value.asDouble();
         case DATE -> (int) LocalDate.parse(value.asText()).toEpochDay();
         case TIME -> value.asLong();
-        case TIMESTAMP -> java.time.Instant.parse(value.asText()).toEpochMilli() * 1000L;
-        case STRING -> value.asText();
+        // Delta writes a timestamp's bounds truncated to milliseconds.
+        case TIMESTAMP ->
+            (java.time.Instant.parse(value.asText()).toEpochMilli() + (isMax ? 1 : 0)) * 1000L;
+        case STRING ->
+            isMax ? DeltaStringBounds.max(value.asText()) : DeltaStringBounds.min(value.asText());
         // Delta defines no encoding for binary bounds, and its Java kernel writes them as text.
         case BINARY -> null;
         case DECIMAL -> new java.math.BigDecimal(value.asText());
-        case UUID -> java.util.UUID.fromString(value.asText());
         default -> null;
       };
     } catch (Exception e) {
