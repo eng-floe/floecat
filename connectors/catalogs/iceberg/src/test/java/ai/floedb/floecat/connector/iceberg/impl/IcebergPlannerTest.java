@@ -27,6 +27,7 @@ import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.FileFormat;
@@ -38,6 +39,7 @@ import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
+import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
 
@@ -349,6 +351,19 @@ class IcebergPlannerTest {
                       default -> throw new UnsupportedOperationException(method.getName());
                     });
     return new IcebergPlanner(table, 1L, Set.of(), Set.of(), null, false);
+  }
+
+  @Test
+  void uuidBoundsAreDropped() {
+    // Row groups (00..., ff...) and (10..., 20...) merged in signed order give (00..., 20...): in
+    // byte order, yet below the first row group's values from 20... up.
+    Schema schema = new Schema(10, Types.NestedField.optional(1, "id", Types.UUIDType.get()));
+    try (IcebergPlanner planner = plannerOf(schema)) {
+      UUID uuid = UUID.fromString("00000000-0000-4000-8000-000000000001");
+      assertThat(
+              planner.decodeBounds(Map.of(1, Conversions.toByteBuffer(Types.UUIDType.get(), uuid))))
+          .isNull();
+    }
   }
 
   @Test

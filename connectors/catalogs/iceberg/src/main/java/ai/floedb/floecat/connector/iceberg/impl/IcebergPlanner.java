@@ -325,6 +325,13 @@ final class IcebergPlanner implements Planner<Integer> {
     for (var column : raw.entrySet()) {
       Integer id = column.getKey();
       Type type = idToIceType.get(id);
+      // Iceberg's Java library merges a file's row-group bounds comparing UUIDs as signed longs,
+      // not by their unsigned bytes as its spec and Parquet do (apache/iceberg#14216), so a file's
+      // UUID bounds can exclude values it holds, and nothing in them tells.
+      if (type != null && type.typeId() == Type.TypeID.UUID) {
+        logSkippedBound(id, type, "UUID bound Iceberg may have merged in signed order");
+        continue;
+      }
       Object decoded = null;
       try {
         ByteBuffer value = column.getValue();
