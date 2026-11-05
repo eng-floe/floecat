@@ -20,6 +20,7 @@ import ai.floedb.floecat.aws.RefreshingAwsClient;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.connector.common.DeltaStringBounds;
 import ai.floedb.floecat.connector.common.resolver.DeltaSchemaNormalizer;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
@@ -783,11 +784,11 @@ public class DeltaManifestMaterializer {
       }
       if (minValues.has(fieldName)) {
         valueCounts.putIfAbsent(field.fieldId(), recordCount);
-        encodeBound(lowerBounds, field, minValues.get(fieldName));
+        encodeBound(lowerBounds, field, minValues.get(fieldName), false);
       }
       if (maxValues.has(fieldName)) {
         valueCounts.putIfAbsent(field.fieldId(), recordCount);
-        encodeBound(upperBounds, field, maxValues.get(fieldName));
+        encodeBound(upperBounds, field, maxValues.get(fieldName), true);
       }
     }
     if (valueCounts.isEmpty()
@@ -827,7 +828,7 @@ public class DeltaManifestMaterializer {
   }
 
   private void encodeBound(
-      Map<Integer, ByteBuffer> out, Types.NestedField field, JsonNode valueNode) {
+      Map<Integer, ByteBuffer> out, Types.NestedField field, JsonNode valueNode, boolean isMax) {
     if (field == null
         || valueNode == null
         || valueNode.isNull()
@@ -835,6 +836,9 @@ public class DeltaManifestMaterializer {
       return;
     }
     Object decoded = decodeValue(field.type().asPrimitiveType(), valueNode);
+    if (isMax && decoded instanceof String string) {
+      decoded = DeltaStringBounds.max(string);
+    }
     if (decoded == null) {
       return;
     }

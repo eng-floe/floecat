@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.connector.common.DeltaStringBounds;
 import ai.floedb.floecat.connector.common.ParquetFooterStats;
 import ai.floedb.floecat.connector.common.PlannedFile;
 import ai.floedb.floecat.connector.common.Planner;
@@ -257,9 +258,7 @@ final class DeltaPlanner implements Planner<String> {
                     if (colName != null) {
                       var lt = nameToLogical.get(colName);
                       Object raw = (e.getValue() == null) ? null : e.getValue().getValue();
-                      raw = widenTruncatedMax(canonicalizeStatValue(lt, raw));
-                      Object typed = (lt == null) ? raw : LogicalComparators.normalize(lt, raw);
-                      maxs.put(colName, typed);
+                      maxs.put(colName, maxThatHolds(lt, raw));
                     }
                   }
                 }
@@ -850,6 +849,22 @@ final class DeltaPlanner implements Planner<String> {
       return instantFromMicros(n.longValue());
     }
     return raw;
+  }
+
+  /**
+   * The maximum {@code raw} Delta wrote of a column of type {@code lt}, as a bound that holds for
+   * every value, or null when none can.
+   */
+  static Object maxThatHolds(LogicalType lt, Object raw) {
+    Object max = canonicalizeStatValue(lt, raw);
+    if (max instanceof String string) {
+      max = DeltaStringBounds.max(string);
+      if (max == null) {
+        return null;
+      }
+    }
+    max = widenTruncatedMax(max);
+    return (lt == null) ? max : LogicalComparators.normalize(lt, max);
   }
 
   /**

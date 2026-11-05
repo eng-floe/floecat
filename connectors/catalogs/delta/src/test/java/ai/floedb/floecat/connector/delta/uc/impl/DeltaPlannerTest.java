@@ -199,6 +199,13 @@ class DeltaPlannerTest {
   }
 
   @Test
+  void aStringMaximumIsMadeToHold() {
+    LogicalType string = LogicalType.of(LogicalKind.STRING);
+    assertThat(DeltaPlanner.maxThatHolds(string, "aaa\uFFFD")).isEqualTo("aab");
+    assertThat(DeltaPlanner.maxThatHolds(string, "\uDBFF\uDFFF\uFFFD")).isNull();
+  }
+
+  @Test
   void aDataFileKeepsTheRowsItsDeletionVectorDoesNotRemove() {
     var vector = new DeletionVectorDescriptor("u", "ab^-aqEH.-t@S}K{vb[*k^", Optional.of(1), 36, 2);
 
