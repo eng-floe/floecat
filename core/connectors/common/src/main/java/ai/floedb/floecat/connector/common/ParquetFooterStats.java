@@ -177,7 +177,7 @@ public final class ParquetFooterStats {
   }
 
   /** {@code b} decoded as UTF-8, or null when it is not. */
-  private static String strictUtf8(Binary b) {
+  static String strictUtf8(Binary b) {
     try {
       // A new decoder reports malformed input rather than replacing it.
       return StandardCharsets.UTF_8.newDecoder().decode(b.toByteBuffer()).toString();

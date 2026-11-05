@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
@@ -42,8 +43,10 @@ import org.apache.parquet.format.Util;
 import org.apache.parquet.hadoop.ParquetFileReader;
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.SeekableInputStream;
+import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.io.api.PrimitiveConverter;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
+import org.apache.parquet.schema.PrimitiveComparator;
 import org.apache.parquet.schema.PrimitiveType;
 
 public final class ParquetPageIndexReader {
@@ -525,6 +528,9 @@ public final class ParquetPageIndexReader {
   }
 
   private static final class MutableTypedStats {
+    private static final Comparator<Binary> UTF8_ORDER =
+        PrimitiveComparator.UNSIGNED_LEXICOGRAPHICAL_BINARY_COMPARATOR;
+
     private Integer minI32;
     private Integer maxI32;
     private Long minI64;
@@ -535,8 +541,8 @@ public final class ParquetPageIndexReader {
     private Double maxF64;
     private Boolean minBool;
     private Boolean maxBool;
-    private String minUtf8;
-    private String maxUtf8;
+    private Binary minUtf8;
+    private Binary maxUtf8;
     private BigInteger minDecimal128;
     private BigInteger maxDecimal128;
     private BigInteger minDecimal256;
@@ -547,7 +553,7 @@ public final class ParquetPageIndexReader {
         PrimitiveType primitiveType,
         LogicalTypeAnnotation logicalTypeAnnotation) {
       if (logicalTypeAnnotation instanceof LogicalTypeAnnotation.StringLogicalTypeAnnotation) {
-        updateUtf8(columnReader.getBinary().toStringUsingUTF8());
+        updateUtf8(columnReader.getBinary());
         return;
       }
       if (logicalTypeAnnotation instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation d) {
@@ -618,9 +624,14 @@ public final class ParquetPageIndexReader {
       maxBool = maxBool == null ? value : (maxBool || value);
     }
 
-    private void updateUtf8(String value) {
-      minUtf8 = minUtf8 == null || value.compareTo(minUtf8) < 0 ? value : minUtf8;
-      maxUtf8 = maxUtf8 == null || value.compareTo(maxUtf8) > 0 ? value : maxUtf8;
+    // Unsigned bytes: UTF-8's order is code point order.
+    private void updateUtf8(Binary value) {
+      if (minUtf8 == null || UTF8_ORDER.compare(value, minUtf8) < 0) {
+        minUtf8 = value.copy();
+      }
+      if (maxUtf8 == null || UTF8_ORDER.compare(value, maxUtf8) > 0) {
+        maxUtf8 = value.copy();
+      }
     }
 
     private TypedStats toTypedStats() {
@@ -635,8 +646,8 @@ public final class ParquetPageIndexReader {
           maxF64,
           minBool,
           maxBool,
-          minUtf8,
-          maxUtf8,
+          minUtf8 == null ? null : ParquetFooterStats.strictUtf8(minUtf8),
+          maxUtf8 == null ? null : ParquetFooterStats.strictUtf8(maxUtf8),
           minDecimal128 == null ? null : toFixedLenBytes(minDecimal128, 16),
           maxDecimal128 == null ? null : toFixedLenBytes(maxDecimal128, 16),
           minDecimal256 == null ? null : toFixedLenBytes(minDecimal256, 32),
