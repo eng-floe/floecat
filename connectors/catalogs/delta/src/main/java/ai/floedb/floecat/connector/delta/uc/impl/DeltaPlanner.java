@@ -854,6 +854,11 @@ final class DeltaPlanner implements Planner<String> {
    * lt}, as a bound that holds for every value, or null when none can.
    */
   static Object boundThatHolds(LogicalType lt, Object raw, boolean isMax) {
+    // Delta defines no encoding for binary bounds, and its Java kernel writes the bytes as text,
+    // with U+FFFD in place of any that are not UTF-8.
+    if (lt != null && lt.kind() == LogicalKind.BINARY) {
+      return null;
+    }
     Object bound = canonicalizeStatValue(lt, raw);
     if (bound instanceof String string) {
       bound = isMax ? DeltaStringBounds.max(string) : DeltaStringBounds.min(string);

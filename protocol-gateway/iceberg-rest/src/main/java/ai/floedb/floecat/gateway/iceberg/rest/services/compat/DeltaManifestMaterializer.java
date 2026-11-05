@@ -866,7 +866,8 @@ public class DeltaManifestMaterializer {
         case TIME -> value.asLong();
         case TIMESTAMP -> java.time.Instant.parse(value.asText()).toEpochMilli() * 1000L;
         case STRING -> value.asText();
-        case BINARY -> value.binaryValue();
+        // Delta defines no encoding for binary bounds, and its Java kernel writes them as text.
+        case BINARY -> null;
         case DECIMAL -> new java.math.BigDecimal(value.asText());
         case UUID -> java.util.UUID.fromString(value.asText());
         default -> null;

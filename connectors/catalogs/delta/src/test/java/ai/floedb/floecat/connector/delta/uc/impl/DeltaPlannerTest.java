@@ -199,6 +199,13 @@ class DeltaPlannerTest {
   }
 
   @Test
+  void binaryBoundsAreDropped() {
+    // Delta's Java kernel writes bytes {0x01, 0xFF} with a maximum of U+FFFD, below 0xFF.
+    LogicalType binary = LogicalType.of(LogicalKind.BINARY);
+    assertThat(DeltaPlanner.boundThatHolds(binary, new byte[] {(byte) 0xFF}, true)).isNull();
+  }
+
+  @Test
   void stringBoundsAreMadeToHold() {
     LogicalType string = LogicalType.of(LogicalKind.STRING);
     assertThat(DeltaPlanner.boundThatHolds(string, "aaa\uFFFD", true)).isEqualTo("aab");
