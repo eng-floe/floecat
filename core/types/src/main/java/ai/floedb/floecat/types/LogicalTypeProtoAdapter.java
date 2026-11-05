@@ -118,9 +118,12 @@ public final class LogicalTypeProtoAdapter {
     return ValueEncoders.decodeFromString(type, encoded);
   }
 
-  /** Decodes a typed bound. The enclosing logical type supplies the temporal unit. */
+  /**
+   * Decodes a typed bound. The enclosing logical type supplies the temporal unit. Null when the
+   * bound is not the payload {@link #encodeTypedValue} gives the type.
+   */
   public static Object decodeValue(LogicalType type, ScalarValue value) {
-    if (value == null || value.getVCase() == ScalarValue.VCase.V_NOT_SET) return null;
+    if (value == null || value.getVCase() != typedCase(type.kind())) return null;
     return switch (value.getVCase()) {
       case B -> value.getB();
       case I64 -> value.getI64();
@@ -134,6 +137,23 @@ public final class LogicalTypeProtoAdapter {
       case TSTZ -> temporalInstant(value.getTstz(), type.temporalPrecision());
       case INTERVAL -> value.getInterval();
       case V_NOT_SET -> null;
+    };
+  }
+
+  private static ScalarValue.VCase typedCase(LogicalKind kind) {
+    return switch (kind) {
+      case BOOLEAN -> ScalarValue.VCase.B;
+      case INT -> ScalarValue.VCase.I64;
+      case FLOAT, DOUBLE -> ScalarValue.VCase.F64;
+      case DECIMAL -> ScalarValue.VCase.DEC;
+      case STRING, UUID, JSON -> ScalarValue.VCase.S;
+      case BINARY -> ScalarValue.VCase.BIN;
+      case DATE -> ScalarValue.VCase.DATE;
+      case TIME -> ScalarValue.VCase.TIME;
+      case TIMESTAMP -> ScalarValue.VCase.TS;
+      case TIMESTAMPTZ -> ScalarValue.VCase.TSTZ;
+      case INTERVAL -> ScalarValue.VCase.INTERVAL;
+      case ARRAY, MAP, STRUCT, VARIANT -> ScalarValue.VCase.V_NOT_SET;
     };
   }
 

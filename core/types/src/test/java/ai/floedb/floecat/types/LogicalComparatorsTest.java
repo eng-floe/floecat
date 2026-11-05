@@ -133,4 +133,12 @@ class LogicalComparatorsTest {
         LogicalComparators.normalizeUpper(
             LogicalType.temporal(LogicalKind.TIME, 6), LocalTime.of(23, 59, 59, 999_999_500)));
   }
+
+  @Test
+  void aStringIsOrderedOnlyAsText() {
+    // Bytes would be ordered by their Java identity, "[B@...".
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> LogicalComparators.normalize(LogicalType.of(LogicalKind.STRING), new byte[] {0x61}));
+  }
 }

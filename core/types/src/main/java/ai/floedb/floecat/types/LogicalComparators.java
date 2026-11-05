@@ -186,7 +186,10 @@ public final class LogicalComparators {
         throw typeErr("DECIMAL", v);
 
       case STRING:
-        return (v instanceof CharSequence cs) ? cs.toString() : v.toString();
+        if (v instanceof CharSequence cs) {
+          return cs.toString();
+        }
+        throw typeErr("STRING", v);
 
       case UUID:
         return (v instanceof UUID u) ? u : UUID.fromString(v.toString());

@@ -182,10 +182,11 @@ class LogicalCoercionsTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void stringCoercionReturnsToString() {
+  void stringCoercionAcceptsOnlyText() {
+    // 9 is below 42, but "9" is above "42": a number's bound is not its text's.
     LogicalType t = LogicalType.of(LogicalKind.STRING);
     assertEquals("hello", LogicalCoercions.coerceStatValue(t, "hello"));
-    assertEquals("42", LogicalCoercions.coerceStatValue(t, 42));
+    assertThrows(IllegalArgumentException.class, () -> LogicalCoercions.coerceStatValue(t, 42));
   }
 
   // ---------------------------------------------------------------------------
