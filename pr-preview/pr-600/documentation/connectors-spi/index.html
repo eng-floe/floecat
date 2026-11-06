@@ -1981,18 +1981,13 @@ text, and binary values use unpadded-or-padded RFC 4648 Base64. <code>ValueEncod
 appropriate only for populating those legacy fields; new connectors should construct <code>ScalarValue</code>s
 directly.</p>
 <h3 id="exact-row-counts-and-bounds">Exact row counts and bounds<a class="headerlink" href="#exact-row-counts-and-bounds" title="Permanent link">&para;</a></h3>
-<p><code>TableValueStats.row_count_exact</code> says that <code>row_count</code> is exactly the rows described. A producer
-sets it only when it knows every data file's rows and that no delete removed one of them: each data
-file's <code>live_row_count</code> equals its <code>row_count</code>. <code>ScalarStats.bounds_exact</code> says that <code>min_value</code>
-and <code>max_value</code> are each a value held by some row described, NaN ignored: set only by a producer
-that computed both from the rows, without truncating, rounding or widening them, and knows that no
-delete removed a row. Either fact then holds for a reader whether or not it applies deletes.
-<code>RelationStats.row_count_exact</code> passes the row count's exactness on to planners.</p>
-<p>Connectors set <code>row_count_exact</code> when it holds, from the snapshot's whole file plan, and never
-<code>bounds_exact</code>: bounds read from other engines' metadata may be cut, rounded or widened, and count
-deleted rows. A file-group capture sets neither: it plans only the data files it can read. A
-producer publishing its own complete statistics sets them for what it read itself. A record it marks
-snapshot-neutral is reused for other snapshots: its flags must hold for each of them.</p>
+<p><code>TableValueStats.row_count_exact</code> says that <code>row_count</code> is exactly the live rows described.
+<code>ScalarStats.bounds_exact</code> says that each of <code>min_value</code> and <code>max_value</code> that is present is a value
+held by some live row described, NaN ignored, rather than only a bound of them. A planner answers <code>count(*)</code>, <code>min()</code>
+and <code>max()</code> from them, so a provider sets each only when it holds; unset reads as not exact.
+<code>RelationStats.row_count_exact</code> passes the row count's exactness on to planners, for the
+<code>row_count</code> of the same reply only. A record marked snapshot-neutral is reused for other
+snapshots, so its flags must hold for each of them.</p>
 <h3 id="temporal-values-no-numeric-heuristics">Temporal values (no numeric heuristics)<a class="headerlink" href="#temporal-values-no-numeric-heuristics" title="Permanent link">&para;</a></h3>
 <p>Floecat does not guess time units based on numeric magnitude. Connectors must supply typed temporal
 values (e.g., <code>LocalTime</code>, <code>LocalDateTime</code>, <code>Instant</code>) with the precision carried by the typed
