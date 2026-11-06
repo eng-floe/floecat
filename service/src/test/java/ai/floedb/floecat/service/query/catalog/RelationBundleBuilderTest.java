@@ -267,6 +267,11 @@ class RelationBundleBuilderTest {
                   }
 
                   @Override
+                  public boolean rowCountExact() {
+                    return true;
+                  }
+
+                  @Override
                   public OptionalLong totalSizeBytesValue() {
                     return OptionalLong.of(4096L);
                   }
@@ -294,6 +299,7 @@ class RelationBundleBuilderTest {
     assertThat(info.getColumns(0).getStatus()).isEqualTo(ColumnStatus.COLUMN_STATUS_OK);
     assertThat(info.hasStats()).isTrue();
     assertThat(info.getStats().getRowCount()).isEqualTo(42L);
+    assertThat(info.getStats().getRowCountExact()).isTrue();
     assertThat(info.getStats().getTotalSizeBytes()).isEqualTo(4096L);
   }
 

@@ -262,7 +262,7 @@ class ObjectCacheTest {
         () -> {
           firstLoads.incrementAndGet();
           return Optional.of(
-              new ObjectCache.SnapshotFacts(OptionalLong.of(1), OptionalLong.empty(), ""));
+              new ObjectCache.SnapshotFacts(OptionalLong.of(1), false, OptionalLong.empty(), ""));
         });
     cache.snapshotFacts(
         second,
@@ -271,7 +271,7 @@ class ObjectCacheTest {
         () -> {
           secondLoads.incrementAndGet();
           return Optional.of(
-              new ObjectCache.SnapshotFacts(OptionalLong.of(2), OptionalLong.empty(), ""));
+              new ObjectCache.SnapshotFacts(OptionalLong.of(2), false, OptionalLong.empty(), ""));
         });
 
     cache.evictAccount("first");
@@ -283,7 +283,7 @@ class ObjectCacheTest {
         () -> {
           firstLoads.incrementAndGet();
           return Optional.of(
-              new ObjectCache.SnapshotFacts(OptionalLong.of(3), OptionalLong.empty(), ""));
+              new ObjectCache.SnapshotFacts(OptionalLong.of(3), false, OptionalLong.empty(), ""));
         });
     cache.snapshotFacts(
         second,
@@ -292,7 +292,7 @@ class ObjectCacheTest {
         () -> {
           secondLoads.incrementAndGet();
           return Optional.of(
-              new ObjectCache.SnapshotFacts(OptionalLong.of(4), OptionalLong.empty(), ""));
+              new ObjectCache.SnapshotFacts(OptionalLong.of(4), false, OptionalLong.empty(), ""));
         });
 
     assertThat(firstLoads).hasValue(2);
@@ -313,7 +313,10 @@ class ObjectCacheTest {
                 () ->
                     Optional.of(
                         new ObjectCache.SnapshotFacts(
-                            OptionalLong.of(loads.incrementAndGet()), OptionalLong.empty(), ""))))
+                            OptionalLong.of(loads.incrementAndGet()),
+                            false,
+                            OptionalLong.empty(),
+                            ""))))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(1L);
@@ -326,7 +329,7 @@ class ObjectCacheTest {
                 () ->
                     Optional.of(
                         new ObjectCache.SnapshotFacts(
-                            OptionalLong.of(7L), OptionalLong.of(70L), ""))))
+                            OptionalLong.of(7L), false, OptionalLong.of(70L), ""))))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(7L);
@@ -340,7 +343,10 @@ class ObjectCacheTest {
                 () ->
                     Optional.of(
                         new ObjectCache.SnapshotFacts(
-                            OptionalLong.of(loads.incrementAndGet()), OptionalLong.empty(), ""))))
+                            OptionalLong.of(loads.incrementAndGet()),
+                            false,
+                            OptionalLong.empty(),
+                            ""))))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(2L);
@@ -369,17 +375,17 @@ class ObjectCacheTest {
   @Test
   void snapshotFactsRequireExplicitAbsence() {
     assertThatNullPointerException()
-        .isThrownBy(() -> new ObjectCache.SnapshotFacts(null, OptionalLong.empty(), ""))
+        .isThrownBy(() -> new ObjectCache.SnapshotFacts(null, false, OptionalLong.empty(), ""))
         .withMessage("rowCount");
     assertThatNullPointerException()
-        .isThrownBy(() -> new ObjectCache.SnapshotFacts(OptionalLong.empty(), null, ""))
+        .isThrownBy(() -> new ObjectCache.SnapshotFacts(OptionalLong.empty(), false, null, ""))
         .withMessage("totalSizeBytes");
   }
 
   private static Optional<ObjectCache.SnapshotFacts> facts(AtomicInteger loads, long rowCount) {
     loads.incrementAndGet();
     return Optional.of(
-        new ObjectCache.SnapshotFacts(OptionalLong.of(rowCount), OptionalLong.empty(), ""));
+        new ObjectCache.SnapshotFacts(OptionalLong.of(rowCount), false, OptionalLong.empty(), ""));
   }
 
   private static long rowCount(Optional<ObjectCache.SnapshotFacts> facts) {

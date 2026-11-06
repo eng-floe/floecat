@@ -111,6 +111,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     }
 
     long files = 0, rows = 0, liveRows = 0, bytes = 0;
+    boolean liveRowsKnown = true;
 
     // Column names are not unique across a nested schema: Iceberg exposes leaf names, so struct
     // fields such as a.name and b.name collide. The NDV/avg-width providers are name-keyed, so a
@@ -194,6 +195,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       files++;
       rows += file.rowCount();
       liveRows += file.rowsAfterDeletes();
+      liveRowsKnown &= file.liveRowCount() != null;
       bytes += file.sizeBytes();
 
       for (var column : acc.columns.entrySet()) {
@@ -304,6 +306,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     return new ResultImpl<>(
         rows,
         liveRows,
+        liveRowsKnown && planner.coversSnapshot(),
         bytes,
         files,
         Collections.unmodifiableMap(out),
@@ -619,6 +622,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
   private static final class ResultImpl<K> implements Result<K> {
     private final long rows;
     private final long liveRows;
+    private final boolean rowCountExact;
     private final long bytes;
     private final long files;
     private final Map<K, ColumnAgg> cols;
@@ -627,12 +631,14 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     ResultImpl(
         long rows,
         long liveRows,
+        boolean rowCountExact,
         long bytes,
         long files,
         Map<K, ColumnAgg> cols,
         List<FileAgg<K>> fileAggs) {
       this.rows = rows;
       this.liveRows = liveRows;
+      this.rowCountExact = rowCountExact;
       this.bytes = bytes;
       this.files = files;
       this.cols = cols;
@@ -647,6 +653,11 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     @Override
     public long liveRowCount() {
       return liveRows;
+    }
+
+    @Override
+    public boolean rowCountExact() {
+      return rowCountExact;
     }
 
     @Override
