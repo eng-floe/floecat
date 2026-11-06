@@ -1416,6 +1416,48 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
+  void executeFailsTerminalWhenTheSnapshotHoldsADataFileItCannotPlan() {
+    // Planned without it, the snapshot's statistics would describe only some of its rows.
+    for (List<FloecatConnector.SnapshotFileEntry> files :
+        List.of(
+            List.of(snapshotFile("file-1", 10L), orcFile("file-2")), List.of(orcFile("file-2")))) {
+      var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
+      var workerClient = mock(RemotePlannerWorkerClient.class);
+      var executor =
+          new RemoteSnapshotPlanningReconcileExecutor(
+              backend, workerClient, ignored -> Optional.empty(), 2, true);
+      ReconcileJobStore.LeasedJob lease = lease(statsOnlyScope());
+      when(workerClient.getPlanSnapshotInput(any()))
+          .thenReturn(
+              new StandalonePlanSnapshotPayload(
+                  lease.jobId,
+                  lease.leaseEpoch,
+                  "",
+                  connectorId(),
+                  ReconcilerService.CaptureMode.CAPTURE_ONLY,
+                  false,
+                  statsOnlyScope(),
+                  snapshotTask()));
+      when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
+          .thenReturn(Optional.empty());
+      when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
+          .thenReturn(Optional.of(new FloecatConnector.SnapshotFilePlan(files, List.of())));
+      when(backend.latestReconciledSnapshotForReuse(any(), any(), eq(55L)))
+          .thenReturn(Optional.empty());
+
+      ReconcileExecutor.ExecutionResult result =
+          executor.execute(
+              new ReconcileExecutor.ExecutionContext(
+                  lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+      assertTrue(!result.success());
+      assertEquals(
+          ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL, result.retryDisposition);
+      verify(workerClient, never()).submitPlanSnapshotSuccess(any(), any(), any(), any());
+    }
+  }
+
+  @Test
   void executeFailsTerminalWhenExpectedSnapshotIsMissing() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
@@ -1980,6 +2022,22 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
               "test-file-v1:" + i));
     }
     return List.copyOf(out);
+  }
+
+  private static FloecatConnector.SnapshotFileEntry orcFile(String name) {
+    return new FloecatConnector.SnapshotFileEntry(
+        "s3://bucket/" + name + ".orc",
+        "ORC",
+        10L,
+        1L,
+        ai.floedb.floecat.catalog.rpc.FileContent.FC_DATA,
+        "",
+        0,
+        List.of(),
+        null,
+        null,
+        List.of(),
+        "test-file-v1:" + name);
   }
 
   private static FloecatConnector.SnapshotFileEntry snapshotFile(String name, long sizeBytes) {
