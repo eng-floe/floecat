@@ -205,6 +205,34 @@ class IcebergPlannerTest {
     }
   }
 
+  @Test
+  void aPlannerCoversTheSnapshotOnlyWhenItPlansEveryDataFile() throws Exception {
+    var catalog = new InMemoryCatalog();
+    catalog.initialize("mem", Map.of());
+    catalog.createNamespace(Namespace.of("ns"));
+    var spec = PartitionSpec.unpartitioned();
+    Table table =
+        catalog.createTable(
+            TableIdentifier.of("ns", "t"),
+            new Schema(Types.NestedField.required(1, "id", Types.LongType.get())),
+            spec);
+    table
+        .newAppend()
+        .appendFile(dataFile(spec, "mem://a.parquet"))
+        .appendFile(dataFile(spec, "mem://b.parquet"))
+        .commit();
+    long snapshotId = table.currentSnapshot().snapshotId();
+
+    try (var all = new IcebergPlanner(table, snapshotId, Set.of(), Set.of(), null, true);
+        var some =
+            new IcebergPlanner(table, snapshotId, Set.of(), Set.of("mem://a.parquet"), null, true);
+        var unplanned = new IcebergPlanner(table, snapshotId, Set.of(), Set.of(), null, false)) {
+      assertThat(all.coversSnapshot()).isTrue();
+      assertThat(some.coversSnapshot()).isFalse();
+      assertThat(unplanned.coversSnapshot()).isFalse();
+    }
+  }
+
   private static Table tableWithSchema(Schema schema, int schemaId) {
     Snapshot snapshot =
         (Snapshot)

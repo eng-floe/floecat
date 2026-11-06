@@ -54,6 +54,7 @@ public final class ConnectorStatsViewBuilder {
     return TableValueStats.newBuilder()
         .setUpstream(upstream)
         .setRowCount(result.liveRowCount())
+        .setRowCountExact(result.rowCountExact())
         .setDataFileCount(result.fileCount())
         .setTotalSizeBytes(result.totalSizeBytes())
         .build();

@@ -39,8 +39,22 @@ class GenericStatsEngineTest {
       Map<Integer, String> names,
       Map<Integer, LogicalType> types,
       List<PlannedFile<Integer>> files) {
+    return planner(columns, names, types, files, true);
+  }
+
+  private static Planner<Integer> planner(
+      Set<Integer> columns,
+      Map<Integer, String> names,
+      Map<Integer, LogicalType> types,
+      List<PlannedFile<Integer>> files,
+      boolean coversSnapshot) {
 
     return new Planner<>() {
+      @Override
+      public boolean coversSnapshot() {
+        return coversSnapshot;
+      }
+
       @Override
       public Map<Integer, String> columnNamesByKey() {
         return names;
@@ -70,40 +84,46 @@ class GenericStatsEngineTest {
 
   @Test
   void theSnapshotCountsTheRowsTheDeletesLeaveWhereAFileKnowsThem() {
-    var names = Map.of(1, "c");
-    var types = Map.of(1, LogicalType.of(LogicalKind.INT));
-    var withDeletes =
-        new PlannedFile<Integer>(
-            "s3://b/a.parquet",
-            "PARQUET",
-            10L,
-            1L,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            0,
-            null,
-            "",
-            7L);
-    var unknown =
-        new PlannedFile<Integer>(
-            "s3://b/b.parquet", "PARQUET", 5L, 1L, null, null, null, null, null, null, 0, null, "");
-
     var result =
-        new GenericStatsEngine<>(
-                planner(Set.of(1), names, types, List.of(withDeletes, unknown)),
-                null,
-                null,
-                names,
-                types)
-            .compute();
+        compute(
+            fileOfLiveRows("s3://b/a.parquet", 10L, 7L),
+            fileOfLiveRows("s3://b/b.parquet", 5L, null));
 
     assertEquals(15L, result.totalRowCount());
     assertEquals(12L, result.liveRowCount());
     assertEquals(7L, result.files().get(0).liveRowCount());
+  }
+
+  @Test
+  void theSnapshotsRowCountIsExactOnlyWhenThePlanCoversItAndKnowsEachFilesLiveRows() {
+    var known = fileOfLiveRows("s3://b/a.parquet", 10L, 10L);
+
+    assertTrue(compute(known, fileOfLiveRows("s3://b/b.parquet", 10L, 7L)).rowCountExact());
+    assertTrue(compute().rowCountExact());
+    assertFalse(compute(false, known).rowCountExact());
+    assertFalse(compute(known, fileOfLiveRows("s3://b/b.parquet", 10L, null)).rowCountExact());
+  }
+
+  private static PlannedFile<Integer> fileOfLiveRows(String path, long rows, Long liveRows) {
+    return new PlannedFile<>(
+        path, "PARQUET", rows, 1L, null, null, null, null, null, null, 0, null, "", liveRows);
+  }
+
+  /** The statistics of a snapshot of {@code files}, of one INT column. */
+  @SafeVarargs
+  private static StatsEngine.Result<Integer> compute(PlannedFile<Integer>... files) {
+    return compute(true, files);
+  }
+
+  /** As {@link #compute(PlannedFile[])}, by a plan that covers the snapshot when {@code covers}. */
+  @SafeVarargs
+  private static StatsEngine.Result<Integer> compute(
+      boolean covers, PlannedFile<Integer>... files) {
+    var names = Map.of(1, "c");
+    var types = Map.of(1, LogicalType.of(LogicalKind.INT));
+    return new GenericStatsEngine<>(
+            planner(Set.of(1), names, types, List.of(files), covers), null, null, names, types)
+        .compute();
   }
 
   @Test

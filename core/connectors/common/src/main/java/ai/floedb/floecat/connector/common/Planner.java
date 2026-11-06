@@ -31,6 +31,11 @@ public interface Planner<K> extends AutoCloseable, Iterable<PlannedFile<K>> {
 
   Set<K> columns();
 
+  /** Whether its files are every data file of the snapshot: none left out of its plan. */
+  default boolean coversSnapshot() {
+    return false;
+  }
+
   default Function<K, String> nameOf() {
     var byKey = columnNamesByKey();
     return byKey::get;

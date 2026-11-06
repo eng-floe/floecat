@@ -95,7 +95,7 @@ class ConnectorStatsViewBuilderTest {
   }
 
   @Test
-  void toTableValueStats_countsTheRowsTheDeletesLeave() {
+  void toTableValueStats_takesTheEnginesRowCountAndWhetherItIsExact() {
     StatsEngine.Result<String> result =
         new StatsEngine.Result<>() {
           @Override
@@ -106,6 +106,11 @@ class ConnectorStatsViewBuilderTest {
           @Override
           public long liveRowCount() {
             return 7;
+          }
+
+          @Override
+          public boolean rowCountExact() {
+            return true;
           }
 
           @Override
@@ -124,11 +129,11 @@ class ConnectorStatsViewBuilderTest {
           }
         };
 
-    assertEquals(
-        7L,
+    var table =
         ConnectorStatsViewBuilder.toTableValueStats(
-                1L, 0L, ai.floedb.floecat.catalog.rpc.TableFormat.TF_ICEBERG, result)
-            .getRowCount());
+            1L, 0L, ai.floedb.floecat.catalog.rpc.TableFormat.TF_ICEBERG, result);
+    assertEquals(7L, table.getRowCount());
+    assertTrue(table.getRowCountExact());
   }
 
   @Test

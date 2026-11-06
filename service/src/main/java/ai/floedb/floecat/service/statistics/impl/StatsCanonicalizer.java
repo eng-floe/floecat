@@ -59,6 +59,7 @@ final class StatsCanonicalizer {
             g.scalar("row_count", table.getRowCount());
             g.scalar("data_file_count", table.getDataFileCount());
             g.scalar("total_size_bytes", table.getTotalSizeBytes());
+            if (table.getRowCountExact()) g.scalar("row_count_exact", true);
             g.map("properties", table.getPropertiesMap());
           });
     }

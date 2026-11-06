@@ -238,6 +238,8 @@ message TableValueStats {
   int64 row_count = 2;
   int64 data_file_count = 3;
   int64 total_size_bytes = 4;
+  // Whether row_count is exactly the live rows described. A producer sets it only when it holds.
+  bool row_count_exact = 5;
   map<string, string> properties = 99;
 }
 

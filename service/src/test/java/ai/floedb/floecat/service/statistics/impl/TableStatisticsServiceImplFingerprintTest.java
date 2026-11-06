@@ -24,6 +24,8 @@ import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -102,6 +104,21 @@ class TableStatisticsServiceImplFingerprintTest {
     assertThat(StatsCanonicalizer.canonicalFingerprint(none))
         .isNotEqualTo(
             StatsCanonicalizer.canonicalFingerprint(none.toBuilder().setLiveRowCount(3).build()));
+  }
+
+  @Test
+  void tableFingerprintTellsAnExactRowCountFromAnEstimate() {
+    TableValueStats estimate = TableValueStats.newBuilder().setRowCount(5L).build();
+    TargetStatsRecord record =
+        TargetStatsRecord.newBuilder()
+            .setTarget(StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()))
+            .setTable(estimate)
+            .build();
+
+    assertThat(StatsCanonicalizer.canonicalFingerprint(record))
+        .isNotEqualTo(
+            StatsCanonicalizer.canonicalFingerprint(
+                record.toBuilder().setTable(estimate.toBuilder().setRowCountExact(true)).build()));
   }
 
   @Test

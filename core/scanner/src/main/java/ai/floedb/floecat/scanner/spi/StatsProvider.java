@@ -102,6 +102,11 @@ public interface StatsProvider {
     /** Row count when explicitly reported (zero may be a real value). */
     OptionalLong rowCountValue();
 
+    /** Whether the reported row count is exactly the table's live rows. */
+    default boolean rowCountExact() {
+      return false;
+    }
+
     /** Total size when explicitly reported (zero may be a real value). */
     OptionalLong totalSizeBytesValue();
   }

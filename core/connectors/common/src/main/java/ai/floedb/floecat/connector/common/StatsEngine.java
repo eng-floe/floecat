@@ -42,6 +42,14 @@ public interface StatsEngine<K> {
       return totalRowCount();
     }
 
+    /**
+     * Whether {@link #liveRowCount} is exactly the snapshot's live rows: the planner covers every
+     * data file of the snapshot and knows the rows each one's deletes leave.
+     */
+    default boolean rowCountExact() {
+      return false;
+    }
+
     long totalSizeBytes();
 
     long fileCount();
