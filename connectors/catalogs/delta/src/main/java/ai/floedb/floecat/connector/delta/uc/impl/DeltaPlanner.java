@@ -37,9 +37,11 @@ import io.delta.kernel.data.MapValue;
 import io.delta.kernel.data.Row;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.engine.FileReadResult;
+import io.delta.kernel.exceptions.KernelException;
 import io.delta.kernel.expressions.Column;
 import io.delta.kernel.expressions.Literal;
 import io.delta.kernel.internal.InternalScanFileUtils;
+import io.delta.kernel.internal.ScanImpl;
 import io.delta.kernel.internal.SnapshotImpl;
 import io.delta.kernel.internal.actions.AddFile;
 import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
@@ -160,7 +162,10 @@ final class DeltaPlanner implements Planner<String> {
     final ScanBuilder sb = snapshot.getScanBuilder();
     final Scan scan = sb.build();
 
-    try (CloseableIterator<FilteredColumnarBatch> it = scan.getScanFiles(engine)) {
+    // The kernel reads a file's log stats only when asked, or when a filter needs them. A planner
+    // that can read a file's footer takes it instead: log stats may cover only some columns.
+    try (CloseableIterator<FilteredColumnarBatch> it =
+        ((ScanImpl) scan).getScanFiles(engine, includeStats && !allowFooterFallback)) {
       while (it.hasNext()) {
         FilteredColumnarBatch batch = it.next();
         try (var rows = batch.getRows()) {
@@ -204,7 +209,7 @@ final class DeltaPlanner implements Planner<String> {
             String partitionJson = encodePartition(add);
 
             if (includeStats) {
-              Optional<DataFileStatistics> optStats = add.getStats(statsDataSchema);
+              Optional<DataFileStatistics> optStats = logStats(add);
               if (optStats.isEmpty()) {
                 optStats = checkpointStatsForPath(path);
                 if (optStats.isPresent()) {
@@ -333,6 +338,15 @@ final class DeltaPlanner implements Planner<String> {
 
   boolean hasDeletionVectors() {
     return !diskDeletionVectors.isEmpty() || hasInlineDeletionVectors;
+  }
+
+  /** {@code add}'s log stats, or none when they do not parse for the snapshot's schema. */
+  private Optional<DataFileStatistics> logStats(AddFile add) {
+    try {
+      return add.getStats(statsDataSchema);
+    } catch (KernelException e) {
+      return Optional.empty();
+    }
   }
 
   boolean missingLogStats() {
