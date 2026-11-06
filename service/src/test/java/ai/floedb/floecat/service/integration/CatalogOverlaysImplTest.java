@@ -32,6 +32,7 @@ import ai.floedb.floecat.integration.rpc.CatalogOverlaySpec;
 import ai.floedb.floecat.integration.rpc.CreateCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.CreateCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.DeleteCatalogOverlayRequest;
+import ai.floedb.floecat.integration.rpc.NamespaceMapping;
 import ai.floedb.floecat.integration.rpc.NamespacePath;
 import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
@@ -1240,6 +1241,73 @@ class CatalogOverlaysImplTest {
       long version, boolean newlyInstalled) {
     return new ai.floedb.floecat.service.repo.util.DurableDeletionFence.Fence(
         version, newlyInstalled);
+  }
+
+  @Test
+  void storesExplicitNamespaceMapping() {
+    NamespaceMapping mapping =
+        NamespaceMapping.newBuilder()
+            .setSource(path("acct_616263"))
+            .setDestination(path("analytics"))
+            .build();
+    var response =
+        create(
+            CatalogOverlaySpec.newBuilder()
+                .addIncludeNamespaces(path("acct_616263"))
+                .addNamespaceMappings(mapping));
+
+    assertEquals(List.of(mapping), response.getOverlay().getNamespaceMappingsList());
+  }
+
+  @Test
+  void rejectsMappingWithoutMatchingSelection() {
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                create(
+                    CatalogOverlaySpec.newBuilder()
+                        .addIncludeNamespaces(path("other"))
+                        .addNamespaceMappings(
+                            NamespaceMapping.newBuilder()
+                                .setSource(path("acct_616263"))
+                                .setDestination(path("analytics")))));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+  }
+
+  @Test
+  void includeOnlyUpdateExplainsMappingConstraint() {
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .addIncludeNamespaces(path("sales"))
+            .addNamespaceMappings(
+                NamespaceMapping.newBuilder()
+                    .setSource(path("sales"))
+                    .setDestination(path("reports")))
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .updateCatalogOverlay(
+                        UpdateCatalogOverlayRequest.newBuilder()
+                            .setOverlayId(overlayId)
+                            .setSpec(
+                                CatalogOverlaySpec.newBuilder().addIncludeNamespaces(path("other")))
+                            .setUpdateMask(FieldMask.newBuilder().addPaths("include_namespaces"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    assertTrue(error.getStatus().getDescription().contains("include_namespaces"));
+    assertTrue(error.getStatus().getDescription().contains("namespace_mappings.source"));
+    verify(service.overlays, never()).updateWithMetaUnlessIntegrationDeleting(any(), anyLong());
   }
 
   @Test

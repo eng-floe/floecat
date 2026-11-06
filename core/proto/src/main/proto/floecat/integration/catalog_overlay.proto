@@ -27,6 +27,13 @@ message NamespacePath {
   repeated string segments = 1;
 }
 
+// Replaces a selected upstream namespace prefix with a destination prefix. Descendant paths keep
+// their suffix. Every selected include path must have one mapping when mappings are configured.
+message NamespaceMapping {
+  NamespacePath source = 1;
+  NamespacePath destination = 2;
+}
+
 // A catalog overlay selects upstream namespaces from a catalog integration and maps them into a
 // Floecat catalog. The destination may be supplied by the caller or created with the overlay.
 message CatalogOverlay {
@@ -45,6 +52,7 @@ message CatalogOverlay {
   ai.floedb.floecat.common.ResourceId catalog_id = 8;
   // True when Floecat created the destination for this overlay and owns its lifecycle.
   bool owns_catalog = 9;
+  repeated NamespaceMapping namespace_mappings = 10;
 }
 
 message CatalogOverlaySpec {
@@ -59,6 +67,7 @@ message CatalogOverlaySpec {
   // Existing Floecat destination. When omitted, create a catalog named after the overlay.
   // Immutable through update; a replacing create may rebind it.
   ai.floedb.floecat.common.ResourceId catalog_id = 5;
+  repeated NamespaceMapping namespace_mappings = 6;
 }
 
 message CatalogOverlayEntry {
@@ -103,8 +112,8 @@ message ListCatalogOverlaysResponse {
 
 message UpdateCatalogOverlayRequest {
   ai.floedb.floecat.common.ResourceId overlay_id = 1;
-  // display_name and the namespace-selection lists are mutable. integration_id and catalog_id are
-  // immutable.
+  // display_name, the namespace-selection lists, and namespace_mappings are mutable. integration_id
+  // and catalog_id are immutable.
   // A list selected by update_mask is replaced in full.
   CatalogOverlaySpec spec = 2;
   ai.floedb.floecat.common.Precondition precondition = 3;
@@ -127,7 +136,7 @@ message DeleteCatalogOverlayResponse {
 
 // Runs one synchronous metadata reconciliation for an overlay. This materializes the selected
 // upstream namespace, table, and view inventory into the catalog owned by the overlay. Snapshot
-// and file capture are handled by the durable reconciliation layer in a later stack change.
+// and file processing are owned by Floescan ingest v2.
 message ReconcileCatalogOverlayRequest {
   ai.floedb.floecat.common.ResourceId overlay_id = 1;
   ai.floedb.floecat.common.Precondition precondition = 2;
