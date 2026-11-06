@@ -133,7 +133,8 @@ class TableStatisticsServiceImplFingerprintTest {
             absent.toBuilder().setNullCount(0L).build(),
             absent.toBuilder().setNanCount(0L).build(),
             absent.toBuilder().setMin("").build(),
-            absent.toBuilder().setMax("").build())) {
+            absent.toBuilder().setMax("").build(),
+            absent.toBuilder().setBoundsExact(true).build())) {
       assertThat(StatsCanonicalizer.canonicalFingerprint(explicit))
           .isNotEqualTo(StatsCanonicalizer.canonicalFingerprint(absent));
       assertThat(StatsCanonicalizer.canonicalFingerprint(record.setScalar(explicit).build()))

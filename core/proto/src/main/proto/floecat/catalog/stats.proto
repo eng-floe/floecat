@@ -290,6 +290,10 @@ message ScalarStats {
   // Typed bounds. New writers populate these; readers must fall back to min/max for older data.
   optional ai.floedb.floecat.types.ScalarValue min_value = 13;
   optional ai.floedb.floecat.types.ScalarValue max_value = 14;
+  // Whether each of min_value and max_value that is present is a value held by some live row
+  // described, NaN ignored, rather than only a bound of them. A producer sets it only when it
+  // holds.
+  bool bounds_exact = 15;
   // Connector-specific extension metadata. Core planner semantics should use
   // typed fields above; properties are for producer-specific details only.
   map<string, string> properties = 99;
