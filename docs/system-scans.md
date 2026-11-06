@@ -68,8 +68,8 @@ Scanners receive a best-effort `StatsProvider` in scan context.
 
 - `ai.floedb.floecat.arrow.max-bytes`: per-stream Arrow allocator cap.
 - `floecat.flight.memory.max-bytes`: Flight server parent allocator cap.
-- `floecat.flight.advertised-host`: host advertised to consumers.
-- `floecat.flight.advertised-port`: port advertised to consumers.
+- `floecat.flight.advertised-host`: bootstrap host published in catalog metadata.
+- `floecat.flight.advertised-port`: bootstrap port published in catalog metadata.
 - `quarkus.grpc.server.port` and `quarkus.grpc.server.plain-text`: actual shared gRPC/Flight
   listener and transport mode.
 

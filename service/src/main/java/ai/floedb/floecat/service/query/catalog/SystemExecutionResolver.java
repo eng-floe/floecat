@@ -20,11 +20,9 @@ import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import java.util.Optional;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigProvider;
-import org.jboss.logging.Logger;
 
 /** Resolves the execution identity and wire routing for one system-table node. */
 final class SystemExecutionResolver {
-  private static final Logger LOG = Logger.getLogger(SystemExecutionResolver.class);
   private static final String SYSTEM_FLIGHT_ENDPOINTS_PREFIX = "floedb.system-flight.endpoints.";
 
   private final FlightEndpointRef floecatFlightEndpoint;
@@ -82,12 +80,15 @@ final class SystemExecutionResolver {
             .map(String::trim)
             .filter(value -> !value.isBlank());
     Optional<Integer> port =
-        config.getOptionalValue(prefix + "port", Integer.class).filter(value -> value > 0);
+        config
+            .getOptionalValue(prefix + "port", Integer.class)
+            .filter(value -> value > 0 && value <= 65535);
     if (host.isEmpty() || port.isEmpty()) {
-      LOG.debugf(
-          "Storage endpoint key '%s' has no config at %shost/%sport; falling back to storage path",
-          normalizedKey, prefix, prefix);
-      return Optional.empty();
+      throw new IllegalStateException(
+          "Flight endpoint key '"
+              + normalizedKey
+              + "' requires a host and a port between 1 and 65535 at "
+              + prefix);
     }
     boolean tls = config.getOptionalValue(prefix + "tls", Boolean.class).orElse(false);
     return Optional.of(

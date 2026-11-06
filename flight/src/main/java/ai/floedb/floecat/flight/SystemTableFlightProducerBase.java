@@ -56,7 +56,6 @@ import org.apache.arrow.flight.FlightInfo;
 import org.apache.arrow.flight.FlightProducer.CallContext;
 import org.apache.arrow.flight.FlightProducer.ServerStreamListener;
 import org.apache.arrow.flight.FlightRuntimeException;
-import org.apache.arrow.flight.Location;
 import org.apache.arrow.flight.NoOpFlightProducer;
 import org.apache.arrow.flight.Ticket;
 import org.apache.arrow.memory.BufferAllocator;
@@ -148,8 +147,6 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
       ResolvedCallContext context,
       BufferAllocator allocator,
       BooleanSupplier cancelled);
-
-  protected abstract Location selfLocation();
 
   protected long streamAllocatorLimit() {
     return Long.MAX_VALUE;
@@ -259,7 +256,8 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
       SystemTableFlightCommand enriched = commandWithTableId(command, tableId);
       Schema projected = projectSchema(handle.canonicalName(), tableId, enriched, callCtx);
       Ticket ticket = encodeTicket(enriched);
-      FlightEndpoint endpoint = new FlightEndpoint(ticket, selfLocation());
+      // Empty locations redeem this ticket through the connection that produced it.
+      FlightEndpoint endpoint = new FlightEndpoint(ticket);
       ResolvedCallContext successCallCtx = callCtx;
       String successTableName = tableName;
       safeHook(

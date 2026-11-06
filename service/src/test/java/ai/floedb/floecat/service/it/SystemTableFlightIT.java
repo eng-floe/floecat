@@ -305,6 +305,7 @@ public class SystemTableFlightIT {
   private List<List<String>> readRows(FlightInfo info) {
     List<List<String>> rows = new ArrayList<>();
     for (var endpoint : info.getEndpoints()) {
+      assertTrue(endpoint.getLocations().isEmpty(), "Redeem on the original Flight connection");
       try (FlightStream stream = client.getStream(endpoint.getTicket(), queryHeader(queryId))) {
         VectorSchemaRoot root = stream.getRoot();
         while (stream.next()) {
