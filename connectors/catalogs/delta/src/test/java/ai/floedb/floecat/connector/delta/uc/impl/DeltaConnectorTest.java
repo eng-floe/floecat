@@ -794,10 +794,7 @@ class DeltaConnectorTest {
 
   @Test
   void aPlannerLeavingADataFileOutDoesNotCoverTheSnapshot() throws Exception {
-    String schema =
-        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\","
-            + "\"nullable\":false,\"metadata\":{}}]}";
-    String location = deltaTable(schema, addAction("a.parquet"));
+    String location = deltaTable(addAction("a.parquet", null));
     Engine engine = DefaultEngine.create(new LocalFileSystemClient(tempDir));
 
     // A file without log stats is left out of the plan, as is one a file group does not list.
@@ -810,23 +807,44 @@ class DeltaConnectorTest {
     }
   }
 
-  /** A Delta table of {@code schema} whose version 0 adds {@code add}: its location. */
-  private String deltaTable(String schema, String add) throws IOException {
+  @Test
+  void aPlannerReadsACommitsFileStats() throws Exception {
+    Engine engine = DefaultEngine.create(new LocalFileSystemClient(tempDir));
+    String stated = deltaTable(addAction("a.parquet", "{\"numRecords\":3}"));
+    try (var planner = deltaPlanner(engine, stated, Set.of())) {
+      assertTrue(planner.coversSnapshot());
+      assertEquals(3L, planner.iterator().next().rowCount());
+    }
+
+    // Stats that do not parse for the column's type read as none.
+    String unparsable =
+        deltaTable(addAction("b.parquet", "{\"numRecords\":3,\"minValues\":{\"id\":\"x\"}}"));
+    try (var planner = deltaPlanner(engine, unparsable, Set.of())) {
+      assertFalse(planner.coversSnapshot());
+    }
+  }
+
+  /** A Delta table of one {@code id} column whose version 0 adds {@code add}: its location. */
+  private String deltaTable(String add) throws IOException {
     Path logPath = Files.createDirectories(tempDir.resolve("bucket/t/_delta_log"));
     writeDeltaCommit(
         logPath,
         0,
         "{\"protocol\":{\"minReaderVersion\":1,\"minWriterVersion\":2}}",
-        metadataAction(schema),
+        metadataAction(
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\","
+                + "\"nullable\":false,\"metadata\":{}}]}"),
         add);
     return "s3://bucket/t";
   }
 
-  /** A data file {@code path} the log gives no stats for. */
-  private static String addAction(String path) {
+  /** A data file {@code path} the log gives {@code stats} for, or none when null. */
+  private static String addAction(String path, String stats) {
     return "{\"add\":{\"path\":\""
         + path
-        + "\",\"partitionValues\":{},\"size\":1,\"modificationTime\":0,\"dataChange\":true}}";
+        + "\",\"partitionValues\":{},\"size\":1,\"modificationTime\":0,\"dataChange\":true"
+        + (stats == null ? "" : ",\"stats\":\"" + stats.replace("\"", "\\\"") + "\"")
+        + "}}";
   }
 
   private static DeltaPlanner deltaPlanner(Engine engine, String location, Set<String> paths) {
