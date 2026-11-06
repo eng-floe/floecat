@@ -54,7 +54,6 @@ import org.apache.arrow.flight.FlightInfo;
 import org.apache.arrow.flight.FlightProducer;
 import org.apache.arrow.flight.FlightRuntimeException;
 import org.apache.arrow.flight.FlightServerMiddleware;
-import org.apache.arrow.flight.Location;
 import org.apache.arrow.flight.Ticket;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
@@ -156,7 +155,9 @@ class SystemTableFlightProducerBaseTest {
   void getFlightInfoWithHeaderOnlySucceeds() {
     producer.setContext(makeContext("header"));
     FlightDescriptor descriptor = descriptorWithQueryId(null);
-    assertNotNull(producer.getFlightInfo(callContext, descriptor));
+    FlightInfo info = producer.getFlightInfo(callContext, descriptor);
+    assertEquals(1, info.getEndpoints().size());
+    assertTrue(info.getEndpoints().get(0).getLocations().isEmpty());
     assertEquals(1, producer.getFlightInfoSuccessCount());
   }
 
@@ -495,11 +496,6 @@ class SystemTableFlightProducerBaseTest {
     }
 
     @Override
-    protected Location selfLocation() {
-      return Location.forGrpcInsecure("localhost", 0);
-    }
-
-    @Override
     protected Optional<ResourceId> resolveSystemTableId(NameRef name, ResolvedCallContext context) {
       return Optional.ofNullable(resolvedIdsByName.get(NameRefUtil.identityKey(name)));
     }
@@ -626,11 +622,6 @@ class SystemTableFlightProducerBaseTest {
         BufferAllocator allocator,
         BooleanSupplier cancelled) {
       return ArrowScanPlan.of(SCHEMA, Stream.empty());
-    }
-
-    @Override
-    protected Location selfLocation() {
-      return Location.forGrpcInsecure("localhost", 0);
     }
   }
 

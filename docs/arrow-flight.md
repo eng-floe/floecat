@@ -26,6 +26,8 @@ The command/ticket schema is defined in `system_scan_flight.proto` (`SystemTable
 - Validate query identity (`query_id` vs `x-query-id` if both are present).
 - Resolve table handle (`target.name` or `target.id`) and project schema.
 - Return a `FlightInfo` with projected schema and a versioned opaque ticket.
+- Endpoint locations are empty: redeem tickets through the connection used for `GetFlightInfo`.
+  Multiple tickets can be read concurrently on that connection.
 - No data scan happens in this phase.
 
 ### Phase 2: `GetStream`
@@ -48,7 +50,6 @@ Implement:
 - `tableNames(...)` (canonical lowercase names, for example `sys.session`)
 - `schemaColumns(...)`
 - `buildPlan(...)`
-- `selfLocation()`
 
 Optional:
 
@@ -152,9 +153,9 @@ Auth/authorization behavior:
 | Property | Default | Purpose |
 |---|---|---|
 | `floecat.flight.advertised-host` | `localhost` | Host returned in `FlightEndpointRef` |
-| `floecat.flight.advertised-port` | `80` | Port returned in `FlightEndpointRef` and `FlightInfo` |
+| `floecat.flight.advertised-port` | `80` | Port returned in `FlightEndpointRef` |
 | `quarkus.grpc.server.port` | `${quarkus.http.port}` | Actual shared gRPC and Flight listener port |
-| `quarkus.grpc.server.plain-text` | `true` | Controls whether advertised Flight locations use insecure gRPC or TLS |
+| `quarkus.grpc.server.plain-text` | `true` | Listener transport and TLS flag in `FlightEndpointRef` |
 | `floecat.flight.memory.max-bytes` | `0` | Parent allocator cap (0 = unbounded) |
 | `ai.floedb.floecat.arrow.max-bytes` | `1073741824` | Per-stream allocator cap |
 
