@@ -601,7 +601,8 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     Snapshot publishedSnapshot = snapshot;
     var existingSnapshot = snapshots.getByIdConsistent(tableId, snapshotId);
     if (existingSnapshot.isPresent()) {
-      if (!sameOwnerSnapshot(existingSnapshot.get(), snapshot)) {
+      if (!renewal.replaceExistingPublication()
+          && !sameOwnerSnapshot(existingSnapshot.get(), snapshot)) {
         throw GrpcErrors.preconditionFailed(
             correlationId(),
             GeneratedErrorMessages.MessageKey.PUBLICATION_SNAPSHOT_CONFLICT,
@@ -610,8 +611,11 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       try {
         var preparedSnapshot =
             renewal.replaceExistingPublication()
-                ? snapshots.prepareReuseManifestReplacement(
-                    tableId, snapshotId, renewal.replacementBase(), reuseManifestRef)
+                ? snapshots.prepareOwnerPublicationReplacement(
+                    tableId,
+                    snapshotId,
+                    renewal.replacementBase(),
+                    snapshot.toBuilder().setReuseManifestRef(reuseManifestRef).build())
                 : snapshots.prepareReuseManifestPublication(tableId, snapshotId, reuseManifestRef);
         publishedSnapshot = preparedSnapshot.snapshot();
         publicationUpdates.addAll(preparedSnapshot.pointerUpdates());

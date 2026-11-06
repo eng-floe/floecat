@@ -780,7 +780,7 @@ class SnapshotRepositoryTest {
   }
 
   @Test
-  void prepareReuseManifestReplacementRequiresTheBeginTimePredecessor() {
+  void prepareOwnerPublicationReplacementRequiresTheBeginTimePredecessor() {
     var tableRid = newSeededTable();
     SnapshotReuseManifestRef previous = reuseManifest("/reuse/previous.pb", (byte) 1);
     SnapshotReuseManifestRef stale = reuseManifest("/reuse/stale.pb", (byte) 2);
@@ -795,18 +795,34 @@ class SnapshotRepositoryTest {
     assertThrows(
         BaseResourceRepository.NameConflictException.class,
         () ->
-            snapshotRepo.prepareReuseManifestReplacement(
-                tableRid, 42L, Optional.of(stale), replacement));
+            snapshotRepo.prepareOwnerPublicationReplacement(
+                tableRid,
+                42L,
+                Optional.of(stale),
+                Snapshot.newBuilder()
+                    .setTableId(tableRid)
+                    .setSnapshotId(42L)
+                    .setReuseManifestRef(replacement)
+                    .build()));
 
     var prepared =
-        snapshotRepo.prepareReuseManifestReplacement(
-            tableRid, 42L, Optional.of(previous), replacement);
+        snapshotRepo.prepareOwnerPublicationReplacement(
+            tableRid,
+            42L,
+            Optional.of(previous),
+            Snapshot.newBuilder()
+                .setTableId(tableRid)
+                .setSnapshotId(42L)
+                .putSummary("rebuilt", "true")
+                .setReuseManifestRef(replacement)
+                .build());
     assertEquals(replacement, prepared.snapshot().getReuseManifestRef());
+    assertEquals("true", prepared.snapshot().getSummaryOrThrow("rebuilt"));
     assertFalse(prepared.pointerUpdates().isEmpty());
   }
 
   @Test
-  void prepareReuseManifestReplacementAcceptsALegacyPredecessorAsAnOpaqueFence() {
+  void prepareOwnerPublicationReplacementAcceptsALegacyPredecessorAsAnOpaqueFence() {
     var tableRid = newSeededTable();
     SnapshotReuseManifestRef previous =
         reuseManifest("/reuse/legacy.pb", (byte) 1).toBuilder()
@@ -822,15 +838,22 @@ class SnapshotRepositoryTest {
             .build());
 
     var prepared =
-        snapshotRepo.prepareReuseManifestReplacement(
-            tableRid, 42L, Optional.of(previous), replacement);
+        snapshotRepo.prepareOwnerPublicationReplacement(
+            tableRid,
+            42L,
+            Optional.of(previous),
+            Snapshot.newBuilder()
+                .setTableId(tableRid)
+                .setSnapshotId(42L)
+                .setReuseManifestRef(replacement)
+                .build());
 
     assertEquals(replacement, prepared.snapshot().getReuseManifestRef());
     assertFalse(prepared.pointerUpdates().isEmpty());
   }
 
   @Test
-  void prepareReuseManifestReplacementReplaysAfterTheReplacementCommitted() {
+  void prepareOwnerPublicationReplacementReplaysAfterTheReplacementCommitted() {
     var tableRid = newSeededTable();
     SnapshotReuseManifestRef previous = reuseManifest("/reuse/previous.pb", (byte) 1);
     SnapshotReuseManifestRef replacement = reuseManifest("/reuse/replacement.pb", (byte) 2);
@@ -842,8 +865,15 @@ class SnapshotRepositoryTest {
             .build());
 
     var prepared =
-        snapshotRepo.prepareReuseManifestReplacement(
-            tableRid, 42L, Optional.of(previous), replacement);
+        snapshotRepo.prepareOwnerPublicationReplacement(
+            tableRid,
+            42L,
+            Optional.of(previous),
+            Snapshot.newBuilder()
+                .setTableId(tableRid)
+                .setSnapshotId(42L)
+                .setReuseManifestRef(replacement)
+                .build());
 
     assertEquals(replacement, prepared.snapshot().getReuseManifestRef());
     assertTrue(prepared.pointerUpdates().isEmpty());

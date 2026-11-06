@@ -227,21 +227,50 @@ public class SnapshotRepository {
   }
 
   /**
-   * Prepares a fenced replacement of an existing snapshot's reuse root. The expected predecessor is
-   * the value captured when the publication began; matching it here prevents an older rebuild from
-   * replacing a newer publication.
+   * Prepares a fenced replacement of an existing Owner publication. The expected reuse-manifest
+   * predecessor is the value captured when the publication began; matching it here prevents an
+   * older rebuild from replacing a newer publication. A force rebuild replaces the complete
+   * Owner-produced snapshot revision, not only its reuse root, so metadata repaired by the rebuild
+   * (for example, a missing column identity map) becomes query-visible atomically with its
+   * artifacts.
    */
-  public PreparedReuseManifestPublication prepareReuseManifestReplacement(
+  public PreparedReuseManifestPublication prepareOwnerPublicationReplacement(
       ResourceId tableId,
       long snapshotId,
       Optional<SnapshotReuseManifestRef> expectedReuseManifestRef,
-      SnapshotReuseManifestRef reuseManifestRef) {
-    return prepareReuseManifestUpdate(
-        tableId,
-        snapshotId,
-        reuseManifestRef,
-        actual -> actual.equals(expectedReuseManifestRef),
-        "snapshot reuse manifest changed after publication began: ");
+      Snapshot replacement) {
+    if (replacement == null
+        || !replacement.getTableId().equals(tableId)
+        || replacement.getSnapshotId() != snapshotId) {
+      throw new IllegalArgumentException("replacement snapshot identity must match the target");
+    }
+    requireReuseManifest(replacement.getReuseManifestRef());
+    SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
+    var current =
+        repo.getByKeyWithMetaForMutation(key)
+            .orElseThrow(
+                () ->
+                    new BaseResourceRepository.NotFoundException(
+                        "snapshot disappeared before Owner publication replacement: "
+                            + snapshotId));
+    Snapshot.Builder nextBuilder = replacement.toBuilder().clearIngestedAt();
+    if (current.value().hasIngestedAt()) {
+      nextBuilder.setIngestedAt(current.value().getIngestedAt());
+    }
+    Snapshot next = nextBuilder.build();
+    if (next.equals(current.value())) {
+      return new PreparedReuseManifestPublication(current.value(), List.of());
+    }
+    Optional<SnapshotReuseManifestRef> actual =
+        current.value().hasReuseManifestRef()
+            ? Optional.of(current.value().getReuseManifestRef())
+            : Optional.empty();
+    if (!actual.equals(expectedReuseManifestRef)) {
+      throw new BaseResourceRepository.NameConflictException(
+          "snapshot reuse manifest changed after publication began: " + snapshotId);
+    }
+    return new PreparedReuseManifestPublication(
+        next, publicationUpdates(repo.prepareUpdateOps(next, current.meta().getPointerVersion())));
   }
 
   private PreparedReuseManifestPublication prepareReuseManifestUpdate(

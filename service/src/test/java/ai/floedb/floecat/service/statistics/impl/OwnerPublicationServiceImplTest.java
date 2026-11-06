@@ -812,9 +812,10 @@ class OwnerPublicationServiceImplTest {
   }
 
   @Test
-  void forceRebuildReplacesTheBeginTimeReuseRootInThePublicationFence() {
+  void forceRebuildReplacesSnapshotMetadataAndTheBeginTimeReuseRoot() {
     var service = service();
     var publication = begin().toBuilder().setReplaceExistingPublication(true).build();
+    var columnIdentityMap = columnIdentityMap();
     SnapshotReuseManifestRef previous = finalizedManifest("/capture/previous.pb", (byte) 1);
     Snapshot stored =
         Snapshot.newBuilder()
@@ -832,31 +833,32 @@ class OwnerPublicationServiceImplTest {
     var snapshotUpdate =
         new StatsStore.PublicationPointerUpdate(
             "/snapshots/by-id/42", 7L, Pointer.getDefaultInstance());
-    when(service.snapshots.prepareReuseManifestReplacement(
+    when(service.snapshots.prepareOwnerPublicationReplacement(
             eq(tableId()), eq(SNAPSHOT), eq(Optional.of(previous)), any()))
         .thenAnswer(
             invocation ->
                 new SnapshotRepository.PreparedReuseManifestPublication(
-                    stored.toBuilder()
-                        .setReuseManifestRef(
-                            invocation.getArgument(3, SnapshotReuseManifestRef.class))
-                        .build(),
-                    java.util.List.of(snapshotUpdate)));
+                    invocation.getArgument(3, Snapshot.class), java.util.List.of(snapshotUpdate)));
     var fence = ArgumentCaptor.<StatsStore.PublicationFence>captor();
     var manifest =
         baseManifest(OwnerPublicationServiceImpl.generationId(publication, CALLER_SUBJECT)).build();
+    var request =
+        complete(service, publication, manifest).toBuilder()
+            .setSnapshot(snapshotSpec().toBuilder().setColumnIdentityMap(columnIdentityMap).build())
+            .build();
 
-    var response =
-        service
-            .completeOwnerPublication(complete(service, publication, manifest))
-            .await()
-            .indefinitely();
+    var response = service.completeOwnerPublication(request).await().indefinitely();
 
     assertTrue(response.getActivated());
     verify(service.persistence)
         .activatePreparedStatsGeneration(
             any(), anyLong(), anyString(), any(), any(), fence.capture());
     assertTrue(fence.getValue().pointerUpdates().contains(snapshotUpdate));
+    var replacement = ArgumentCaptor.<Snapshot>captor();
+    verify(service.snapshots)
+        .prepareOwnerPublicationReplacement(
+            eq(tableId()), eq(SNAPSHOT), eq(Optional.of(previous)), replacement.capture());
+    assertEquals(columnIdentityMap, replacement.getValue().getColumnIdentityMap());
     verify(service.snapshots, never()).prepareReuseManifestPublication(any(), anyLong(), any());
   }
 
@@ -879,7 +881,7 @@ class OwnerPublicationServiceImplTest {
     when(service.reuseLeases.renew(any(), anyString(), any()))
         .thenReturn(
             new OwnerReuseLeaseRepository.RenewResult(Long.MAX_VALUE, true, Optional.of(previous)));
-    when(service.snapshots.prepareReuseManifestReplacement(
+    when(service.snapshots.prepareOwnerPublicationReplacement(
             eq(tableId()), eq(SNAPSHOT), eq(Optional.of(previous)), any()))
         .thenThrow(new BaseResourceRepository.NameConflictException("stale predecessor"));
     var manifest =
@@ -895,7 +897,7 @@ class OwnerPublicationServiceImplTest {
                     .indefinitely());
 
     assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
-    verify(service.snapshots).prepareReuseManifestReplacement(any(), anyLong(), any(), any());
+    verify(service.snapshots).prepareOwnerPublicationReplacement(any(), anyLong(), any(), any());
     verify(service.persistence, never())
         .activatePreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
   }
