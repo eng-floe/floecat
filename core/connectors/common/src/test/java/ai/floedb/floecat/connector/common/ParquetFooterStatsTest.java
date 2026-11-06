@@ -24,6 +24,7 @@ import ai.floedb.floecat.types.TemporalCoercions;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -36,6 +37,7 @@ import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.LogicalTypeAnnotation.TimeUnit;
+import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Types;
 import org.junit.jupiter.api.Test;
@@ -191,6 +193,51 @@ class ParquetFooterStatsTest {
       }
     }
     throw new IllegalStateException("Unable to locate LogicalTypeAnnotation.timeType");
+  }
+
+  @Test
+  void aStringBoundCutInsideACharacterIsDropped() {
+    PrimitiveType type =
+        Types.required(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("s");
+    LogicalType string = LogicalType.of(LogicalKind.STRING);
+    // "a" then the first three bytes of U+1F600's four: decoded leniently, "a" then U+FFFD.
+    byte[] cut = {0x61, (byte) 0xF0, (byte) 0x9F, (byte) 0x98};
+    assertThat(ParquetFooterStats.boundOf(stringStats(type, cut), chunkOf(type), string, false))
+        .isNull();
+  }
+
+  @Test
+  void aStringStoredAsPlainBinaryIsDecodedAsText() {
+    PrimitiveType plain = Types.required(PrimitiveTypeName.BINARY).named("b");
+    LogicalType string = LogicalType.of(LogicalKind.STRING);
+    byte[] whole = "a\uD83D\uDE00".getBytes(StandardCharsets.UTF_8);
+    assertThat(ParquetFooterStats.boundOf(stringStats(plain, whole), chunkOf(plain), string, false))
+        .isEqualTo("a\uD83D\uDE00");
+  }
+
+  /** Statistics of column {@code type} whose minimum and maximum are {@code bound}. */
+  private static Statistics<?> stringStats(PrimitiveType type, byte[] bound) {
+    return Statistics.getBuilderForReading(type)
+        .withMin(bound)
+        .withMax(bound)
+        .withNumNulls(0)
+        .build();
+  }
+
+  /** A column chunk of {@code type}. */
+  private static ColumnChunkMetaData chunkOf(PrimitiveType type) {
+    return ColumnChunkMetaData.get(
+        ColumnPath.get(type.getName()),
+        type,
+        CompressionCodecName.UNCOMPRESSED,
+        null,
+        Set.of(),
+        Statistics.createStats(type),
+        0,
+        0,
+        1,
+        0,
+        0);
   }
 
   private static Binary int96Binary(Instant instant) {

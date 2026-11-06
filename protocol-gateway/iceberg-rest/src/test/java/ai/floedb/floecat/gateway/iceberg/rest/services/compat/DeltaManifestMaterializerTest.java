@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.compat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -29,6 +30,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
+import com.fasterxml.jackson.databind.node.TextNode;
 import java.lang.reflect.Method;
 import java.net.URI;
 import java.nio.channels.Channels;
@@ -62,6 +64,7 @@ import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.SeekableInputStream;
 import org.apache.iceberg.io.SupportsPrefixOperations;
 import org.apache.iceberg.types.Conversions;
+import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -80,6 +83,20 @@ class DeltaManifestMaterializerTest {
 
   @BeforeEach
   void setUp() {}
+
+  @Test
+  void deltaBoundsAreMadeToHold() {
+    assertEquals("ab", boundOf(Types.StringType.get(), "aa\uFFFD", true));
+    assertNull(boundOf(Types.StringType.get(), "a\uFFFD", false));
+    assertNull(boundOf(Types.BinaryType.get(), "AAAA", false));
+    String timestamp = "2024-01-01T00:00:00.123Z";
+    assertEquals(1704067200123000L, boundOf(Types.TimestampType.withZone(), timestamp, false));
+    assertEquals(1704067200124000L, boundOf(Types.TimestampType.withZone(), timestamp, true));
+  }
+
+  private static Object boundOf(Type.PrimitiveType type, String text, boolean isMax) {
+    return DeltaManifestMaterializer.boundOf(type, TextNode.valueOf(text), isMax);
+  }
 
   @Test
   void materializeReadsDataFilesDirectlyFromDeltaLog() throws Exception {

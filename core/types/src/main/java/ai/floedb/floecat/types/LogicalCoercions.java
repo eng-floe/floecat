@@ -129,7 +129,10 @@ public final class LogicalCoercions {
         return new BigDecimal(v.toString());
       }
       case STRING -> {
-        return v.toString();
+        if (v instanceof CharSequence cs) {
+          return cs.toString();
+        }
+        throw new IllegalArgumentException("Invalid STRING value: " + v.getClass().getName());
       }
       case BINARY -> {
         if (v instanceof byte[] b) {

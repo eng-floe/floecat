@@ -26,6 +26,8 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -174,6 +176,16 @@ public final class ParquetFooterStats {
     return s == null || !s.hasNonNullValue() ? null : statToValue(s, c, lt, isMin);
   }
 
+  /** {@code b} decoded as UTF-8, or null when it is not. */
+  static String strictUtf8(Binary b) {
+    try {
+      // A new decoder reports malformed input rather than replacing it.
+      return StandardCharsets.UTF_8.newDecoder().decode(b.toByteBuffer()).toString();
+    } catch (CharacterCodingException notUtf8) {
+      return null;
+    }
+  }
+
   private static Object statToValue(
       Statistics<?> s, ColumnChunkMetaData c, LogicalType logical, boolean isMin) {
 
@@ -196,13 +208,10 @@ public final class ParquetFooterStats {
       }
     }
 
-    if (lta instanceof StringLogicalTypeAnnotation) {
-      if (v instanceof Binary b) {
-        return b.toStringUsingUTF8();
-      }
-      if (v instanceof CharSequence cs) {
-        return cs.toString();
-      }
+    // Also a string column stored as unannotated binary.
+    if (lta instanceof StringLogicalTypeAnnotation
+        || (logical != null && logical.kind() == LogicalKind.STRING)) {
+      return v instanceof Binary b ? strictUtf8(b) : null;
     }
 
     if (lta instanceof DecimalLogicalTypeAnnotation dec) {

@@ -20,12 +20,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.lang.reflect.Proxy;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.FileFormat;
@@ -37,6 +40,7 @@ import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.inmemory.InMemoryCatalog;
+import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
 
@@ -319,5 +323,88 @@ class IcebergPlannerTest {
         .withRecordCount(2)
         .withFormat(FileFormat.PARQUET)
         .build();
+  }
+
+  /** A planner of a table of schema {@code schema}. */
+  private static IcebergPlanner plannerOf(Schema schema) {
+    return plannerOf(schema, schema);
+  }
+
+  /** A planner of a snapshot of schema {@code schema}, of a table now of schema {@code current}. */
+  private static IcebergPlanner plannerOf(Schema schema, Schema current) {
+    Map<Integer, Schema> schemas = new HashMap<>(Map.of(current.schemaId(), current));
+    schemas.put(schema.schemaId(), schema);
+    Snapshot snapshot =
+        (Snapshot)
+            Proxy.newProxyInstance(
+                Snapshot.class.getClassLoader(),
+                new Class<?>[] {Snapshot.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schemaId" -> schema.schemaId();
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    Table table =
+        (Table)
+            Proxy.newProxyInstance(
+                Table.class.getClassLoader(),
+                new Class<?>[] {Table.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "snapshot" -> snapshot;
+                      case "schema" -> current;
+                      case "schemas" -> schemas;
+                      case "specs" -> Map.of();
+                      case "spec" -> null;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    return new IcebergPlanner(table, 1L, Set.of(), Set.of(), null, false);
+  }
+
+  @Test
+  void aSnapshotOfSchemaZeroIsPlannedWithIt() {
+    // Column 2 was dropped after the snapshot was written: its bound is decoded as schema 0's
+    // string, and one of a column the snapshot's schema lacks is dropped.
+    Schema first =
+        new Schema(
+            0,
+            Types.NestedField.optional(1, "id", Types.LongType.get()),
+            Types.NestedField.optional(2, "s", Types.StringType.get()));
+    Schema current = new Schema(1, Types.NestedField.optional(1, "id", Types.LongType.get()));
+    try (IcebergPlanner planner = plannerOf(first, current)) {
+      assertThat(planner.decodeBounds(Map.of(2, utf8("a")))).containsEntry(2, "a");
+      assertThat(planner.decodeBounds(Map.of(3, utf8("a")))).isNull();
+    }
+  }
+
+  @Test
+  void uuidBoundsAreDropped() {
+    // Row groups (00..., ff...) and (10..., 20...) merged in signed order give (00..., 20...): in
+    // byte order, yet below the first row group's values from 20... up.
+    Schema schema = new Schema(10, Types.NestedField.optional(1, "id", Types.UUIDType.get()));
+    try (IcebergPlanner planner = plannerOf(schema)) {
+      UUID uuid = UUID.fromString("00000000-0000-4000-8000-000000000001");
+      assertThat(
+              planner.decodeBounds(Map.of(1, Conversions.toByteBuffer(Types.UUIDType.get(), uuid))))
+          .isNull();
+    }
+  }
+
+  @Test
+  void aStringBoundThatIsNotUtf8OrHoldsUFFFDOrUFFFEIsDropped() {
+    Schema schema = new Schema(10, Types.NestedField.optional(2, "s", Types.StringType.get()));
+    try (IcebergPlanner planner = plannerOf(schema)) {
+      assertThat(planner.decodeBounds(Map.of(2, utf8("a")))).containsEntry(2, "a");
+      ByteBuffer cut = ByteBuffer.wrap(new byte[] {0x61, (byte) 0xF0, (byte) 0x9F});
+      assertThat(planner.decodeBounds(Map.of(2, cut))).isNull();
+      // Decoded leniently by Iceberg from a foreign footer: the cut character as U+FFFD, or as
+      // U+FFFE where Iceberg then incremented a maximum it cut after it.
+      assertThat(planner.decodeBounds(Map.of(2, utf8("a\uFFFD")))).isNull();
+      assertThat(planner.decodeBounds(Map.of(2, utf8("a\uFFFE")))).isNull();
+    }
+  }
+
+  private static ByteBuffer utf8(String string) {
+    return ByteBuffer.wrap(string.getBytes(StandardCharsets.UTF_8));
   }
 }
