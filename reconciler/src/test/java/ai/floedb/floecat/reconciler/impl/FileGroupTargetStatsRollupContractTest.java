@@ -31,6 +31,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
+import ai.floedb.floecat.types.rpc.LogicalType;
 import ai.floedb.floecat.types.rpc.ScalarValue;
 import java.util.List;
 import java.util.Set;
@@ -78,6 +79,37 @@ class FileGroupTargetStatsRollupContractTest {
             .setBoundsExact(true)
             .build();
     assertFalse(mergeFiles(file(exact), file(exact)).getScalar().getBoundsExact());
+  }
+
+  @Test
+  void aBoundStillHoldsWhenTheMergeSettlesOnACoarserTemporalType() {
+    ScalarStats micros =
+        ScalarStats.newBuilder()
+            .setDisplayName("col")
+            .setLogicalType("TIMESTAMP")
+            .setType(LogicalType.newBuilder().setKind(LogicalType.Kind.TK_TIMESTAMP))
+            .setRowCount(10)
+            .setNullCount(0)
+            .setMinValue(ScalarValue.newBuilder().setTs(1_000_500))
+            .setMaxValue(ScalarValue.newBuilder().setTs(2_000_500))
+            .build();
+    ScalarStats millis =
+        micros.toBuilder()
+            .setLogicalType("TIMESTAMP(3)")
+            .setType(
+                LogicalType.newBuilder()
+                    .setKind(LogicalType.Kind.TK_TIMESTAMP)
+                    .setTemporalPrecision(3))
+            .setMinValue(ScalarValue.newBuilder().setTs(1_500))
+            .setMaxValue(ScalarValue.newBuilder().setTs(1_600))
+            .build();
+
+    // The merge takes the more specific milliseconds after folding the first file's microseconds.
+    ScalarStats merged = mergeFiles(file(micros), file(millis)).getScalar();
+
+    assertEquals(3, merged.getType().getTemporalPrecision());
+    assertEquals(1_000L, merged.getMinValue().getTs());
+    assertEquals(2_001L, merged.getMaxValue().getTs());
   }
 
   @Test
