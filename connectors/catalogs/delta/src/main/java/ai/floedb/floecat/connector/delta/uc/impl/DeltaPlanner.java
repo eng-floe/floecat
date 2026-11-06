@@ -814,6 +814,12 @@ final class DeltaPlanner implements Planner<String> {
   }
 
   @Override
+  public boolean coversSnapshot() {
+    // A file without log stats is left out of the plan.
+    return plannedFilePaths.isEmpty() && !missingLogStats;
+  }
+
+  @Override
   public void close() {}
 
   @Override

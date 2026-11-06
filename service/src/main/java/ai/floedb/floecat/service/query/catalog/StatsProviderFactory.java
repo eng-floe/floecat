@@ -27,6 +27,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.RelationStats;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.schema.identity.ColumnIdentityMaps;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.query.QueryContextStore;
@@ -299,10 +300,7 @@ public final class StatsProviderFactory {
                 facts ->
                     hasExpectedColumnIdentity(
                         tableId, snapshotId, facts.columnIdentityFingerprint()))
-            .map(
-                facts ->
-                    new TableStatsViewImpl(
-                        tableId, snapshotId, facts.rowCount(), facts.totalSizeBytes()));
+            .map(facts -> new TableStatsViewImpl(tableId, snapshotId, facts));
       } catch (RuntimeException e) {
         rethrowSnapshotExpired(e);
         LOG.debugf(e, "table stats lookup failed for %s snapshot %s", tableId, snapshotId);
@@ -409,16 +407,21 @@ public final class StatsProviderFactory {
     }
 
     private record TableStatsViewImpl(
-        ResourceId tableId, long snapshotId, OptionalLong rowCount, OptionalLong totalSizeBytes)
+        ResourceId tableId, long snapshotId, ObjectCache.SnapshotFacts facts)
         implements StatsProvider.TableStatsView {
       @Override
       public OptionalLong rowCountValue() {
-        return rowCount;
+        return facts.rowCount();
+      }
+
+      @Override
+      public boolean rowCountExact() {
+        return facts.rowCountExact();
       }
 
       @Override
       public OptionalLong totalSizeBytesValue() {
-        return totalSizeBytes;
+        return facts.totalSizeBytes();
       }
     }
 
@@ -469,7 +472,9 @@ public final class StatsProviderFactory {
 
   static RelationStats toRelationStats(StatsProvider.TableStatsView stats) {
     RelationStats.Builder builder = RelationStats.newBuilder();
-    stats.rowCountValue().ifPresent(builder::setRowCount);
+    stats
+        .rowCountValue()
+        .ifPresent(rows -> builder.setRowCount(rows).setRowCountExact(stats.rowCountExact()));
     stats.totalSizeBytesValue().ifPresent(builder::setTotalSizeBytes);
     return builder.build();
   }

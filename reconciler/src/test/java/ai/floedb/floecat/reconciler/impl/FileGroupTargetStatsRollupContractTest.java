@@ -63,6 +63,24 @@ class FileGroupTargetStatsRollupContractTest {
   }
 
   @Test
+  void aFileGroupVouchesForNeitherACountNorABound() {
+    // The files a file group plans need not be all of the snapshot's.
+    TargetStatsRecord partial = tablePartial(10, 1);
+    TargetStatsRecord exactPartial =
+        partial.toBuilder().setTable(partial.getTable().toBuilder().setRowCountExact(true)).build();
+    assertFalse(mergedTable(exactPartial, exactPartial).getRowCountExact());
+
+    ScalarStats exact =
+        ints(10)
+            .setNullCount(0)
+            .setMinValue(i64(1))
+            .setMaxValue(i64(5))
+            .setBoundsExact(true)
+            .build();
+    assertFalse(mergeFiles(file(exact), file(exact)).getScalar().getBoundsExact());
+  }
+
+  @Test
   void aColumnSomeDataFileDoesNotReportIsPartialAndUnbounded() {
     ScalarStats bounded = ints(10).setNullCount(0).setMinValue(i64(1)).setMaxValue(i64(5)).build();
 
@@ -219,6 +237,17 @@ class FileGroupTargetStatsRollupContractTest {
     return fileRecord(
         scalar.getRowCount(),
         List.of(FileColumnStats.newBuilder().setColumnId(1L).setScalar(scalar).build()));
+  }
+
+  /** The table record merged from table {@code partials}. */
+  private static TableValueStats mergedTable(TargetStatsRecord... partials) {
+    return FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+            TABLE, 1L, Set.of(FloecatConnector.StatsTargetKind.TABLE), List.of(partials))
+        .stream()
+        .filter(TargetStatsRecord::hasTable)
+        .findFirst()
+        .orElseThrow()
+        .getTable();
   }
 
   /** A data file of {@code rows} rows reporting nothing for column 1. */

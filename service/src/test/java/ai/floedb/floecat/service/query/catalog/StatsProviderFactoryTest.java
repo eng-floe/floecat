@@ -217,6 +217,7 @@ class StatsProviderFactoryTest {
     TableValueStats stats =
         TableValueStats.newBuilder()
             .setRowCount(5)
+            .setRowCountExact(true)
             .setTotalSizeBytes(7_777)
             .setUpstream(
                 UpstreamStamp.newBuilder()
@@ -234,6 +235,7 @@ class StatsProviderFactoryTest {
     var provider = factory.forQuery(ctx, "corr");
     var view = provider.tableStats(TABLE).orElseThrow();
     assertEquals(stats.getRowCount(), view.rowCountValue().orElseThrow());
+    assertTrue(view.rowCountExact());
     assertEquals(stats.getTotalSizeBytes(), view.totalSizeBytesValue().orElseThrow());
     assertEquals(snapshotId, view.snapshotId());
     assertEquals(1, repository.tableStatsCalls());
@@ -477,7 +479,7 @@ class StatsProviderFactoryTest {
         .thenReturn(
             Optional.of(
                 new ai.floedb.floecat.service.cache.ObjectCache.SnapshotFacts(
-                    OptionalLong.of(1), OptionalLong.of(2), "")));
+                    OptionalLong.of(1), false, OptionalLong.of(2), "")));
 
     var provider = factory.forQuery(ctx, "corr");
     assertTrue(provider.tableStats(TABLE).isPresent());

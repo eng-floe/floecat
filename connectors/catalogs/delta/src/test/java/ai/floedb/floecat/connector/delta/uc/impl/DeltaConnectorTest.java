@@ -792,6 +792,48 @@ class DeltaConnectorTest {
         : map;
   }
 
+  @Test
+  void aPlannerLeavingADataFileOutDoesNotCoverTheSnapshot() throws Exception {
+    String schema =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\","
+            + "\"nullable\":false,\"metadata\":{}}]}";
+    String location = deltaTable(schema, addAction("a.parquet"));
+    Engine engine = DefaultEngine.create(new LocalFileSystemClient(tempDir));
+
+    // A file without log stats is left out of the plan, as is one a file group does not list.
+    try (var unstated = deltaPlanner(engine, location, Set.of());
+        var grouped = deltaPlanner(engine, location, Set.of(location + "/b.parquet"))) {
+      assertTrue(unstated.missingLogStats());
+      assertFalse(unstated.coversSnapshot());
+      assertFalse(grouped.missingLogStats());
+      assertFalse(grouped.coversSnapshot());
+    }
+  }
+
+  /** A Delta table of {@code schema} whose version 0 adds {@code add}: its location. */
+  private String deltaTable(String schema, String add) throws IOException {
+    Path logPath = Files.createDirectories(tempDir.resolve("bucket/t/_delta_log"));
+    writeDeltaCommit(
+        logPath,
+        0,
+        "{\"protocol\":{\"minReaderVersion\":1,\"minWriterVersion\":2}}",
+        metadataAction(schema),
+        add);
+    return "s3://bucket/t";
+  }
+
+  /** A data file {@code path} the log gives no stats for. */
+  private static String addAction(String path) {
+    return "{\"add\":{\"path\":\""
+        + path
+        + "\",\"partitionValues\":{},\"size\":1,\"modificationTime\":0,\"dataChange\":true}}";
+  }
+
+  private static DeltaPlanner deltaPlanner(Engine engine, String location, Set<String> paths) {
+    return new DeltaPlanner(
+        engine, path -> null, location, 0L, Set.of(), paths, Map.of(), null, true, false);
+  }
+
   private static void writeDeltaCommit(Path logPath, long version, String... actions)
       throws IOException {
     Files.writeString(

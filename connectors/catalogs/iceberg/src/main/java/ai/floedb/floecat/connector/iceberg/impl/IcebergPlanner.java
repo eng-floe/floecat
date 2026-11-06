@@ -72,6 +72,7 @@ final class IcebergPlanner implements Planner<Integer> {
   private final NdvProvider ndvProvider;
   private final Set<Integer> columnSet;
   private final Set<String> plannedFilePaths;
+  private final boolean coversSnapshot;
   private final Schema schema;
   private final Map<Integer, PartitionSpec> specsById;
   private final PartitionSpec defaultSpec;
@@ -88,6 +89,7 @@ final class IcebergPlanner implements Planner<Integer> {
         plannedFilePaths == null || plannedFilePaths.isEmpty()
             ? Set.of()
             : Collections.unmodifiableSet(new LinkedHashSet<>(plannedFilePaths));
+    this.coversSnapshot = planFiles && this.plannedFilePaths.isEmpty();
 
     Snapshot snap = table.snapshot(snapshotId);
     Integer snapSchemaId = snap != null ? snap.schemaId() : null;
@@ -146,6 +148,11 @@ final class IcebergPlanner implements Planner<Integer> {
   @Override
   public Iterator<PlannedFile<Integer>> iterator() {
     return files.iterator();
+  }
+
+  @Override
+  public boolean coversSnapshot() {
+    return coversSnapshot;
   }
 
   List<DeleteFileStat> deleteFiles() {

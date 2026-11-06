@@ -125,9 +125,12 @@ public final class ObjectCache {
     }
   }
 
-  /** The two small ingest-shaped values relation assembly needs from table-level statistics. */
+  /** The small ingest-shaped values relation assembly needs from table-level statistics. */
   public record SnapshotFacts(
-      OptionalLong rowCount, OptionalLong totalSizeBytes, String columnIdentityFingerprint)
+      OptionalLong rowCount,
+      boolean rowCountExact,
+      OptionalLong totalSizeBytes,
+      String columnIdentityFingerprint)
       implements WeightedValue {
     public SnapshotFacts {
       Objects.requireNonNull(rowCount, "rowCount");

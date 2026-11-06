@@ -69,6 +69,16 @@ text, and binary values use unpadded-or-padded RFC 4648 Base64. `ValueEncoders.e
 appropriate only for populating those legacy fields; new connectors should construct `ScalarValue`s
 directly.
 
+### Exact row counts and bounds
+
+`TableValueStats.row_count_exact` says that `row_count` is exactly the live rows described.
+`ScalarStats.bounds_exact` says that each of `min_value` and `max_value` that is present is a value
+held by some live row described, NaN ignored, rather than only a bound of them. A planner answers `count(*)`, `min()`
+and `max()` from them, so a provider sets each only when it holds; unset reads as not exact.
+`RelationStats.row_count_exact` passes the row count's exactness on to planners, for the
+`row_count` of the same reply only. A record marked snapshot-neutral is reused for other
+snapshots, so its flags must hold for each of them.
+
 ### Temporal values (no numeric heuristics)
 
 Floecat does not guess time units based on numeric magnitude. Connectors must supply typed temporal
