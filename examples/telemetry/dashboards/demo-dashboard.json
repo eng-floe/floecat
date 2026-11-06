@@ -118,7 +118,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "### Floecat Telemetry Hub\n**Signal \u2192 Trace \u2192 Log \u2192 Profile.** When something is slow, we know why \u2014 and we can prove it.\n\n1. Start service: `QUARKUS_PROFILE=telemetry-otlp,telemetry-prof` with `-Dfloecat.profiling.enabled=true`\n2. Start stack: `examples/telemetry/demo.sh` \u2022 Open this dashboard\n3. Generate load: `make cli-run` \u2192 `tables examples.iceberg`\n4. Watch **Service health** \u2192 drill into **RPC** \u2192 open **Profiling** to capture a JFR\n5. Profiling demo: `./demo.sh --profiling-demo` (triggers JFR \u2192 prints artifact download command)\n\n**Trace links**: Click any RPC series \u2192 *View traces in Tempo*. From Tempo \u2192 *Logs for this trace* in Loki. From capture metadata \u2192 download JFR \u2192 open in JMC."
+        "content": "### Floecat Telemetry Hub\n**Signal \u2192 Trace \u2192 Log.** When something is slow, we know why \u2014 and we can prove it.\n\n1. Start service: `QUARKUS_PROFILE=telemetry-otlp`\n2. Start stack: `examples/telemetry/demo.sh` \u2022 Open this dashboard\n3. Generate load: `make cli-run` \u2192 `tables examples.iceberg`\n4. Watch **Service health** \u2192 drill into **RPC**\n\n**Trace links**: Click any RPC series \u2192 *View traces in Tempo*. From Tempo \u2192 *Logs for this trace* in Loki."
       }
     },
     {
@@ -527,98 +527,6 @@
     },
     {
       "type": "row",
-      "title": "Profiling (On-Demand & Policy)",
-      "id": 36,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 8
-      },
-      "collapsed": true,
-      "panels": [
-        {
-          "type": "table",
-          "title": "Profiling captures (5m)",
-          "id": 1000,
-          "datasource": "${DS_PROMETHEUS}",
-          "gridPos": {
-            "h": 6,
-            "w": 8,
-            "x": 0,
-            "y": 9
-          },
-          "targets": [
-            {
-              "refId": "P",
-              "expr": "sum by (result, trigger, policy) (increase(floecat_profiling_captures_total[5m]))",
-              "format": "table"
-            }
-          ],
-          "transformations": [],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "short"
-            },
-            "overrides": []
-          }
-        },
-        {
-          "type": "stat",
-          "title": "Capture in flight",
-          "description": "Number of profiling captures currently running (started minus completed/failed). Should be 0 or 1 \u2014 more than 1 is unexpected given the single-flight guard.",
-          "id": 1001,
-          "datasource": "${DS_PROMETHEUS}",
-          "gridPos": {
-            "h": 3,
-            "w": 4,
-            "x": 8,
-            "y": 9
-          },
-          "targets": [
-            {
-              "refId": "Q",
-              "expr": "clamp_min(sum(floecat_profiling_captures_total{result=\"started\"}) - sum(floecat_profiling_captures_total{result=\"completed\"}) - sum(floecat_profiling_captures_total{result=\"failed\"} or vector(0)), 0)"
-            }
-          ],
-          "options": {
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "values": false,
-              "fields": ""
-            },
-            "orientation": "auto",
-            "textMode": "auto",
-            "colorMode": "background",
-            "graphMode": "none",
-            "justifyMode": "center"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "short",
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "yellow",
-                    "value": 1
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          }
-        }
-      ]
-    },
-    {
-      "type": "row",
       "title": "RPC",
       "id": 9,
       "gridPos": {
@@ -717,11 +625,6 @@
         {
           "refId": "C",
           "expr": "1000 * (sum by (operation) (rate(floecat_core_rpc_latency_seconds_sum{component=~\"$component\",operation=~\"$rpc_operation\"}[${__rate_interval}])) / clamp_min(sum by (operation) (rate(floecat_core_rpc_latency_seconds_count{component=~\"$component\",operation=~\"$rpc_operation\"}[${__rate_interval}])), 1))"
-        },
-        {
-          "refId": "E",
-          "expr": "increase(floecat_profiling_captures_total{trigger=\"policy\"}[1m])",
-          "tiny": true
         }
       ],
       "fieldConfig": {
@@ -1244,7 +1147,7 @@
       "title": "Executor queue depth (pending tasks)",
       "id": 35,
       "datasource": "${DS_PROMETHEUS}",
-      "description": "Tasks waiting in executor pool queues. Rising depth alongside rising RPC latency is a saturation signal \u2014 a good moment to trigger a profiling capture.",
+      "description": "Tasks waiting in executor pool queues. Rising depth alongside rising RPC latency is a saturation signal.",
       "gridPos": {
         "h": 5,
         "w": 24,

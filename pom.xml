@@ -93,6 +93,7 @@
     <test.jvm.args>--add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED -Djava.util.logging.manager=org.jboss.logmanager.LogManager -Dcom.google.protobuf.useUnsafe=false -Dio.netty.noUnsafe=true -javaagent:${bytebuddy.agent.path}</test.jvm.args>
     <test.jvm.args.extra></test.jvm.args.extra>
     <argLine></argLine>
+    <version.pyroscope>2.9.2</version.pyroscope>
   </properties>
 
   <modules>

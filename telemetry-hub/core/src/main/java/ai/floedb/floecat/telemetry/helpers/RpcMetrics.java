@@ -84,6 +84,18 @@ public final class RpcMetrics extends BaseMetrics {
     observability.counter(Telemetry.Metrics.RPC_REQUESTS, 1, metricTags(dynamic));
   }
 
+  /**
+   * Records serialized protobuf payload bytes for a single gRPC message. {@code direction} is
+   * {@code "inbound"} for request messages received or {@code "outbound"} for response messages
+   * sent; callers invoke this exactly once per message so the counter reflects wire payload volume.
+   */
+  public void recordBytes(String direction, long bytes, Tag... extraTags) {
+    List<Tag> dynamic = new ArrayList<>();
+    dynamic.add(Tag.of(TagKey.DIRECTION, direction));
+    addExtra(dynamic, extraTags);
+    observability.counter(Telemetry.Metrics.RPC_BYTES, bytes, metricTags(dynamic));
+  }
+
   public ObservationScopeHolder observe(Tag... tags) {
     return new ObservationScopeHolder(
         observability.observe(
