@@ -83,6 +83,7 @@ final class StatsCanonicalizer {
             if (scalar.hasMaxValue()) {
               g.scalar("max_value", scalar.getMaxValue().toByteArray());
             }
+            if (scalar.getBoundsExact()) g.scalar("bounds_exact", true);
             if (scalar.hasAvgWidthBytes()) g.scalar("avg_width_bytes", scalar.getAvgWidthBytes());
             var sketches = new ArrayList<>(scalar.getSketchesList());
             sketches.sort(sketchOrder());
@@ -124,6 +125,7 @@ final class StatsCanonicalizer {
     if (stats.hasMaxValue()) {
       c.scalar("max_value", stats.getMaxValue().toByteArray());
     }
+    if (stats.getBoundsExact()) c.scalar("bounds_exact", true);
     if (stats.hasAvgWidthBytes()) c.scalar("avg_width_bytes", stats.getAvgWidthBytes());
     var sketches = new ArrayList<>(stats.getSketchesList());
     sketches.sort(sketchOrder());

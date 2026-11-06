@@ -63,12 +63,21 @@ class FileGroupTargetStatsRollupContractTest {
   }
 
   @Test
-  void aFileGroupVouchesForNoRowCount() {
+  void aFileGroupVouchesForNeitherACountNorABound() {
     // The files a file group plans need not be all of the snapshot's.
     TargetStatsRecord partial = tablePartial(10, 1);
     TargetStatsRecord exactPartial =
         partial.toBuilder().setTable(partial.getTable().toBuilder().setRowCountExact(true)).build();
     assertFalse(mergedTable(exactPartial, exactPartial).getRowCountExact());
+
+    ScalarStats exact =
+        ints(10)
+            .setNullCount(0)
+            .setMinValue(i64(1))
+            .setMaxValue(i64(5))
+            .setBoundsExact(true)
+            .build();
+    assertFalse(mergeFiles(file(exact), file(exact)).getScalar().getBoundsExact());
   }
 
   @Test
