@@ -1280,6 +1280,28 @@ class CatalogOverlaysImplTest {
   }
 
   @Test
+  void allowsNestedUnmappedIncludesWithAnUnrelatedMapping() {
+    NamespaceMapping mapping =
+        NamespaceMapping.newBuilder()
+            .setSource(path("sales"))
+            .setDestination(path("reports"))
+            .build();
+
+    var response =
+        create(
+            CatalogOverlaySpec.newBuilder()
+                .addIncludeNamespaces(path("sales"))
+                .addIncludeNamespaces(path("finance"))
+                .addIncludeNamespaces(path("finance", "ledger"))
+                .addNamespaceMappings(mapping));
+
+    assertEquals(List.of(mapping), response.getOverlay().getNamespaceMappingsList());
+    assertEquals(
+        List.of(path("finance"), path("finance", "ledger"), path("sales")),
+        response.getOverlay().getIncludeNamespacesList());
+  }
+
+  @Test
   void rejectsMappingDestinationOverlappingAnUnmappedInclude() {
     var error =
         assertThrows(

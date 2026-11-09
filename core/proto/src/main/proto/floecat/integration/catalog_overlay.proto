@@ -29,7 +29,8 @@ message NamespacePath {
 
 // Renames a selected upstream namespace prefix to a local prefix; descendants keep their suffix.
 // Each source must be an include. Unmapped includes retain their upstream paths. A mapped include
-// cannot overlap another include, and destinations cannot overlap, including unmapped include paths.
+// cannot overlap another include, and its destination cannot overlap another destination,
+// including an unmapped include path. Unmapped includes may overlap each other.
 // Only namespaces are renamed: mirrored view SQL is stored verbatim, so references that name an
 // upstream namespace are not rewritten.
 message NamespaceMapping {

@@ -865,8 +865,8 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
       NamespacePath left = includes.get(i);
       for (int j = i + 1; j < includes.size(); j++) {
         NamespacePath right = includes.get(j);
-        if (overlaps(left, right)
-            && (destinations.containsKey(left) || destinations.containsKey(right))) {
+        boolean mapped = destinations.containsKey(left) || destinations.containsKey(right);
+        if (mapped && overlaps(left, right)) {
           throw GrpcErrors.invalidArgument(
               corr,
               FIELD,
@@ -874,8 +874,9 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                   "field", "namespace_mappings.source",
                   "reason", "a mapped include cannot contain or sit inside another include"));
         }
-        if (overlaps(
-            destinations.getOrDefault(left, left), destinations.getOrDefault(right, right))) {
+        if (mapped
+            && overlaps(
+                destinations.getOrDefault(left, left), destinations.getOrDefault(right, right))) {
           throw GrpcErrors.invalidArgument(
               corr,
               FIELD,
