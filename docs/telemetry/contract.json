@@ -300,6 +300,16 @@
     "allowedTags": ["component", "operation"]
   },
   {
+    "name": "floecat.core.rpc.bytes",
+    "type": "COUNTER",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "core",
+    "description": "Serialized protobuf payload bytes per RPC operation, tagged by direction (inbound request messages, outbound response messages).",
+    "requiredTags": ["component", "direction", "operation"],
+    "allowedTags": ["component", "direction", "operation"]
+  },
+  {
     "name": "floecat.core.rpc.errors",
     "type": "COUNTER",
     "unit": "",
@@ -458,16 +468,6 @@
     "description": "Live data growth rate (bytes/second) for GC-managed pools.",
     "requiredTags": ["component", "gc", "operation"],
     "allowedTags": ["component", "gc", "operation"]
-  },
-  {
-    "name": "floecat.profiling.captures.total",
-    "type": "COUNTER",
-    "unit": "",
-    "since": "v1",
-    "origin": "profiling",
-    "description": "Profiling capture lifecycle counts (started/completed/failed/dropped).",
-    "requiredTags": ["component", "mode", "operation", "result", "scope", "trigger"],
-    "allowedTags": ["component", "mode", "operation", "policy", "reason", "result", "scope", "trigger"]
   },
   {
     "name": "floecat.service.flight.cancelled.total",

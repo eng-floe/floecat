@@ -77,17 +77,9 @@ Every metric-emitting scope, span, and log entry participates in a small correla
 
 Keeping these keys consistent lets Grafana/Tempo/Loki dashboards present a seamless “metric spike → trace → log” workflow without chasing per-module naming quirks.
 
-## Profiling capture metadata
+## Continuous JVM profiling
 
-Profiling captures are **on-demand and forensic-grade** — triggered by a policy breach or an explicit API call, not continuously. Overhead is zero during normal operation; each capture is causally linked to a visible observability signal.
-
-Policy-driven captures emit richer metadata so dashboards can explain why a recording exists:
-
-- `requestedBy` describes the actor (e.g., `cli`, `policy/latency_threshold`) that asked for the capture.
-- `requestedByType` distinguishes manual actors (`manual`) from automated policies (`policy`).
-- `policyName` and `policySignal` record the specific monitor that triggered the capture, and the metric `policy` tag mirrors that value so you can filter the `floecat.profiling.captures.total` counter right in Prometheus/Grafana.
-
-Keeping those fields synced with the REST API plus the `policy` tag lets dashboards surface a “jump to profile” link annotated with the exact latency/queue/GC signal that fired the capture.
+JVM profiling is **always-on** rather than on-demand: when `floecat.profiling.enabled` is set and a Pyroscope server URL is configured, Floecat streams CPU and live-allocation profiles to Pyroscope (JFR format) for the whole process lifetime. There is no capture REST API or policy-triggered recording — profiles correlate with metrics and traces through Pyroscope and the shared `floecat.component`/`floecat.operation` labels.
 
 ## Strict vs Lenient mode
 
