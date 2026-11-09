@@ -1144,6 +1144,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#exact-row-counts-and-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      Exact row counts and bounds
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#temporal-values-no-numeric-heuristics" class="md-nav__link">
     <span class="md-ellipsis">
       Temporal values (no numeric heuristics)
@@ -1806,6 +1815,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#exact-row-counts-and-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      Exact row counts and bounds
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#temporal-values-no-numeric-heuristics" class="md-nav__link">
     <span class="md-ellipsis">
       Temporal values (no numeric heuristics)
@@ -1962,6 +1980,14 @@ numbers use canonical decimal text, temporal values use ISO-8601, UUIDs use lowe
 text, and binary values use unpadded-or-padded RFC 4648 Base64. <code>ValueEncoders.encodeToString</code> is
 appropriate only for populating those legacy fields; new connectors should construct <code>ScalarValue</code>s
 directly.</p>
+<h3 id="exact-row-counts-and-bounds">Exact row counts and bounds<a class="headerlink" href="#exact-row-counts-and-bounds" title="Permanent link">&para;</a></h3>
+<p><code>TableValueStats.row_count_exact</code> says that <code>row_count</code> is exactly the live rows described.
+<code>ScalarStats.bounds_exact</code> says that each of <code>min_value</code> and <code>max_value</code> that is present is a value
+held by some live row described, NaN ignored, rather than only a bound of them. A planner answers <code>count(*)</code>, <code>min()</code>
+and <code>max()</code> from them, so a provider sets each only when it holds; unset reads as not exact.
+<code>RelationStats.row_count_exact</code> passes the row count's exactness on to planners, for the
+<code>row_count</code> of the same reply only. A record marked snapshot-neutral is reused for other
+snapshots, so its flags must hold for each of them.</p>
 <h3 id="temporal-values-no-numeric-heuristics">Temporal values (no numeric heuristics)<a class="headerlink" href="#temporal-values-no-numeric-heuristics" title="Permanent link">&para;</a></h3>
 <p>Floecat does not guess time units based on numeric magnitude. Connectors must supply typed temporal
 values (e.g., <code>LocalTime</code>, <code>LocalDateTime</code>, <code>Instant</code>) with the precision carried by the typed

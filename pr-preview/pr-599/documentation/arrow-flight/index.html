@@ -2124,6 +2124,8 @@
 <li>Validate query identity (<code>query_id</code> vs <code>x-query-id</code> if both are present).</li>
 <li>Resolve table handle (<code>target.name</code> or <code>target.id</code>) and project schema.</li>
 <li>Return a <code>FlightInfo</code> with projected schema and a versioned opaque ticket.</li>
+<li>Endpoint locations are empty: redeem tickets through the connection used for <code>GetFlightInfo</code>.
+  Multiple tickets can be read concurrently on that connection.</li>
 <li>No data scan happens in this phase.</li>
 </ul>
 <h3 id="phase-2-getstream">Phase 2: <code>GetStream</code><a class="headerlink" href="#phase-2-getstream" title="Permanent link">&para;</a></h3>
@@ -2143,7 +2145,6 @@
 <li><code>tableNames(...)</code> (canonical lowercase names, for example <code>sys.session</code>)</li>
 <li><code>schemaColumns(...)</code></li>
 <li><code>buildPlan(...)</code></li>
-<li><code>selfLocation()</code></li>
 </ul>
 <p>Optional:</p>
 <ul>
@@ -2264,7 +2265,7 @@ stream ends or fails. Producer code should not close the parent allocator.</p>
 <tr>
 <td><code>floecat.flight.advertised-port</code></td>
 <td><code>80</code></td>
-<td>Port returned in <code>FlightEndpointRef</code> and <code>FlightInfo</code></td>
+<td>Port returned in <code>FlightEndpointRef</code></td>
 </tr>
 <tr>
 <td><code>quarkus.grpc.server.port</code></td>
@@ -2274,7 +2275,7 @@ stream ends or fails. Producer code should not close the parent allocator.</p>
 <tr>
 <td><code>quarkus.grpc.server.plain-text</code></td>
 <td><code>true</code></td>
-<td>Controls whether advertised Flight locations use insecure gRPC or TLS</td>
+<td>Listener transport and TLS flag in <code>FlightEndpointRef</code></td>
 </tr>
 <tr>
 <td><code>floecat.flight.memory.max-bytes</code></td>
