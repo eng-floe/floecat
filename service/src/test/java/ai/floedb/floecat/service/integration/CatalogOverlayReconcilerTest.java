@@ -244,6 +244,103 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void partialMappingKeepsUnmappedIncludeAndOmitsMappedSourceAncestors() {
+    NamespacePath parent = NamespacePath.of("main");
+    NamespacePath sales = NamespacePath.of("main", "sales");
+    NamespacePath finance = NamespacePath.of("finance");
+    client.children.put(NamespacePath.root(), List.of(parent, finance));
+    client.children.put(parent, List.of(sales));
+    client.children.put(sales, List.of());
+    client.children.put(finance, List.of());
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    CatalogObjectName ledger = new CatalogObjectName(finance, "ledger");
+    client.tables.put(orders, catalogTable(orders, "orders-id"));
+    client.tables.put(ledger, catalogTable(ledger, "ledger-id"));
+    overlay =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("main")
+                    .addSegments("sales"))
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder().addSegments("finance"))
+            .addNamespaceMappings(
+                NamespaceMapping.newBuilder()
+                    .setSource(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("main")
+                            .addSegments("sales"))
+                    .setDestination(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("reports")))
+            .build();
+    overlays.update(overlay, overlays.metaFor(overlay.getResourceId()).getPointerVersion());
+
+    var result = reconcile();
+
+    assertEquals(2, result.tablesCreated());
+    assertTrue(namespaces.getByPath("acct", "catalog", List.of("main")).isEmpty());
+    var reportsNamespace =
+        namespaces.getByPath("acct", "catalog", List.of("reports")).orElseThrow();
+    var financeNamespace =
+        namespaces.getByPath("acct", "catalog", List.of("finance")).orElseThrow();
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", reportsNamespace.getResourceId().getId(), "orders")
+            .isPresent());
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", financeNamespace.getResourceId().getId(), "ledger")
+            .isPresent());
+  }
+
+  @Test
+  void mappedDescendantWithDeniedTableListingRetainsItsRelation() {
+    NamespacePath main = NamespacePath.of("main");
+    NamespacePath sales = NamespacePath.of("main", "sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(main));
+    client.children.put(main, List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-id"));
+    overlay =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder().addSegments("main"))
+            .addNamespaceMappings(
+                NamespaceMapping.newBuilder()
+                    .setSource(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("main"))
+                    .setDestination(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("analytics")))
+            .build();
+    overlays.update(overlay, overlays.metaFor(overlay.getResourceId()).getPointerVersion());
+
+    reconcile();
+    var destination =
+        namespaces.getByPath("acct", "catalog", List.of("analytics", "sales")).orElseThrow();
+    var before =
+        tables
+            .getByName("acct", "catalog", destination.getResourceId().getId(), "orders")
+            .orElseThrow();
+    client.deniedTableListings.add(sales);
+
+    var result = reconcile();
+
+    assertEquals(1, result.branchesSkipped());
+    assertEquals(0, result.tablesDeleted());
+    var after =
+        tables
+            .getByName("acct", "catalog", destination.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertEquals(before.getResourceId(), after.getResourceId());
+  }
+
+  @Test
   void mappedViewResolvesUnqualifiedRelationsInDestinationNamespace() {
     NamespacePath source = NamespacePath.of("sales");
     client.children.put(NamespacePath.root(), List.of(source));

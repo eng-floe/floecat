@@ -22,6 +22,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.CreateMode;
+import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -55,6 +56,7 @@ import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.List;
@@ -1257,6 +1259,149 @@ class CatalogOverlaysImplTest {
                 .addNamespaceMappings(mapping));
 
     assertEquals(List.of(mapping), response.getOverlay().getNamespaceMappingsList());
+  }
+
+  @Test
+  void storesOnlyExplicitMappingWhenOtherIncludesKeepTheirPaths() {
+    NamespaceMapping mapping =
+        NamespaceMapping.newBuilder()
+            .setSource(path("sales"))
+            .setDestination(path("reports"))
+            .build();
+
+    var response =
+        create(
+            CatalogOverlaySpec.newBuilder()
+                .addIncludeNamespaces(path("sales"))
+                .addIncludeNamespaces(path("finance"))
+                .addNamespaceMappings(mapping));
+
+    assertEquals(List.of(mapping), response.getOverlay().getNamespaceMappingsList());
+  }
+
+  @Test
+  void rejectsMappingDestinationOverlappingAnUnmappedInclude() {
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                create(
+                    CatalogOverlaySpec.newBuilder()
+                        .addIncludeNamespaces(path("sales"))
+                        .addIncludeNamespaces(path("reports", "daily"))
+                        .addNamespaceMappings(
+                            NamespaceMapping.newBuilder()
+                                .setSource(path("sales"))
+                                .setDestination(path("reports")))));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    assertTrue(error.getStatus().getDescription().contains("namespace_mappings.destination"));
+  }
+
+  @Test
+  void rejectsMappedIncludeNestedInsideAnotherIncludeWithSpecificReason() throws Exception {
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                create(
+                    CatalogOverlaySpec.newBuilder()
+                        .addIncludeNamespaces(path("sales"))
+                        .addIncludeNamespaces(path("sales", "daily"))
+                        .addNamespaceMappings(
+                            NamespaceMapping.newBuilder()
+                                .setSource(path("sales"))
+                                .setDestination(path("reports")))));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    assertTrue(error.getStatus().getDescription().contains("namespace_mappings.source"));
+    var detail =
+        StatusProto.fromThrowable(error).getDetailsList().stream()
+            .filter(value -> value.is(Error.class))
+            .findFirst()
+            .orElseThrow();
+    assertEquals(
+        "a mapped include cannot contain or sit inside another include",
+        detail.unpack(Error.class).getParamsOrThrow("reason"));
+  }
+
+  @Test
+  void reportsMissingMappingEndpointsSeparately() {
+    var missingSource =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                create(
+                    CatalogOverlaySpec.newBuilder()
+                        .addIncludeNamespaces(path("sales"))
+                        .addNamespaceMappings(
+                            NamespaceMapping.newBuilder().setDestination(path("reports")))));
+    var missingDestination =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                create(
+                    CatalogOverlaySpec.newBuilder()
+                        .addIncludeNamespaces(path("sales"))
+                        .addNamespaceMappings(
+                            NamespaceMapping.newBuilder().setSource(path("sales")))));
+
+    assertTrue(missingSource.getStatus().getDescription().contains("namespace_mappings.source"));
+    assertTrue(
+        missingDestination.getStatus().getDescription().contains("namespace_mappings.destination"));
+  }
+
+  @Test
+  void rejectsChangingMappingsButAcceptsEquivalentNormalizedUpdate() {
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    NamespaceMapping mapping =
+        NamespaceMapping.newBuilder()
+            .setSource(path("sales"))
+            .setDestination(path("reports"))
+            .build();
+    var current =
+        overlay(overlayId, integrationId(), catalogId(), "sales").toBuilder()
+            .addIncludeNamespaces(path("sales"))
+            .addNamespaceMappings(mapping)
+            .build();
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+    when(service.overlays.updateWithMetaUnlessIntegrationDeleting(any(), eq(7L)))
+        .thenReturn(Optional.of(MutationMeta.newBuilder().setPointerVersion(8L).build()));
+
+    var equivalent =
+        service
+            .updateCatalogOverlay(
+                UpdateCatalogOverlayRequest.newBuilder()
+                    .setOverlayId(overlayId)
+                    .setSpec(
+                        CatalogOverlaySpec.newBuilder()
+                            .addNamespaceMappings(
+                                mapping.toBuilder().setDestination(path(" reports "))))
+                    .setUpdateMask(FieldMask.newBuilder().addPaths("namespace_mappings"))
+                    .build())
+            .await()
+            .indefinitely();
+    assertEquals(List.of(mapping), equivalent.getOverlay().getNamespaceMappingsList());
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .updateCatalogOverlay(
+                        UpdateCatalogOverlayRequest.newBuilder()
+                            .setOverlayId(overlayId)
+                            .setSpec(
+                                CatalogOverlaySpec.newBuilder()
+                                    .addNamespaceMappings(
+                                        mapping.toBuilder().setDestination(path("analytics"))))
+                            .setUpdateMask(FieldMask.newBuilder().addPaths("namespace_mappings"))
+                            .build())
+                    .await()
+                    .indefinitely());
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    assertTrue(error.getStatus().getDescription().contains("namespace_mappings"));
+    verify(service.overlays).updateWithMetaUnlessIntegrationDeleting(any(), eq(7L));
   }
 
   @Test

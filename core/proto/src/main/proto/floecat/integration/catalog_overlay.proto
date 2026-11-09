@@ -27,8 +27,11 @@ message NamespacePath {
   repeated string segments = 1;
 }
 
-// Replaces a selected upstream namespace prefix with a destination prefix. Descendant paths keep
-// their suffix. Every selected include path must have one mapping when mappings are configured.
+// Renames a selected upstream namespace prefix to a local prefix; descendants keep their suffix.
+// Each source must be an include. Unmapped includes retain their upstream paths. A mapped include
+// cannot overlap another include, and destinations cannot overlap, including unmapped include paths.
+// Only namespaces are renamed: mirrored view SQL is stored verbatim, so references that name an
+// upstream namespace are not rewritten.
 message NamespaceMapping {
   NamespacePath source = 1;
   NamespacePath destination = 2;
@@ -52,6 +55,7 @@ message CatalogOverlay {
   ai.floedb.floecat.common.ResourceId catalog_id = 8;
   // True when Floecat created the destination for this overlay and owns its lifecycle.
   bool owns_catalog = 9;
+  // Explicit namespace renames; changes require a replacement overlay.
   repeated NamespaceMapping namespace_mappings = 10;
 }
 
@@ -67,6 +71,7 @@ message CatalogOverlaySpec {
   // Existing Floecat destination. When omitted, create a catalog named after the overlay.
   // Immutable through update; a replacing create may rebind it.
   ai.floedb.floecat.common.ResourceId catalog_id = 5;
+  // Optional explicit renames for selected includes; unmapped includes retain their paths.
   repeated NamespaceMapping namespace_mappings = 6;
 }
 
@@ -112,8 +117,9 @@ message ListCatalogOverlaysResponse {
 
 message UpdateCatalogOverlayRequest {
   ai.floedb.floecat.common.ResourceId overlay_id = 1;
-  // display_name, the namespace-selection lists, and namespace_mappings are mutable. integration_id
-  // and catalog_id are immutable.
+  // display_name and the namespace-selection lists are mutable. namespace_mappings may be included
+  // in the mask only when its normalized value is unchanged; integration_id and catalog_id are
+  // immutable.
   // A list selected by update_mask is replaced in full.
   CatalogOverlaySpec spec = 2;
   ai.floedb.floecat.common.Precondition precondition = 3;
