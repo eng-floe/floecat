@@ -32,6 +32,7 @@ import ai.floedb.floecat.integration.rpc.GetCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.GetCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysRequest;
 import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysResponse;
+import ai.floedb.floecat.integration.rpc.NamespaceMapping;
 import ai.floedb.floecat.integration.rpc.NamespacePath;
 import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayResponse;
@@ -77,7 +78,7 @@ import org.jboss.logging.Logger;
 public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverlays {
   private static final Logger LOG = Logger.getLogger(CatalogOverlays.class);
   private static final Set<String> MUTABLE_PATHS =
-      Set.of("display_name", "include_namespaces", "exclude_namespaces");
+      Set.of("display_name", "include_namespaces", "exclude_namespaces", "namespace_mappings");
 
   @Inject CatalogOverlayRepository overlays;
   @Inject CatalogIntegrationRepository integrations;
@@ -240,9 +241,11 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                       normalizePaths(spec.getIncludeNamespacesList(), "include_namespaces", corr);
                   List<NamespacePath> excludes =
                       normalizePaths(spec.getExcludeNamespacesList(), "exclude_namespaces", corr);
+                  List<NamespaceMapping> mappings =
+                      normalizeMappings(spec.getNamespaceMappingsList(), includes, corr);
                   byte[] fingerprint =
                       canonicalFingerprint(
-                          name, integrationId, requestedCatalogId, includes, excludes);
+                          name, integrationId, requestedCatalogId, includes, excludes, mappings);
                   var now = nowTs();
 
                   if (key.isEmpty()) {
@@ -256,6 +259,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                             requestedCatalogId,
                             includes,
                             excludes,
+                            mappings,
                             mode,
                             request.getCascade(),
                             false,
@@ -289,6 +293,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                                     requestedCatalogId,
                                     includes,
                                     excludes,
+                                    mappings,
                                     CreateMode.CM_ERROR_IF_EXISTS,
                                     false,
                                     true,
@@ -324,6 +329,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
           ResourceId requestedCatalogId,
           List<NamespacePath> includes,
           List<NamespacePath> excludes,
+          List<NamespaceMapping> mappings,
           CreateMode mode,
           boolean cascade,
           boolean reservedIdentity,
@@ -437,6 +443,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
               .setOwnsCatalog(target.ownsCatalog())
               .addAllIncludeNamespaces(includes)
               .addAllExcludeNamespaces(excludes)
+              .addAllNamespaceMappings(mappings)
               .setCreatedAt(now)
               .setUpdatedAt(now)
               .build();
@@ -508,6 +515,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
             .setOwnsCatalog(target.ownsCatalog())
             .addAllIncludeNamespaces(includes)
             .addAllExcludeNamespaces(excludes)
+            .addAllNamespaceMappings(mappings)
             .setCreatedAt(now)
             .setUpdatedAt(now)
             .build();
@@ -606,9 +614,30 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                               .addAllExcludeNamespaces(
                                   normalizePaths(
                                       request.getSpec().getExcludeNamespacesList(), path, corr));
+                      case "namespace_mappings" ->
+                          desiredBuilder
+                              .clearNamespaceMappings()
+                              .addAllNamespaceMappings(
+                                  request.getSpec().getNamespaceMappingsList());
                       default ->
                           throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", path));
                     }
+                  }
+                  List<NamespaceMapping> normalizedMappings =
+                      normalizeMappings(
+                          desiredBuilder.getNamespaceMappingsList(),
+                          desiredBuilder.getIncludeNamespacesList(),
+                          corr);
+                  desiredBuilder
+                      .clearNamespaceMappings()
+                      .addAllNamespaceMappings(normalizedMappings);
+                  if (!normalizedMappings.equals(current.value().getNamespaceMappingsList())) {
+                    throw GrpcErrors.invalidArgument(
+                        corr,
+                        FIELD,
+                        Map.of(
+                            "field", "namespace_mappings",
+                            "reason", "mapping changes require a replacement overlay"));
                   }
                   CatalogOverlay desired = desiredBuilder.setUpdatedAt(nowTs()).build();
                   try {
@@ -801,6 +830,72 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
     return List.copyOf(result);
   }
 
+  private List<NamespaceMapping> normalizeMappings(
+      List<NamespaceMapping> mappings, List<NamespacePath> includes, String corr) {
+    if (mappings.isEmpty()) return List.of();
+    var normalized = new ArrayList<NamespaceMapping>();
+    for (NamespaceMapping mapping : mappings) {
+      if (!mapping.hasSource())
+        throw GrpcErrors.invalidArgument(
+            corr, FIELD, Map.of("field", "namespace_mappings.source", "reason", "required"));
+      if (!mapping.hasDestination())
+        throw GrpcErrors.invalidArgument(
+            corr, FIELD, Map.of("field", "namespace_mappings.destination", "reason", "required"));
+      NamespacePath source =
+          normalizePaths(List.of(mapping.getSource()), "namespace_mappings.source", corr)
+              .getFirst();
+      NamespacePath destination =
+          normalizePaths(List.of(mapping.getDestination()), "namespace_mappings.destination", corr)
+              .getFirst();
+      normalized.add(
+          NamespaceMapping.newBuilder().setSource(source).setDestination(destination).build());
+    }
+    normalized.sort((left, right) -> compareNamespacePaths(left.getSource(), right.getSource()));
+    Set<NamespacePath> sources =
+        normalized.stream()
+            .map(NamespaceMapping::getSource)
+            .collect(java.util.stream.Collectors.toSet());
+    if (!Set.copyOf(includes).containsAll(sources) || sources.size() != normalized.size()) {
+      throw GrpcErrors.invalidArgument(
+          corr, FIELD, Map.of("field", "include_namespaces and namespace_mappings.source"));
+    }
+    Map<NamespacePath, NamespacePath> destinations = new LinkedHashMap<>();
+    normalized.forEach(mapping -> destinations.put(mapping.getSource(), mapping.getDestination()));
+    for (int i = 0; i < includes.size(); i++) {
+      NamespacePath left = includes.get(i);
+      for (int j = i + 1; j < includes.size(); j++) {
+        NamespacePath right = includes.get(j);
+        boolean mapped = destinations.containsKey(left) || destinations.containsKey(right);
+        if (mapped && overlaps(left, right)) {
+          throw GrpcErrors.invalidArgument(
+              corr,
+              FIELD,
+              Map.of(
+                  "field", "namespace_mappings.source",
+                  "reason", "a mapped include cannot contain or sit inside another include"));
+        }
+        if (mapped
+            && overlaps(
+                destinations.getOrDefault(left, left), destinations.getOrDefault(right, right))) {
+          throw GrpcErrors.invalidArgument(
+              corr,
+              FIELD,
+              Map.of(
+                  "field", "namespace_mappings.destination", "reason", "overlapping destinations"));
+        }
+      }
+    }
+    return List.copyOf(normalized);
+  }
+
+  private static boolean overlaps(NamespacePath left, NamespacePath right) {
+    int common = Math.min(left.getSegmentsCount(), right.getSegmentsCount());
+    for (int i = 0; i < common; i++) {
+      if (!left.getSegments(i).equals(right.getSegments(i))) return false;
+    }
+    return true;
+  }
+
   private static int compareNamespacePaths(NamespacePath left, NamespacePath right) {
     int common = Math.min(left.getSegmentsCount(), right.getSegmentsCount());
     for (int i = 0; i < common; i++) {
@@ -849,7 +944,8 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
       ResourceId integrationId,
       ResourceId catalogId,
       List<NamespacePath> includes,
-      List<NamespacePath> excludes) {
+      List<NamespacePath> excludes,
+      List<NamespaceMapping> mappings) {
     var canonical =
         new Canonicalizer()
             .scalar("display_name", name)
@@ -859,6 +955,13 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
         path -> canonical.scalar("include_namespaces[]", canonicalNamespacePath(path)));
     excludes.forEach(
         path -> canonical.scalar("exclude_namespaces[]", canonicalNamespacePath(path)));
+    mappings.forEach(
+        mapping -> {
+          canonical.scalar(
+              "namespace_mappings[].source", canonicalNamespacePath(mapping.getSource()));
+          canonical.scalar(
+              "namespace_mappings[].destination", canonicalNamespacePath(mapping.getDestination()));
+        });
     return canonical.bytes();
   }
 
@@ -868,7 +971,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
       ResourceId catalogId,
       List<NamespacePath> includes,
       List<NamespacePath> excludes) {
-    return canonicalFingerprint(name, integrationId, catalogId, includes, excludes);
+    return canonicalFingerprint(name, integrationId, catalogId, includes, excludes, List.of());
   }
 
   private static String canonicalNamespacePath(NamespacePath path) {
