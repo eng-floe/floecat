@@ -23,6 +23,7 @@ import ai.floedb.floecat.types.LogicalTypeFormat;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
@@ -34,6 +35,8 @@ import org.apache.arrow.vector.types.pojo.Schema;
 
 /** Utilities for converting {@link SchemaColumn} metadata into Arrow schemas. */
 public final class ArrowSchemaUtil {
+  private static final String EXTENSION_NAME_KEY = "ARROW:extension:name";
+  private static final String VARIANT_EXTENSION_NAME = "arrow.parquet.variant";
 
   private ArrowSchemaUtil() {}
 
@@ -47,15 +50,26 @@ public final class ArrowSchemaUtil {
   }
 
   private static Field toField(SchemaColumn column) {
-    return new Field(column.getName(), fieldType(column), List.of());
-  }
-
-  private static FieldType fieldType(SchemaColumn column) {
     if (!column.hasType()) {
       throw new IllegalArgumentException("Schema column '" + column.getName() + "' has no type");
     }
-    ArrowType arrowType = arrowType(LogicalTypeProtoAdapter.columnType(column));
-    return new FieldType(column.getNullable(), arrowType, null);
+    LogicalType logicalType = LogicalTypeProtoAdapter.columnType(column);
+    if (logicalType.kind() == LogicalKind.VARIANT) {
+      return new Field(
+          column.getName(),
+          new FieldType(
+              column.getNullable(),
+              new ArrowType.Struct(),
+              null,
+              Map.of(EXTENSION_NAME_KEY, VARIANT_EXTENSION_NAME, "ARROW:extension:metadata", "")),
+          List.of(
+              new Field("metadata", FieldType.notNullable(new ArrowType.Binary()), null),
+              new Field("value", FieldType.nullable(new ArrowType.Binary()), null)));
+    }
+    return new Field(
+        column.getName(),
+        new FieldType(column.getNullable(), arrowType(logicalType), null),
+        List.of());
   }
 
   /** Converts a canonical type string to its Arrow type (for callers without a SchemaColumn). */
@@ -107,7 +121,27 @@ public final class ArrowSchemaUtil {
     if (fieldType == null) {
       throw new IllegalArgumentException("FieldType must not be null for " + field.getName());
     }
+    Map<String, String> metadata = fieldType.getMetadata();
+    if (metadata != null && VARIANT_EXTENSION_NAME.equals(metadata.get(EXTENSION_NAME_KEY))) {
+      requireVariantStorage(field);
+      return LogicalTypeFormat.format(LogicalType.of(LogicalKind.VARIANT));
+    }
     return logicalType(fieldType.getType());
+  }
+
+  private static void requireVariantStorage(Field field) {
+    List<Field> children = field.getChildren();
+    if (!(field.getType() instanceof ArrowType.Struct)
+        || children.size() != 2
+        || !children.get(0).getName().equals("metadata")
+        || !(children.get(0).getType() instanceof ArrowType.Binary)
+        || children.get(0).isNullable()
+        || !children.get(1).getName().equals("value")
+        || !(children.get(1).getType() instanceof ArrowType.Binary)
+        || !children.get(1).isNullable()) {
+      throw new IllegalArgumentException(
+          "Invalid arrow.parquet.variant storage for field " + field.getName());
+    }
   }
 
   public static String logicalType(ArrowType arrowType) {
