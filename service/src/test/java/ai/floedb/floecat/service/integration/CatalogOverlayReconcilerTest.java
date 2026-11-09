@@ -341,6 +341,43 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void deniedListingOnNamedMappedIncludeFailsWithoutRetiringItsRelation() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-id"));
+    overlay =
+        overlay.toBuilder()
+            .addNamespaceMappings(
+                NamespaceMapping.newBuilder()
+                    .setSource(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("sales"))
+                    .setDestination(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("analytics")))
+            .build();
+    overlays.update(overlay, overlays.metaFor(overlay.getResourceId()).getPointerVersion());
+
+    reconcile();
+    var destination = namespaces.getByPath("acct", "catalog", List.of("analytics")).orElseThrow();
+    var before =
+        tables
+            .getByName("acct", "catalog", destination.getResourceId().getId(), "orders")
+            .orElseThrow();
+    client.deniedTableListings.add(sales);
+
+    assertThrows(CatalogAccessException.class, this::reconcile);
+
+    var after =
+        tables
+            .getByName("acct", "catalog", destination.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertEquals(before.getResourceId(), after.getResourceId());
+  }
+
+  @Test
   void mappedViewResolvesUnqualifiedRelationsInDestinationNamespace() {
     NamespacePath source = NamespacePath.of("sales");
     client.children.put(NamespacePath.root(), List.of(source));
