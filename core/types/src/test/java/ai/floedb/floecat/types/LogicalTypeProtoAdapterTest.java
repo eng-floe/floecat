@@ -145,4 +145,18 @@ class LogicalTypeProtoAdapterTest {
 
     assertNull(LogicalTypeProtoAdapter.columnMaxValue(stats));
   }
+
+  @Test
+  void aBoundOfAnotherTypeIsIgnored() {
+    // A string column's bound as bytes would be served as the array's Java identity, "[B@...".
+    LogicalType string = LogicalType.of(LogicalKind.STRING);
+    ScalarStats stats =
+        ScalarStats.newBuilder()
+            .setType(LogicalTypeProtoAdapter.toProto(string))
+            .setMinValue(
+                ScalarValue.newBuilder().setBin(com.google.protobuf.ByteString.copyFromUtf8("a")))
+            .build();
+
+    assertNull(LogicalTypeProtoAdapter.columnMinValue(stats));
+  }
 }

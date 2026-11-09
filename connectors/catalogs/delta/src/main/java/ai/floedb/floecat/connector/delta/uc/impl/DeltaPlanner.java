@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.connector.common.DeltaStringBounds;
 import ai.floedb.floecat.connector.common.ParquetFooterStats;
 import ai.floedb.floecat.connector.common.PlannedFile;
 import ai.floedb.floecat.connector.common.Planner;
@@ -242,9 +243,7 @@ final class DeltaPlanner implements Planner<String> {
                     if (colName != null) {
                       var lt = nameToLogical.get(colName);
                       Object raw = (e.getValue() == null) ? null : e.getValue().getValue();
-                      raw = canonicalizeStatValue(lt, raw);
-                      Object typed = (lt == null) ? raw : LogicalComparators.normalize(lt, raw);
-                      mins.put(colName, typed);
+                      mins.put(colName, boundThatHolds(lt, raw, false));
                     }
                   }
                 }
@@ -257,9 +256,7 @@ final class DeltaPlanner implements Planner<String> {
                     if (colName != null) {
                       var lt = nameToLogical.get(colName);
                       Object raw = (e.getValue() == null) ? null : e.getValue().getValue();
-                      raw = widenTruncatedMax(canonicalizeStatValue(lt, raw));
-                      Object typed = (lt == null) ? raw : LogicalComparators.normalize(lt, raw);
-                      maxs.put(colName, typed);
+                      maxs.put(colName, boundThatHolds(lt, raw, true));
                     }
                   }
                 }
@@ -850,6 +847,29 @@ final class DeltaPlanner implements Planner<String> {
       return instantFromMicros(n.longValue());
     }
     return raw;
+  }
+
+  /**
+   * The minimum ({@code isMax} false) or maximum {@code raw} Delta wrote of a column of type {@code
+   * lt}, as a bound that holds for every value, or null when none can.
+   */
+  static Object boundThatHolds(LogicalType lt, Object raw, boolean isMax) {
+    // Delta defines no encoding for binary bounds, and its Java kernel writes the bytes as text,
+    // with U+FFFD in place of any that are not UTF-8.
+    if (lt != null && lt.kind() == LogicalKind.BINARY) {
+      return null;
+    }
+    Object bound = canonicalizeStatValue(lt, raw);
+    if (bound instanceof String string) {
+      bound = isMax ? DeltaStringBounds.max(string) : DeltaStringBounds.min(string);
+      if (bound == null) {
+        return null;
+      }
+    }
+    if (isMax) {
+      bound = widenTruncatedMax(bound);
+    }
+    return (lt == null) ? bound : LogicalComparators.normalize(lt, bound);
   }
 
   /**
