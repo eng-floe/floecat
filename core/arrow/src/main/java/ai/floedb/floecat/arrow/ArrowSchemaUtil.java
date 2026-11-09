@@ -36,6 +36,7 @@ import org.apache.arrow.vector.types.pojo.Schema;
 /** Utilities for converting {@link SchemaColumn} metadata into Arrow schemas. */
 public final class ArrowSchemaUtil {
   private static final String EXTENSION_NAME_KEY = "ARROW:extension:name";
+  private static final String EXTENSION_METADATA_KEY = "ARROW:extension:metadata";
   private static final String VARIANT_EXTENSION_NAME = "arrow.parquet.variant";
 
   private ArrowSchemaUtil() {}
@@ -55,21 +56,26 @@ public final class ArrowSchemaUtil {
     }
     LogicalType logicalType = LogicalTypeProtoAdapter.columnType(column);
     if (logicalType.kind() == LogicalKind.VARIANT) {
-      return new Field(
-          column.getName(),
-          new FieldType(
-              column.getNullable(),
-              new ArrowType.Struct(),
-              null,
-              Map.of(EXTENSION_NAME_KEY, VARIANT_EXTENSION_NAME, "ARROW:extension:metadata", "")),
-          List.of(
-              new Field("metadata", FieldType.notNullable(new ArrowType.Binary()), null),
-              new Field("value", FieldType.nullable(new ArrowType.Binary()), null)));
+      return variantField(column.getName(), column.getNullable());
     }
     return new Field(
         column.getName(),
         new FieldType(column.getNullable(), arrowType(logicalType), null),
         List.of());
+  }
+
+  /** Builds the canonical unshredded Parquet VARIANT extension field. */
+  public static Field variantField(String name, boolean nullable) {
+    return new Field(
+        name,
+        new FieldType(
+            nullable,
+            new ArrowType.Struct(),
+            null,
+            Map.of(EXTENSION_NAME_KEY, VARIANT_EXTENSION_NAME, EXTENSION_METADATA_KEY, "")),
+        List.of(
+            new Field("metadata", FieldType.notNullable(new ArrowType.Binary()), null),
+            new Field("value", FieldType.nullable(new ArrowType.Binary()), null)));
   }
 
   /** Converts a canonical type string to its Arrow type (for callers without a SchemaColumn). */
@@ -131,17 +137,33 @@ public final class ArrowSchemaUtil {
 
   private static void requireVariantStorage(Field field) {
     List<Field> children = field.getChildren();
+    if (children.stream().anyMatch(child -> "typed_value".equals(child.getName()))) {
+      throw new IllegalArgumentException(
+          "Shredded arrow.parquet.variant storage is not supported for field " + field.getName());
+    }
+    Field metadata =
+        children.stream()
+            .filter(child -> "metadata".equals(child.getName()))
+            .findFirst()
+            .orElse(null);
+    Field value =
+        children.stream().filter(child -> "value".equals(child.getName())).findFirst().orElse(null);
     if (!(field.getType() instanceof ArrowType.Struct)
         || children.size() != 2
-        || !children.get(0).getName().equals("metadata")
-        || !(children.get(0).getType() instanceof ArrowType.Binary)
-        || children.get(0).isNullable()
-        || !children.get(1).getName().equals("value")
-        || !(children.get(1).getType() instanceof ArrowType.Binary)
-        || !children.get(1).isNullable()) {
+        || metadata == null
+        || !isVariantBinary(metadata.getType())
+        || metadata.isNullable()
+        || value == null
+        || !isVariantBinary(value.getType())) {
       throw new IllegalArgumentException(
           "Invalid arrow.parquet.variant storage for field " + field.getName());
     }
+  }
+
+  private static boolean isVariantBinary(ArrowType type) {
+    return type instanceof ArrowType.Binary
+        || type instanceof ArrowType.LargeBinary
+        || type instanceof ArrowType.BinaryView;
   }
 
   public static String logicalType(ArrowType arrowType) {

@@ -234,6 +234,7 @@ class ArrowSchemaUtilTest {
 
     Field field = ArrowSchemaUtil.toArrowSchema(List.of(column)).getFields().get(0);
 
+    assertThat(field).isEqualTo(ArrowSchemaUtil.variantField("plan", true));
     assertThat(field.getType()).isInstanceOf(ArrowType.Struct.class);
     assertThat(field.getMetadata())
         .containsEntry("ARROW:extension:name", "arrow.parquet.variant")
@@ -245,6 +246,46 @@ class ArrowSchemaUtilTest {
     assertThat(field.getChildren().get(0).isNullable()).isFalse();
     assertThat(field.getChildren().get(1).isNullable()).isTrue();
     assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("VARIANT");
+  }
+
+  @Test
+  void acceptsReorderedVariantStorageWithBinaryWidthAndRequiredValueVariants() {
+    Field canonical = ArrowSchemaUtil.variantField("plan", true);
+    List<ArrowType> binaryTypes =
+        List.of(new ArrowType.Binary(), new ArrowType.LargeBinary(), new ArrowType.BinaryView());
+    for (ArrowType metadataType : binaryTypes) {
+      for (ArrowType valueType : binaryTypes) {
+        Field field =
+            new Field(
+                "plan",
+                canonical.getFieldType(),
+                List.of(
+                    new Field("value", FieldType.notNullable(valueType), null),
+                    new Field("metadata", FieldType.notNullable(metadataType), null)));
+
+        assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("VARIANT");
+      }
+    }
+  }
+
+  @Test
+  void rejectsShreddedVariantStorageWithSpecificReason() {
+    Field canonical = ArrowSchemaUtil.variantField("plan", true);
+    Field typedValue =
+        new Field("typed_value", FieldType.nullable(new ArrowType.Int(64, true)), null);
+    for (List<Field> children :
+        List.of(
+            List.of(canonical.getChildren().getFirst(), typedValue),
+            List.of(
+                canonical.getChildren().getFirst(),
+                canonical.getChildren().getLast(),
+                typedValue))) {
+      Field shredded = new Field("plan", canonical.getFieldType(), children);
+
+      assertThatThrownBy(() -> ArrowSchemaUtil.logicalType(shredded))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Shredded arrow.parquet.variant storage is not supported");
+    }
   }
 
   @Test
