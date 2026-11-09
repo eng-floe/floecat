@@ -449,7 +449,7 @@ message ColumnResult {
  */
 message RelationStats {
   /**
-   * Estimated row count for the relation. Presence-tracked: a caching client refreshes its warm
+   * Row count for the relation. Presence-tracked: a caching client refreshes its warm
    * row count from an identity-only reply, so it MUST distinguish "count unknown this reply"
    * (field absent — leave the cached estimate) from a genuine zero. A bare int64 would report both
    * as 0 and let a size-only reply clobber a valid cached cardinality with 0.
@@ -458,6 +458,13 @@ message RelationStats {
 
   /** Estimated total size in bytes for the relation. Presence-tracked for the same reason. */
   optional int64 total_size_bytes = 2;
+
+  /**
+   * Whether row_count is exactly the relation's live rows (TableValueStats.row_count_exact). It
+   * qualifies the row_count of this reply only: a row count a client keeps from an earlier reply is
+   * an estimate.
+   */
+  bool row_count_exact = 3;
 }
 
 /**
