@@ -450,24 +450,29 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
 
   private List<ReconcileFileGroupTask> buildFileGroupTasks(
       ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask task) {
-    Optional<FloecatConnector.SnapshotFilePlan> planned = fetchSnapshotFilePlan(lease, task);
-    if (planned.isPresent()) {
-      LinkedHashMap<String, FloecatConnector.SnapshotFileEntry> parquetFiles =
-          new LinkedHashMap<>();
-      planned.get().dataFiles().stream()
-          .filter(file -> file != null && isParquetFile(file))
-          .filter(file -> file.filePath() != null && !file.filePath().isBlank())
-          .forEach(file -> parquetFiles.putIfAbsent(file.filePath(), file));
-      if (!parquetFiles.isEmpty()) {
-        return partitionFiles(
-            lease.jobId,
-            task,
-            List.copyOf(parquetFiles.values()),
-            planned.get().executionSchemaJson());
+    FloecatConnector.SnapshotFilePlan planned = fetchSnapshotFilePlan(lease, task).orElseThrow();
+    LinkedHashMap<String, FloecatConnector.SnapshotFileEntry> dataFiles = new LinkedHashMap<>();
+    for (FloecatConnector.SnapshotFileEntry file : planned.dataFiles()) {
+      // A snapshot planned without one of its data files would get statistics of some rows,
+      // served as of all of them.
+      if (file == null || file.filePath().isBlank() || !isParquetFile(file)) {
+        throw new ReconcileFailureException(
+            ExecutionResult.FailureKind.INTERNAL,
+            ExecutionResult.RetryDisposition.TERMINAL,
+            "Snapshot holds a data file a file-group capture cannot read: tableId="
+                + task.tableId()
+                + " snapshotId="
+                + task.snapshotId()
+                + (file == null ? "" : " file=" + file.filePath() + " format=" + file.fileFormat()),
+            null);
       }
+      dataFiles.putIfAbsent(file.filePath(), file);
+    }
+    if (dataFiles.isEmpty()) {
       return List.of();
     }
-    return List.of();
+    return partitionFiles(
+        lease.jobId, task, List.copyOf(dataFiles.values()), planned.executionSchemaJson());
   }
 
   private PlannedSnapshotCapture planSnapshotCapture(
