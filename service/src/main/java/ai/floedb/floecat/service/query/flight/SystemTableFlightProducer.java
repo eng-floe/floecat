@@ -34,6 +34,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceCatalogs;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceOverlays;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.ConstraintProviderFactory;
@@ -42,6 +43,7 @@ import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlanner;
 import ai.floedb.floecat.service.query.resolver.SystemScannerResolver;
 import ai.floedb.floecat.service.query.system.SystemRowFilter;
+import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
@@ -90,6 +92,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
   @Inject StatsProviderFactory statsFactory;
   @Inject ConstraintProviderFactory constraintFactory;
   @Inject CatalogRepository catalogRepo;
+  @Inject CatalogOverlayRepository overlayRepo;
   @Inject Authorizer authz;
   @Inject SystemNodeRegistry nodeRegistry;
   @Inject Observability observability;
@@ -179,7 +182,9 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
             statsProvider,
             constraintFactory.provider(context.catalogContext()),
             new CatalogSurfaceCatalogs(catalogRepo, graph, context.catalogContext())
-                .catalogListing(context.principalContext().getAccountId()));
+                .catalogListing(context.principalContext().getAccountId()),
+            new CatalogSurfaceOverlays(overlayRepo)
+                .overlayListing(context.principalContext().getAccountId()));
 
     return arrowPlanner.plan(
         scanner,

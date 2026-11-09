@@ -28,6 +28,7 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.types.RelationFailures;
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -49,6 +50,7 @@ public record SystemObjectScanContext(
     StatsProvider statsProvider,
     ConstraintProvider constraintProvider,
     CatalogListingProvider catalogListingProvider,
+    CatalogOverlayListingProvider catalogOverlayListingProvider,
     ConcurrentMap<Object, Object> memoizedValues)
     implements MetadataResolutionContext {
 
@@ -60,6 +62,10 @@ public record SystemObjectScanContext(
     constraintProvider = constraintProvider == null ? ConstraintProvider.NONE : constraintProvider;
     catalogListingProvider =
         catalogListingProvider == null ? CatalogListingProvider.NONE : catalogListingProvider;
+    catalogOverlayListingProvider =
+        catalogOverlayListingProvider == null
+            ? CatalogOverlayListingProvider.NONE
+            : catalogOverlayListingProvider;
     memoizedValues = memoizedValues == null ? new ConcurrentHashMap<>() : memoizedValues;
   }
 
@@ -77,6 +83,26 @@ public record SystemObjectScanContext(
     List<CatalogEntry> listVisibleCatalogs(boolean includeDescription);
   }
 
+  /**
+   * A catalog overlay as sys.catalog_overlay lists it: the integration it maps from and the catalog
+   * it materializes into. {@code createdAt} and {@code updatedAt} are null when not recorded.
+   */
+  public record CatalogOverlayEntry(
+      ResourceId id,
+      String name,
+      ResourceId integrationId,
+      ResourceId catalogId,
+      Instant createdAt,
+      Instant updatedAt) {}
+
+  /** Lists the catalog overlays of the scanning account. */
+  @FunctionalInterface
+  public interface CatalogOverlayListingProvider {
+    CatalogOverlayListingProvider NONE = List::of;
+
+    List<CatalogOverlayEntry> listCatalogOverlays();
+  }
+
   public SystemObjectScanContext(
       CatalogGraphView graph,
       NameRef name,
@@ -90,6 +116,7 @@ public record SystemObjectScanContext(
         StatsProvider.NONE,
         ConstraintProvider.NONE,
         CatalogListingProvider.NONE,
+        CatalogOverlayListingProvider.NONE,
         new ConcurrentHashMap<>());
   }
 
@@ -107,6 +134,7 @@ public record SystemObjectScanContext(
         statsProvider,
         ConstraintProvider.NONE,
         CatalogListingProvider.NONE,
+        CatalogOverlayListingProvider.NONE,
         new ConcurrentHashMap<>());
   }
 
@@ -125,6 +153,7 @@ public record SystemObjectScanContext(
         statsProvider,
         constraintProvider,
         CatalogListingProvider.NONE,
+        CatalogOverlayListingProvider.NONE,
         new ConcurrentHashMap<>());
   }
 
@@ -144,6 +173,28 @@ public record SystemObjectScanContext(
         statsProvider,
         constraintProvider,
         catalogListingProvider,
+        CatalogOverlayListingProvider.NONE,
+        new ConcurrentHashMap<>());
+  }
+
+  public SystemObjectScanContext(
+      CatalogGraphView graph,
+      NameRef name,
+      ResourceId queryDefaultCatalogId,
+      CatalogContext catalogContext,
+      StatsProvider statsProvider,
+      ConstraintProvider constraintProvider,
+      CatalogListingProvider catalogListingProvider,
+      CatalogOverlayListingProvider catalogOverlayListingProvider) {
+    this(
+        graph,
+        name,
+        queryDefaultCatalogId,
+        catalogContext,
+        statsProvider,
+        constraintProvider,
+        catalogListingProvider,
+        catalogOverlayListingProvider,
         new ConcurrentHashMap<>());
   }
 
@@ -160,6 +211,7 @@ public record SystemObjectScanContext(
         StatsProvider.NONE,
         ConstraintProvider.NONE,
         CatalogListingProvider.NONE,
+        CatalogOverlayListingProvider.NONE,
         new ConcurrentHashMap<>());
   }
 
@@ -177,6 +229,7 @@ public record SystemObjectScanContext(
         statsProvider,
         ConstraintProvider.NONE,
         CatalogListingProvider.NONE,
+        CatalogOverlayListingProvider.NONE,
         new ConcurrentHashMap<>());
   }
 
@@ -195,6 +248,7 @@ public record SystemObjectScanContext(
         statsProvider,
         constraintProvider,
         CatalogListingProvider.NONE,
+        CatalogOverlayListingProvider.NONE,
         new ConcurrentHashMap<>());
   }
 
@@ -250,6 +304,11 @@ public record SystemObjectScanContext(
       return Optional.empty();
     }
     return Optional.of(catalogListingProvider.listVisibleCatalogs(includeDescription));
+  }
+
+  /** The scanning account's catalog overlays, for sys.catalog_overlay; empty without a listing. */
+  public List<CatalogOverlayEntry> listCatalogOverlays() {
+    return catalogOverlayListingProvider.listCatalogOverlays();
   }
 
   /** Lightweight namespace refs matching the supplied information-schema names. */

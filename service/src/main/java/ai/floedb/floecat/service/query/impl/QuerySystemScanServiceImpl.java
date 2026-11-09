@@ -32,6 +32,7 @@ import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceCatalogs;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceOverlays;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.context.EngineContextProvider;
@@ -46,6 +47,7 @@ import ai.floedb.floecat.service.query.resolver.SystemScannerResolver;
 import ai.floedb.floecat.service.query.system.SystemRowFilter;
 import ai.floedb.floecat.service.query.system.SystemRowMappers;
 import ai.floedb.floecat.service.query.system.SystemRowProjector;
+import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -82,6 +84,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
   @Inject StatsProviderFactory statsFactory;
   @Inject ConstraintProviderFactory constraintFactory;
   @Inject CatalogRepository catalogRepo;
+  @Inject CatalogOverlayRepository overlayRepo;
   @Inject Observability observability;
 
   @ConfigProperty(name = "ai.floedb.floecat.arrow.max-bytes", defaultValue = "1073741824")
@@ -158,7 +161,9 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
               statsProvider,
               constraintFactory.provider(catalogContext),
               new CatalogSurfaceCatalogs(catalogRepo, graph, catalogContext)
-                  .catalogListing(principalContext.getAccountId()));
+                  .catalogListing(principalContext.getAccountId()),
+              new CatalogSurfaceOverlays(overlayRepo)
+                  .overlayListing(principalContext.getAccountId()));
       List<SchemaColumn> schema = diagnostics.time("schema", scanner::schema);
       List<String> requiredColumns = request.getRequiredColumnsList();
       List<Predicate> predicates = request.getPredicatesList();
