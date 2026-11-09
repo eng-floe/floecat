@@ -1408,12 +1408,12 @@ class UserObjectBundleServiceTest {
             .build();
     graphView.registerRelation(
         sysA,
-        storageSystemTableNode(sysA, "sys://a", "k"),
+        storageSystemTableNode(sysA, "sys://a", ""),
         UserObjectBundleTestSupport.schemaFor("a"),
         NameRef.newBuilder().setCatalog("sys").setName("sys_a").build());
     graphView.registerRelation(
         sysB,
-        storageSystemTableNode(sysB, "sys://b", "k"),
+        storageSystemTableNode(sysB, "sys://b", ""),
         UserObjectBundleTestSupport.schemaFor("b"),
         NameRef.newBuilder().setCatalog("sys").setName("sys_b").build());
 

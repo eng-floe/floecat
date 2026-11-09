@@ -69,7 +69,6 @@ import java.util.function.BooleanSupplier;
 import org.apache.arrow.flight.FlightProducer.CallContext;
 import org.apache.arrow.flight.FlightRuntimeException;
 import org.apache.arrow.flight.FlightStatusCode;
-import org.apache.arrow.flight.Location;
 import org.apache.arrow.memory.BufferAllocator;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -98,16 +97,6 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
   @ConfigProperty(name = "ai.floedb.floecat.arrow.max-bytes", defaultValue = "1073741824")
   long arrowMaxBytes;
 
-  @ConfigProperty(name = "floecat.flight.advertised-host", defaultValue = "localhost")
-  String flightHost;
-
-  @ConfigProperty(name = "floecat.flight.advertised-port", defaultValue = "80")
-  int flightPort;
-
-  @ConfigProperty(name = "quarkus.grpc.server.plain-text", defaultValue = "true")
-  boolean grpcPlainText;
-
-  private Location flightLocation;
   private final ArrowScanPlanner arrowPlanner = new ArrowScanPlanner();
   private final AtomicInteger inflightStreams = new AtomicInteger();
 
@@ -118,22 +107,13 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
   }
 
   @PostConstruct
-  void initFlightLocation() {
-    flightLocation =
-        grpcPlainText
-            ? Location.forGrpcInsecure(flightHost, flightPort)
-            : Location.forGrpcTls(flightHost, flightPort);
+  void initMetrics() {
     observability.gauge(
         ServiceMetrics.Flight.INFLIGHT,
         inflightStreams::get,
         "Current number of in-flight Flight streams",
         Tag.of(TagKey.COMPONENT, "service"),
         Tag.of(TagKey.OPERATION, "getStream"));
-  }
-
-  @Override
-  protected Location selfLocation() {
-    return flightLocation;
   }
 
   @Override
