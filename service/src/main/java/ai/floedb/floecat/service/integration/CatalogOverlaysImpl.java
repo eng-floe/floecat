@@ -631,6 +631,14 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                   desiredBuilder
                       .clearNamespaceMappings()
                       .addAllNamespaceMappings(normalizedMappings);
+                  if (!normalizedMappings.equals(current.value().getNamespaceMappingsList())) {
+                    throw GrpcErrors.invalidArgument(
+                        corr,
+                        FIELD,
+                        Map.of(
+                            "field", "namespace_mappings",
+                            "reason", "mapping changes require a replacement overlay"));
+                  }
                   CatalogOverlay desired = desiredBuilder.setUpdatedAt(nowTs()).build();
                   try {
                     var meta =
@@ -827,9 +835,12 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
     if (mappings.isEmpty()) return List.of();
     var normalized = new ArrayList<NamespaceMapping>();
     for (NamespaceMapping mapping : mappings) {
-      if (!mapping.hasSource() || !mapping.hasDestination()) {
-        throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "namespace_mappings"));
-      }
+      if (!mapping.hasSource())
+        throw GrpcErrors.invalidArgument(
+            corr, FIELD, Map.of("field", "namespace_mappings.source", "reason", "required"));
+      if (!mapping.hasDestination())
+        throw GrpcErrors.invalidArgument(
+            corr, FIELD, Map.of("field", "namespace_mappings.destination", "reason", "required"));
       NamespacePath source =
           normalizePaths(List.of(mapping.getSource()), "namespace_mappings.source", corr)
               .getFirst();
@@ -840,20 +851,36 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
           NamespaceMapping.newBuilder().setSource(source).setDestination(destination).build());
     }
     normalized.sort((left, right) -> compareNamespacePaths(left.getSource(), right.getSource()));
-    if (!Set.copyOf(includes)
-            .equals(
-                normalized.stream()
-                    .map(NamespaceMapping::getSource)
-                    .collect(java.util.stream.Collectors.toSet()))
-        || includes.size() != normalized.size()) {
+    Set<NamespacePath> sources =
+        normalized.stream()
+            .map(NamespaceMapping::getSource)
+            .collect(java.util.stream.Collectors.toSet());
+    if (!Set.copyOf(includes).containsAll(sources) || sources.size() != normalized.size()) {
       throw GrpcErrors.invalidArgument(
           corr, FIELD, Map.of("field", "include_namespaces and namespace_mappings.source"));
     }
-    for (int i = 0; i < normalized.size(); i++) {
-      for (int j = i + 1; j < normalized.size(); j++) {
-        if (overlaps(normalized.get(i).getSource(), normalized.get(j).getSource())
-            || overlaps(normalized.get(i).getDestination(), normalized.get(j).getDestination())) {
-          throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "namespace_mappings"));
+    Map<NamespacePath, NamespacePath> destinations = new LinkedHashMap<>();
+    normalized.forEach(mapping -> destinations.put(mapping.getSource(), mapping.getDestination()));
+    for (int i = 0; i < includes.size(); i++) {
+      NamespacePath left = includes.get(i);
+      for (int j = i + 1; j < includes.size(); j++) {
+        NamespacePath right = includes.get(j);
+        if (overlaps(left, right)
+            && (destinations.containsKey(left) || destinations.containsKey(right))) {
+          throw GrpcErrors.invalidArgument(
+              corr,
+              FIELD,
+              Map.of(
+                  "field", "namespace_mappings.source",
+                  "reason", "a mapped include cannot contain or sit inside another include"));
+        }
+        if (overlaps(
+            destinations.getOrDefault(left, left), destinations.getOrDefault(right, right))) {
+          throw GrpcErrors.invalidArgument(
+              corr,
+              FIELD,
+              Map.of(
+                  "field", "namespace_mappings.destination", "reason", "overlapping destinations"));
         }
       }
     }

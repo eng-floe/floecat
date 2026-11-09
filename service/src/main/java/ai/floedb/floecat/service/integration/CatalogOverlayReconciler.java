@@ -638,11 +638,10 @@ public class CatalogOverlayReconciler {
    * Keeps provider paths on loaded objects while translating local inventory and retirement keys.
    */
   private static Discovery projectDiscovery(CatalogOverlay overlay, Discovery source) {
-    if (overlay.getNamespaceMappingsCount() == 0) return source;
     List<NamespaceMapping> mappings = overlay.getNamespaceMappingsList();
     Set<NamespacePath> materialized = new LinkedHashSet<>();
     for (NamespacePath path : source.materializedNamespaces()) {
-      projectPath(mappings, path).ifPresent(mapped -> addAncestors(mapped, materialized));
+      if (selected(overlay, path)) addAncestors(projectPath(mappings, path), materialized);
     }
     return new Discovery(
         immutableSetCopyCancellable(materialized),
@@ -679,32 +678,27 @@ public class CatalogOverlayReconciler {
 
   private static CatalogObjectName projectName(
       List<NamespaceMapping> mappings, CatalogObjectName source) {
-    return new CatalogObjectName(
-        projectPath(mappings, source.namespace())
-            .orElseThrow(
-                () -> new IllegalStateException("Selected source has no namespace mapping")),
-        source.name());
+    return new CatalogObjectName(projectPath(mappings, source.namespace()), source.name());
   }
 
   private static Set<NamespacePath> projectPaths(
       List<NamespaceMapping> mappings, Set<NamespacePath> source) {
     Set<NamespacePath> projected = new LinkedHashSet<>();
     for (NamespacePath path : source) {
-      projectPath(mappings, path).ifPresent(projected::add);
+      projected.add(projectPath(mappings, path));
     }
     return immutableSetCopyCancellable(projected);
   }
 
-  private static Optional<NamespacePath> projectPath(
-      List<NamespaceMapping> mappings, NamespacePath path) {
+  private static NamespacePath projectPath(List<NamespaceMapping> mappings, NamespacePath path) {
     for (NamespaceMapping mapping : mappings) {
       List<String> source = mapping.getSource().getSegmentsList();
       if (!startsWith(path.segments(), source)) continue;
       List<String> destination = new ArrayList<>(mapping.getDestination().getSegmentsList());
       destination.addAll(path.segments().subList(source.size(), path.segments().size()));
-      return Optional.of(new NamespacePath(destination));
+      return new NamespacePath(destination);
     }
-    return Optional.empty();
+    return path;
   }
 
   private Map<NamespacePath, Namespace> reconcileNamespaces(
@@ -1279,12 +1273,8 @@ public class CatalogOverlayReconciler {
     var schema =
         IcebergSchemaMapper.map(
             ColumnIdAlgorithm.CID_FIELD_ID, source.outputSchemaJson(), Set.of());
-    NamespacePath defaultNamespace = normalizePath(source.defaultNamespace());
-    if (overlay.getNamespaceMappingsCount() > 0) {
-      defaultNamespace =
-          projectPath(overlay.getNamespaceMappingsList(), defaultNamespace)
-              .orElse(defaultNamespace);
-    }
+    NamespacePath defaultNamespace =
+        projectPath(overlay.getNamespaceMappingsList(), normalizePath(source.defaultNamespace()));
     var builder =
         View.newBuilder()
             .setResourceId(id)
