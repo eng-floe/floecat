@@ -597,8 +597,9 @@ public final class FileGroupTargetStatsRollup {
       if (everyContributorReported) {
         setIfPresent(nullCount.value(), builder::setNullCount);
         setIfPresent(nanCount.value(), builder::setNanCount);
-        Object lower = min.value();
-        Object upper = max.value();
+        // A bound folded before the type was made more specific can be finer than that type.
+        Object lower = outward(min.value(), false);
+        Object upper = outward(max.value(), true);
         if (decodedLogicalType != null && lower != null) {
           LogicalTypeProtoAdapter.tryEncodeTypedValue(decodedLogicalType, lower)
               .ifPresent(builder::setMinValue);
@@ -628,6 +629,23 @@ public final class FileGroupTargetStatsRollup {
 
     String columnIdentityFingerprint() {
       return columnIdentityFingerprint;
+    }
+
+    /**
+     * {@code bound} rounded outward to the column's type, down for a minimum and up for a maximum,
+     * so it still holds: null when there is none, or the type cannot hold it rounded.
+     */
+    private Object outward(Object bound, boolean upper) {
+      if (bound == null || decodedLogicalType == null) {
+        return bound;
+      }
+      try {
+        return upper
+            ? LogicalComparators.normalizeUpper(decodedLogicalType, bound)
+            : LogicalComparators.normalizeLower(decodedLogicalType, bound);
+      } catch (RuntimeException unrepresentable) {
+        return null;
+      }
     }
 
     /** The legacy spelling of a bound, when it has one: none for a -0.0. */
