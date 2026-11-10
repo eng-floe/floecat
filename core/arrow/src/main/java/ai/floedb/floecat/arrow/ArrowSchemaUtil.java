@@ -75,7 +75,7 @@ public final class ArrowSchemaUtil {
             Map.of(EXTENSION_NAME_KEY, VARIANT_EXTENSION_NAME, EXTENSION_METADATA_KEY, "")),
         List.of(
             new Field("metadata", FieldType.notNullable(new ArrowType.Binary()), null),
-            new Field("value", FieldType.nullable(new ArrowType.Binary()), null)));
+            new Field("value", FieldType.notNullable(new ArrowType.Binary()), null)));
   }
 
   /** Converts a canonical type string to its Arrow type (for callers without a SchemaColumn). */

@@ -244,7 +244,7 @@ class ArrowSchemaUtilTest {
         .extracting(Field::getType)
         .allMatch(ArrowType.Binary.class::isInstance);
     assertThat(field.getChildren().get(0).isNullable()).isFalse();
-    assertThat(field.getChildren().get(1).isNullable()).isTrue();
+    assertThat(field.getChildren().get(1).isNullable()).isFalse();
     assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("VARIANT");
   }
 
