@@ -22,10 +22,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.List;
+import java.util.Map;
 import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.junit.jupiter.api.Test;
 
@@ -209,7 +211,7 @@ class ArrowSchemaUtilTest {
 
   @Test
   void complexLogicalTypesAreRejectedForArrowSchema() {
-    for (String type : List.of("ARRAY", "MAP", "STRUCT", "VARIANT")) {
+    for (String type : List.of("ARRAY", "MAP", "STRUCT")) {
       SchemaColumn column =
           SchemaColumn.newBuilder()
               .setName("x")
@@ -219,6 +221,105 @@ class ArrowSchemaUtilTest {
           .isInstanceOf(IllegalArgumentException.class)
           .hasMessageContaining("Complex logical types");
     }
+  }
+
+  @Test
+  void mapsVariantToCanonicalArrowExtensionAndBack() {
+    SchemaColumn column =
+        SchemaColumn.newBuilder()
+            .setName("plan")
+            .setType(LogicalTypeProtoAdapter.parseToProto("VARIANT"))
+            .setNullable(true)
+            .build();
+
+    Field field = ArrowSchemaUtil.toArrowSchema(List.of(column)).getFields().get(0);
+
+    assertThat(field).isEqualTo(ArrowSchemaUtil.variantField("plan", true));
+    assertThat(field.getType()).isInstanceOf(ArrowType.Struct.class);
+    assertThat(field.getMetadata())
+        .containsEntry("ARROW:extension:name", "arrow.parquet.variant")
+        .containsEntry("ARROW:extension:metadata", "");
+    assertThat(field.getChildren()).extracting(Field::getName).containsExactly("metadata", "value");
+    assertThat(field.getChildren())
+        .extracting(Field::getType)
+        .allMatch(ArrowType.Binary.class::isInstance);
+    assertThat(field.getChildren().get(0).isNullable()).isFalse();
+    assertThat(field.getChildren().get(1).isNullable()).isFalse();
+    assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("VARIANT");
+  }
+
+  @Test
+  void acceptsReorderedVariantStorageWithBinaryWidthAndRequiredValueVariants() {
+    Field canonical = ArrowSchemaUtil.variantField("plan", true);
+    List<ArrowType> binaryTypes =
+        List.of(new ArrowType.Binary(), new ArrowType.LargeBinary(), new ArrowType.BinaryView());
+    for (ArrowType metadataType : binaryTypes) {
+      for (ArrowType valueType : binaryTypes) {
+        Field field =
+            new Field(
+                "plan",
+                canonical.getFieldType(),
+                List.of(
+                    new Field("value", FieldType.notNullable(valueType), null),
+                    new Field("metadata", FieldType.notNullable(metadataType), null)));
+
+        assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("VARIANT");
+      }
+    }
+  }
+
+  @Test
+  void rejectsShreddedVariantStorageWithSpecificReason() {
+    Field canonical = ArrowSchemaUtil.variantField("plan", true);
+    Field typedValue =
+        new Field("typed_value", FieldType.nullable(new ArrowType.Int(64, true)), null);
+    for (List<Field> children :
+        List.of(
+            List.of(canonical.getChildren().getFirst(), typedValue),
+            List.of(
+                canonical.getChildren().getFirst(),
+                canonical.getChildren().getLast(),
+                typedValue))) {
+      Field shredded = new Field("plan", canonical.getFieldType(), children);
+
+      assertThatThrownBy(() -> ArrowSchemaUtil.logicalType(shredded))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Shredded arrow.parquet.variant storage is not supported");
+    }
+  }
+
+  @Test
+  void rejectsMalformedVariantStorage() {
+    Field field =
+        new Field(
+            "plan",
+            new FieldType(
+                true,
+                new ArrowType.Struct(),
+                null,
+                Map.of("ARROW:extension:name", "arrow.parquet.variant")),
+            List.of(
+                new Field("metadata", FieldType.notNullable(new ArrowType.Binary()), null),
+                new Field("value", FieldType.nullable(new ArrowType.Utf8()), null)));
+
+    assertThatThrownBy(() -> ArrowSchemaUtil.logicalType(field))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid arrow.parquet.variant storage");
+  }
+
+  @Test
+  void doesNotTreatUnmarkedStructAsVariant() {
+    Field field =
+        new Field(
+            "plan",
+            FieldType.nullable(new ArrowType.Struct()),
+            List.of(
+                new Field("metadata", FieldType.notNullable(new ArrowType.Binary()), null),
+                new Field("value", FieldType.nullable(new ArrowType.Binary()), null)));
+
+    assertThatThrownBy(() -> ArrowSchemaUtil.logicalType(field))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unsupported Arrow type: Struct");
   }
 
   @Test
